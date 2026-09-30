@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "affine-ransac"
+version = "0.0.1"
+description = "Photomask registration error: OASIS design vs. stitched SEM images"
+requires-python = ">=3.11"
+dependencies = [
+    "klayout",
+    "numpy",
+    "pyqtgraph",
+    "PySide6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
