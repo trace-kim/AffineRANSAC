@@ -13,6 +13,7 @@ dependencies = [
     "numpy",
     "pyqtgraph",
     "PySide6",
+    "scikit-image",
 ]
 
 [project.optional-dependencies]

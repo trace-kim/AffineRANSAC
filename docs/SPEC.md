@@ -288,6 +288,21 @@ mutually consistent. Requirements:
 - Log a warning when the matched fraction is low or the offset is close to `P/2`.
 
 ### S5 — Global stitching solve (per-tile affines)
+**Pairwise analysis before the global solve (D24):** before choosing the tile model, each
+overlapping pair is analysed (`notebooks/overlap_flow.ipynb`):
+- `overlap_fit.fit_overlap(a, b, rotation=False|True)`: a robust least-squares B-relative-to-A
+  shift (± rotation, no scale) from the matched overlap contacts. Outliers are residuals above
+  `outlier_factor` × the median residual, re-estimated over a few iterations from a
+  median-difference start. RANSAC is not used (too few points per strip, D8). The inlier RMS is
+  the measurement noise floor.
+- `overlap_image.image_overlap_shift(...)`: an independent B − A shift from the overlap
+  **pixels** (upsampled cross-correlation, scikit-image). Precision on real-like strips is about
+  0.1–0.2 px, so it is a check on the contact pipeline, not a replacement.
+- `overlap.overlapping_pairs(centers, fovs)`: all overlapping tile pairs.
+Decide from these results whether the per-tile model needs rotation (only if it lowers the RMS
+clearly and consistently), and whether residuals show a repeating pattern (→ shared intrafield
+distortion).
+
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
 
@@ -542,6 +557,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D21 | 2026-10-01 | Overlap matching v1: contacts in the nominal overlap box (grown by the match gate) are paired by mutual nearest neighbour. Nominal placement = CSV tile centre. Flat module `overlap.py` (not a `stitching/` package) until more stitching code exists. | User: build overlap matching between two tiles. Synthetic check: recovers a built-in (−6, +4) nm stage difference to ±0.05 nm. |
 | D22 | 2026-10-01 | SEM contours are refined after Otsu to the **maximum intensity gradient** along rays (steepest rise for dark contacts). `refine_edges()` is a separate step, so Otsu and refined results can be compared. | User request: Otsu contours sit just outside the dark area, while the `.oas` contours lie on the white band. Whether the steepest rise is the right physical edge is to be judged on real data (contour check in `tile_index.ipynb`). |
 | D23 | 2026-10-01 | Refinement searches along each Otsu contour point's **outward normal** within a **fixed pixel distance** (`search_px`), replacing radial rays from the centre with a window of ±50 % of the circle-equivalent radius. | User: radius-based search misbehaves; contacts are elliptical and other shapes will follow; the pixel size is known, so a fixed pixel window is better. Synthetic 24×10 px ellipse: centre error 0.014 px, mean edge distance 0.2 px. |
+| D24 | 2026-10-02 | Pairwise overlap analysis in four steps: (1) robust translation, (2) image cross-correlation check, (3) robust translation + rotation (no scale), (4) residual map across pairs. Outliers come from a median-residual threshold, not RANSAC. Image registration uses scikit-image `phase_cross_correlation` (normalization=None, Hann window, upsample 100); `cv2.phaseCorrelate` and the "phase" normalisation were rejected (sub-pixel errors up to 0.38 / 0.6 px). | User: overlap arrows mostly agree but some differ (noise vs outliers); compare translation-only, robust rigid and image-based registration before choosing the stitching model. |
 
 ---
 

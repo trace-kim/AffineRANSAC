@@ -1,6 +1,6 @@
 import numpy as np
 
-from affine_ransac.overlap import match_overlap, overlap_box, points_in_box
+from affine_ransac.overlap import match_overlap, overlap_box, overlapping_pairs, points_in_box
 
 
 def test_overlap_box_vertical_neighbours():
@@ -35,3 +35,15 @@ def test_match_overlap_pairs_only_the_shared_contacts():
     assert len(ia) == 9  # the 9 contacts of the row y = -400
     np.testing.assert_allclose(a[ia][:, 1], -400)
     np.testing.assert_allclose(b[ib] - a[ia], [[3, -2]] * 9)
+
+
+def test_overlapping_pairs():
+    # 2 x 2 grid of 1000 nm tiles, 900 nm apart, plus one far-away tile.
+    centers = np.array([[0, 0], [900, 0], [0, -900], [900, -900], [5000, 5000]], dtype=float)
+    fovs = np.full((5, 2), 1000.0)
+
+    pairs = overlapping_pairs(centers, fovs)
+
+    assert [(i, j) for i, j, _ in pairs] == [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+    assert pairs[0][2] == (400, 500, -500, 500)    # side neighbours: a 100 x 1000 strip
+    assert pairs[2][2] == (400, 500, -500, -400)   # diagonal neighbours: a 100 x 100 corner

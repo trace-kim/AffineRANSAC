@@ -57,3 +57,22 @@ if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "sample_sem.jpg")
     n = len(write_sem_like(out))
     print(f"Wrote {out} ({n} contacts)")
+
+
+def render_tile(lattice_nm, true_center_nm, fov_nm=720.0, size_px=512, radius_nm=20.0, seed=0):
+    """SEM-like image of the contacts in lattice_nm ((N, 2), mask nm) seen by a tile whose
+    TRUE centre is true_center_nm. Pixel convention as in pixel_to_tile_nm (y down)."""
+    pixel_nm = fov_nm / size_px
+    image = np.full((size_px, size_px), 110, dtype=np.uint8)
+    local = np.asarray(lattice_nm, dtype=float) - true_center_nm
+    radius_px = radius_nm / pixel_nm
+    for x_nm, y_nm in local:
+        x = x_nm / pixel_nm + (size_px - 1) / 2
+        y = -y_nm / pixel_nm + (size_px - 1) / 2
+        if -2 * radius_px < x < size_px + 2 * radius_px and -2 * radius_px < y < size_px + 2 * radius_px:
+            center = (int(round(x * 16)), int(round(y * 16)))  # 4 fractional bits: sub-pixel drawing
+            cv2.circle(image, center, int(round((radius_px + 2) * 16)), 200, thickness=3 * 16, shift=4)
+            cv2.circle(image, center, int(round(radius_px * 16)), 40, thickness=-1, shift=4)
+    image = cv2.GaussianBlur(image, (0, 0), sigmaX=1.5)
+    noise = np.random.default_rng(seed).normal(0, 6, image.shape)
+    return np.clip(image + noise, 0, 255).astype(np.uint8)

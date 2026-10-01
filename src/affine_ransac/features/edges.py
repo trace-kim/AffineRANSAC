@@ -36,21 +36,33 @@ def sample_profiles(image: np.ndarray, points: np.ndarray, directions: np.ndarra
     """Bilinearly sampled intensity at points[m] + offsets[t] * directions[m], shape (M, T)."""
     x = (points[:, :1] + directions[:, :1] * offsets).astype(np.float32)
     y = (points[:, 1:] + directions[:, 1:] * offsets).astype(np.float32)
-    return cv2.remap(image.astype(np.float32), x, y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    image = image.astype(np.float32)
+    chunk = 30000  # cv2.remap allows at most 32767 output rows per call
+    return np.concatenate([
+        cv2.remap(image, x[i:i + chunk], y[i:i + chunk], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        for i in range(0, len(x), chunk)
+    ]).reshape(len(x), len(offsets))
 
 
-def edge_offset(profile: np.ndarray, offsets: np.ndarray, rising: bool = True) -> float:
-    """Offset of the steepest rise (or fall) along one profile, refined by a parabola fit."""
-    gradient = np.gradient(profile, offsets)
+def edge_offsets(profiles: np.ndarray, offsets: np.ndarray, rising: bool = True) -> np.ndarray:
+    """Offset of the steepest rise (or fall) along each profile (M, T), refined by a parabola fit.
+
+    offsets must be evenly spaced. Returns (M,) offsets.
+    """
+    gradient = np.gradient(profiles, offsets, axis=1)
     if not rising:
         gradient = -gradient
-    k = int(np.argmax(gradient))
-    if 0 < k < len(gradient) - 1:
-        left, mid, right = gradient[k - 1], gradient[k], gradient[k + 1]
-        curvature = left - 2 * mid + right
-        if curvature < 0:  # a real peak: move to the parabola's top (within +-0.5 step)
-            k = k + 0.5 * (left - right) / curvature
-    return float(np.interp(k, np.arange(len(offsets)), offsets))
+    k = np.argmax(gradient, axis=1)
+    rows = np.arange(len(k))
+    left = gradient[rows, np.clip(k - 1, 0, None)]
+    mid = gradient[rows, k]
+    right = gradient[rows, np.clip(k + 1, None, gradient.shape[1] - 1)]
+    curvature = left - 2 * mid + right
+    # Move to the parabola's top (within +-0.5 step), only for a real peak away from the ends.
+    is_peak = (k > 0) & (k < gradient.shape[1] - 1) & (curvature < 0)
+    shift = np.where(is_peak, 0.5 * (left - right) / np.where(is_peak, curvature, 1.0), 0.0)
+    step = offsets[1] - offsets[0]
+    return offsets[0] + (k + shift) * step
 
 
 def refine_edges(
@@ -70,17 +82,20 @@ def refine_edges(
     smoothed = cv2.GaussianBlur(image.astype(np.float32), (0, 0), blur_sigma) if blur_sigma > 0 else image
     offsets = np.arange(-search_px, search_px + step_px / 2, step_px)
 
-    centers, areas, contours = [], [], []
-    for otsu_contour in contacts.contours:
-        points = otsu_contour.astype(np.float64)
-        normals = outward_normals(points, normal_span)
-        profiles = sample_profiles(smoothed, points, normals, offsets)
-        shifts = np.array([edge_offset(p, offsets, rising=dark_contacts) for p in profiles])
+    if not contacts.contours:
+        return contacts
 
-        contour = points + shifts[:, None] * normals
-        contours.append(contour)
-        centers.append(polygon_centroid(contour))
-        areas.append(polygon_area(contour))
+    # All contour points of all contacts are searched in one go (fast); then split per contact.
+    points = [c.astype(np.float64) for c in contacts.contours]
+    normals = [outward_normals(p, normal_span) for p in points]
+    all_points, all_normals = np.concatenate(points), np.concatenate(normals)
+    profiles = sample_profiles(smoothed, all_points, all_normals, offsets)
+    shifts = edge_offsets(profiles, offsets, rising=dark_contacts)
+    refined_points = all_points + shifts[:, None] * all_normals
+    contours = np.split(refined_points, np.cumsum([len(p) for p in points])[:-1])
+
+    centers = [polygon_centroid(c) for c in contours]
+    areas = [polygon_area(c) for c in contours]
 
     return DetectedContacts(
         centers=np.array(centers, dtype=np.float64).reshape(-1, 2),

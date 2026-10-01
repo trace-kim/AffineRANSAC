@@ -24,6 +24,21 @@ def overlap_box(center_a, fov_a, center_b, fov_b):
     return x_min, x_max, y_min, y_max
 
 
+def overlapping_pairs(centers: np.ndarray, fovs: np.ndarray):
+    """All tile pairs (i, j, box) with i < j whose fields of view overlap (including corner-only
+    overlaps, which usually hold few contacts).
+
+    centers, fovs: (N, 2) tile centres and (width, height), nm.
+    """
+    pairs = []
+    for i in range(len(centers)):
+        for j in range(i + 1, len(centers)):
+            box = overlap_box(centers[i], fovs[i], centers[j], fovs[j])
+            if box is not None:
+                pairs.append((i, j, box))
+    return pairs
+
+
 def points_in_box(points: np.ndarray, box, margin: float = 0.0) -> np.ndarray:
     """Indices of the points inside box, grown by margin on every side."""
     x_min, x_max, y_min, y_max = box

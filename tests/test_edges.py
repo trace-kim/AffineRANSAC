@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from affine_ransac.features.contact import detect_contacts
-from affine_ransac.features.edges import edge_offset, outward_normals, refine_edges, sample_profiles
+from affine_ransac.features.edges import edge_offsets, outward_normals, refine_edges, sample_profiles
 from affine_ransac.io.sem_image import load_sem_image
 from sample_sem import write_sem_like
 
@@ -25,11 +25,12 @@ def test_sample_profiles_follows_each_direction():
     np.testing.assert_allclose(profile, [[0, 100], [0, 0]])
 
 
-def test_edge_offset_finds_steepest_rise_between_samples():
+def test_edge_offsets_find_steepest_rise_between_samples():
     offsets = np.arange(-5, 5, 0.5)
-    profile = 40 + 160 / (1 + np.exp(-(offsets - 1.3) * 2))  # smooth step at offset 1.3
-    assert abs(edge_offset(profile, offsets, rising=True) - 1.3) < 0.05
-    assert abs(edge_offset(-profile, offsets, rising=False) - 1.3) < 0.05
+    steps = np.array([1.3, -2.2, 0.0])  # one profile per step position
+    profiles = 40 + 160 / (1 + np.exp(-(offsets[None, :] - steps[:, None]) * 2))
+    np.testing.assert_allclose(edge_offsets(profiles, offsets, rising=True), steps, atol=0.05)
+    np.testing.assert_allclose(edge_offsets(-profiles, offsets, rising=False), steps, atol=0.05)
 
 
 def exact_ellipse_image(center, semi_axes, size=80, dark=40, bright=180, blur=2.0, oversample=16):
@@ -88,3 +89,11 @@ def test_refine_keeps_centres_accurate_on_sem_like_image(tmp_path):
     assert errors.max() < 0.2  # pixels
     # The refined edge sits further out than the Otsu edge (on the rise towards the bright rim).
     assert refined.areas.mean() > found.areas.mean()
+
+
+def test_sample_profiles_handles_more_points_than_one_remap_call():
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    points = np.tile([[3.0, 4.0]], (70000, 1))  # more than cv2.remap's 32767-row limit
+    profiles = sample_profiles(image, points, np.tile([[1.0, 0.0]], (70000, 1)), np.array([0.0, 2.0]))
+    assert profiles.shape == (70000, 2)
+    np.testing.assert_allclose(profiles[[0, -1]], [[43, 45], [43, 45]])
