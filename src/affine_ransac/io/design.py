@@ -11,6 +11,8 @@ from pathlib import Path
 import klayout.db as kdb
 import numpy as np
 
+from affine_ransac.geometry.polygon import polygon_centroid  # noqa: F401 (also re-exported)
+
 
 def load_layout(path: str | Path) -> kdb.Layout:
     """Load an OASIS (or GDS) file into a KLayout Layout object."""
@@ -169,17 +171,6 @@ def read_polygons(
             polygons.append(_polygon_vertices(placed) * nm_per_dbu)
         it.next()
     return polygons
-
-
-def polygon_centroid(vertices: np.ndarray) -> np.ndarray:
-    """Area centroid (x, y) of a simple polygon, using the shoelace formula."""
-    x, y = vertices[:, 0], vertices[:, 1]
-    x_next, y_next = np.roll(x, -1), np.roll(y, -1)
-    cross = x * y_next - x_next * y
-    area = cross.sum() / 2.0
-    cx = ((x + x_next) * cross).sum() / (6.0 * area)
-    cy = ((y + y_next) * cross).sum() / (6.0 * area)
-    return np.array([cx, cy])
 
 
 def contact_centers(polygons: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:

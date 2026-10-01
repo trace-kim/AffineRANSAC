@@ -42,9 +42,10 @@ def write_sem_like(
     noise = np.random.default_rng(seed).normal(0, 8, image.shape)
     image = np.clip(image + noise, 0, 255).astype(np.uint8)
 
-    image[usable_rows:] = 0
-    cv2.putText(image, "SEM  HV 1.0 kV  x100k  FOV 3.0 um", (10, rows - 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, 255, 2)
+    if databar_px > 0:
+        image[usable_rows:] = 0
+        cv2.putText(image, "SEM  HV 1.0 kV  x100k  FOV 3.0 um", (10, rows - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, 255, 2)
 
     ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
     assert ok
