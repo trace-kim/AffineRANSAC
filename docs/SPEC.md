@@ -84,6 +84,9 @@ Rules:
 - Points are stored as `numpy.ndarray` of shape `(N, 2)`.
 - Affines are stored as 3×3 homogeneous matrices (last row `[0, 0, 1]`), applied to column
   vectors: `p' = A @ [x, y, 1]ᵀ`.
+- **Image ↔ design orientation is known (user, 2026-10-01): no flip, no rotation.** Image
+  right = design +x, image up = design +y. So `pixel_to_tile_nm` (y flip of the pixel frame
+  only) maps SEM points straight into the `.oas` frame (D19).
 - The image→stage orientation (`R_stage`, sign flips) and any stage→design offset are
   **configuration**, not hard-coded. They are unknown until the SEM metadata format is known.
 
@@ -510,6 +513,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D16 | 2026-10-01 | SEM contact centres are converted to the **tile-local frame** (origin = image centre, y up, nm) with pixel size = FOV / image width. That is the frame of the (0,0)-centred `.oas`, so the two compare directly. | `.oas` files are local and centred (user). |
 | D17 | 2026-10-01 | Tone-reversed `.oas`: contacts = connected empty regions of (frame − drawn shapes), via a KLayout Region boolean. Regions touching the frame are dropped by default. A separate function, `read_contacts_tone_reversed()`. | Some files are tone reversed (user). The boolean handles OASIS keyhole polygons. Automatic detection comes later. |
 | D18 | 2026-10-01 | Data-specific work is done by a **remote agent** (opencode, unknown model) with data access. It is **one-way**: task files in `docs/tasks/` go out by `git pull`; the remote agent never commits; findings come back only via the user. Remote-only modules are used through exact interfaces guarded by contract tests (protocol in `CLAUDE.md`, rules for the remote agent in `AGENTS.md`). | The real data and the remote agent's work cannot be sent to the local agent. |
+| D19 | 2026-10-01 | SEM image and `.oas` share the same orientation: no flip or rotation between them. | Stated by the user, who knows the data. Replaces the orientation analysis requested in T001 §5e; its result isn't needed. |
 
 ---
 
@@ -517,7 +521,8 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 
 1. **Metadata format:** where are the stage coords and pixel size stored (JPEG EXIF/comment,
    sidecar `.txt`/`.xml`/`.csv`)? Which vendor/tool is used?
-2. **Stage ↔ image orientation:** the sign of the stage axes relative to the image, scan
+2. *Partly answered:* the image ↔ design orientation is identical (D19). Still open:
+   **Stage ↔ image orientation:** the sign of the stage axes relative to the image, scan
    rotation, and whether the stage coords refer to the image centre or a corner.
 3. **Stage ↔ design relationship:** how are stage coordinates related to design coordinates
    (alignment marks, known offset)?

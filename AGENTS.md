@@ -19,7 +19,8 @@ only through the user.
    coordinates, CSV rows) into repo files, except into `docs/remote/`, which is gitignored and
    never leaves this machine. In code and tests, use made-up values in the real format.
 4. **Reports:** write each report to `docs/remote/TNNN-report.md`. Finish by showing the user
-   the report's summary section; the user forwards it to the other agent.
+   the report's summary section. Nothing leaves this machine: the user reads it and decides
+   what, if anything, to tell the other agent in their own words.
 5. **Code style:** follow the "Development approach" and "Key rules" in `CLAUDE.md` (small,
    simple, readable functions; nm units; coordinate frames as in `docs/SPEC.md` §3).
    Ignore `CLAUDE.md` parts about committing, pushing or writing tasks; they are for the other agent.

@@ -23,7 +23,8 @@ tasks with `git pull`, and that must keep working.
 
 **Why this task is written so strictly:** the local agent cannot see the data, your code or
 your files, ever. It builds the next stages against the interface in §2 **without seeing your
-implementation**. Its only feedback is what the user forwards from your report. So follow the
+implementation**. Nothing leaves your machine; the local agent learns only what the user
+chooses to tell it after reading your report. So follow the
 interface **exactly** (a contract test checks it, §7), and make the report precise. When
 something is unclear or differs from what this file assumes, don't guess silently: do the
 sensible thing and **state it explicitly in the report**.
@@ -221,7 +222,7 @@ those tiles?
 3. Check `git status`: it must list only your new files as untracked (`docs/remote/` is
    ignored, so it won't appear), and no modified tracked files.
 4. Write `docs/remote/T001-report.md` in this order:
-   - **Summary for the local agent** (at most ~40 lines; the user forwards this part): status
+   - **Summary** (at most ~40 lines, for the user to read): status
      (DONE / BLOCKED + reason); the CSV columns used for each `TileRecord` field with source
      units and any axis conversion; how `tile_id` and the image ↔ `.oas` pairing work; the
      pytest and contract-test results; and one line each for findings a–g (data-bar rows,
