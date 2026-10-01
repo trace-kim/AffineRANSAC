@@ -4,15 +4,15 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 
 
 def test_pixel_to_tile_nm_centre_and_axes():
-    shape = (101, 201)  # rows, cols -> centre pixel is (u=100, v=50)
-    uv = [
+    shape = (101, 201)  # rows, cols -> centre pixel is (x=100, y=50)
+    xy_px = [
         [100, 50],  # centre
         [110, 50],  # 10 px right
-        [100, 40],  # 10 px UP in the image (smaller v)
+        [100, 40],  # 10 px UP in the image (smaller pixel y)
         [0, 0],     # top-left pixel
     ]
 
-    xy = pixel_to_tile_nm(uv, shape, pixel_size_nm=2.0)
+    xy = pixel_to_tile_nm(xy_px, shape, pixel_size_nm=2.0)
 
     np.testing.assert_allclose(xy, [
         [0, 0],

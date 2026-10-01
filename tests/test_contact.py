@@ -67,5 +67,5 @@ def test_crop_databar_keeps_coordinates():
     image = np.arange(50, dtype=np.uint8).reshape(10, 5)
     cropped = crop_databar(image, 3)
     assert cropped.shape == (7, 5)
-    assert cropped[2, 4] == image[2, 4]  # same (u, v) -> same pixel
+    assert cropped[2, 4] == image[2, 4]  # same (x, y) -> same pixel
     assert crop_databar(image, 0) is image

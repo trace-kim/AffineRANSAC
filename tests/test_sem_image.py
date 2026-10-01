@@ -15,8 +15,8 @@ def test_loads_grayscale_uint8(tmp_path):
     assert image.shape == (300, 400)
     assert image.dtype == np.uint8
     # Hole centres are dark, and the data bar at the bottom is (nearly) black.
-    u, v = centers[0].astype(int)
-    assert image[v, u] < 80
+    x, y = centers[0].astype(int)
+    assert image[y, x] < 80
     assert np.median(image[-40:]) < 20
 
 

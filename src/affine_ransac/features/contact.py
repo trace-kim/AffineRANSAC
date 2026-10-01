@@ -8,7 +8,7 @@ Steps:
      or whose area is outside [min_area_px, max_area_px].
   5. Centre = centroid of the region's pixels; contour = its outer boundary.
 
-All coordinates are in the pixel frame: (u, v) = (column, row), v pointing down,
+All coordinates are in the pixel frame: (x, y) = (column, row) in pixels, y pointing DOWN,
 pixel centres at integer values (docs/SPEC.md §3).
 """
 
@@ -20,9 +20,9 @@ import numpy as np
 
 @dataclass
 class DetectedContacts:
-    centers: np.ndarray  # (N, 2) centroid (u, v) in pixels
+    centers: np.ndarray  # (N, 2) centroid (x, y) in pixels
     areas: np.ndarray  # (N,) area in pixels
-    contours: list[np.ndarray]  # N arrays of shape (M, 2), boundary points (u, v)
+    contours: list[np.ndarray]  # N arrays of shape (M, 2), boundary points (x, y) in pixels
     threshold: float  # Otsu threshold that was used (grey level)
 
 
@@ -68,7 +68,7 @@ def detect_contacts(
 
 
 def _outer_contour(labels, label, left, top, width, height) -> np.ndarray:
-    """Outer boundary of one labelled region as an (M, 2) array of (u, v) pixel coordinates."""
+    """Outer boundary of one labelled region as an (M, 2) array of (x, y) pixel coordinates."""
     region = (labels[top:top + height, left:left + width] == label).astype(np.uint8)
     found, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     boundary = max(found, key=len).reshape(-1, 2)  # one region -> one outer contour

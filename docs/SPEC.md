@@ -73,8 +73,8 @@ conversions must go through one module (`geometry/frames.py`) and be unit-tested
 
 | Frame | Origin / axes | Units | Notes |
 |---|---|---|---|
-| **Pixel** `(u, v)` | Image top-left, **v points down** | px | Pixel centres at integer coordinates (define and test this). |
-| **Tile-local** `(x_t, y_t)` | Image centre, **y points up** | nm | `x_t = (u − u_c)·s_x`, `y_t = −(v − v_c)·s_y`, where `s` is the pixel size. |
+| **Pixel** `(x, y)` px | Centre of the top-left pixel, **y points down** | px | x = column, y = row. Pixel centres at integer coordinates. Named `x_px, y_px` where it could be confused with nm frames. |
+| **Tile-local** `(x_t, y_t)` | Image centre, **y points up** | nm | `x_t = (x_px − x_c)·s_x`, `y_t = −(y_px − y_c)·s_y`, where `(x_c, y_c)` is the image centre in px and `s` is the pixel size. |
 | **Nominal stage** `(X, Y)` | SEM stage origin | nm | `(X, Y) = R_stage · (x_t, y_t) + (X_i, Y_i)`. `R_stage` is a configurable orientation (rotation/flip) between the image axes and the stage axes. |
 | **Stitched** | Same as nominal stage after the tile affines are applied | nm | Output of stitching. |
 | **Design** | OASIS coordinates, **y up** | nm internally | Converted from database units (DBU) on load. |
@@ -119,7 +119,7 @@ Rules:
   themselves (D13).
 - Files are read with `np.fromfile` + `cv2.imdecode`, **not** `cv2.imread`, which silently
   returns `None` for non-ASCII paths on Windows.
-- Viewer: `view_sem.py` (pyqtgraph). It draws pixel centres at integer (u, v), with v pointing
+- Viewer: `view_sem.py` (pyqtgraph). It draws pixel centres at integer (x, y) px, with y pointing
   down, matching §3.
 
 ### 4.3 SEM metadata
@@ -198,7 +198,7 @@ future refinements.
 5. Reject features that are **truncated by the image border** or fail the quality gates.
    Keep rejected features, flagged, for diagnostics.
 
-Output per tile: `TileFeatures` with `id, u, v, quality…, flags`.
+Output per tile: `TileFeatures` with `id, x_px, y_px, quality…, flags`.
 
 The feature abstraction must allow a future `LineEdgeFeature` (for line & space patterns),
 which constrains only the position perpendicular to the line. Code in S4–S8 should depend on a
@@ -490,7 +490,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D11 | 2026-09-30 | Keep **KLayout** for OASIS reading. Extract centres without per-vertex Python work (bounding-box/centroid per shape). | Benchmark with 1,000 small files × 400 contacts: KLayout ≈ gdstk ≈ 1.2 ms/file, so speed is not a differentiator, and reading ≪ SEM image processing. KLayout has the strongest OASIS compliance. GPL does not affect the user (sole user) or the vendor, who implements from the spec, not our code. Hand over the spec + test data, not code. The per-vertex reader was 10 ms/file and must be replaced. |
 | D12 | 2026-09-30 | **All viewers are interactive, built with pyqtgraph** on PySide6. No matplotlib. | User requirement. PySide6 (LGPL) chosen over PyQt (GPL). |
 | D13 | 2026-10-01 | SEM images are loaded as **uint8** (not float32, as first drafted). | Keeps the exact file values and uses 4× less memory across ~1,000 tiles. Conversion to float belongs in the processing step that needs it. |
-| D14 | 2026-10-01 | v1 contact detection = blur + **Otsu** threshold + connected regions; centre = region pixel centroid. Regions touching the border or below `min_area_px` are dropped. The data bar is removed by cropping bottom rows (`crop_databar`), which leaves (u, v) unchanged. | User request: start with a simple Otsu-based method. Synthetic test: 176/176 found, 0.03 px RMS. Without cropping, letter interiors in the data-bar text can be detected as contacts. |
+| D14 | 2026-10-01 | v1 contact detection = blur + **Otsu** threshold + connected regions; centre = region pixel centroid. Regions touching the border or below `min_area_px` are dropped. The data bar is removed by cropping bottom rows (`crop_databar`), which leaves pixel (x, y) unchanged. | User request: start with a simple Otsu-based method. Synthetic test: 176/176 found, 0.03 px RMS. Without cropping, letter interiors in the data-bar text can be detected as contacts. |
 
 ---
 

@@ -26,17 +26,17 @@ def write_sem_like(
     noise. A black data bar with text is drawn along the bottom edge.
 
     Returns:
-        (N, 2) array of contact centres (u, v) in pixels.
+        (N, 2) array of contact centres (x, y) in pixels.
     """
     image = np.full((rows, cols), 110, dtype=np.uint8)
 
     usable_rows = rows - databar_px
-    us = np.arange(pitch_px // 2, cols - radius_px, pitch_px)
-    vs = np.arange(pitch_px // 2, usable_rows - radius_px, pitch_px)
-    centers = np.array([(u, v) for v in vs for u in us])
-    for u, v in centers:
-        cv2.circle(image, (int(u), int(v)), radius_px + 2, 200, thickness=3)  # bright rim
-        cv2.circle(image, (int(u), int(v)), radius_px, 40, thickness=-1)  # dark hole
+    xs = np.arange(pitch_px // 2, cols - radius_px, pitch_px)
+    ys = np.arange(pitch_px // 2, usable_rows - radius_px, pitch_px)
+    centers = np.array([(x, y) for y in ys for x in xs])
+    for x, y in centers:
+        cv2.circle(image, (int(x), int(y)), radius_px + 2, 200, thickness=3)  # bright rim
+        cv2.circle(image, (int(x), int(y)), radius_px, 40, thickness=-1)  # dark hole
 
     image = cv2.GaussianBlur(image, (0, 0), sigmaX=1.5)
     noise = np.random.default_rng(seed).normal(0, 8, image.shape)

@@ -1,8 +1,8 @@
 """Read SEM images (JPEG) as grayscale arrays.
 
-Pixel frame convention (see docs/SPEC.md §3): the array is indexed image[v, u],
-where u is the column (x, to the right) and v is the row (y, pointing DOWN).
-Pixel centres are at integer (u, v) coordinates.
+Pixel frame convention (see docs/SPEC.md §3): the array is indexed image[y, x],
+where x is the column (to the right) and y is the row (pointing DOWN), in pixels.
+(0, 0) is the centre of the top-left pixel; pixel centres are at integer (x, y).
 """
 
 from pathlib import Path
@@ -33,7 +33,7 @@ def load_sem_image(path: str | Path) -> np.ndarray:
 def crop_databar(image: np.ndarray, databar_rows: int) -> np.ndarray:
     """Remove the SEM info/data bar from the bottom of the image.
 
-    Removing BOTTOM rows does not change the (u, v) coordinates of the pixels
+    Removing BOTTOM rows does not change the (x, y) pixel coordinates of the pixels
     that remain, so results on the cropped image need no correction.
     """
     if databar_rows <= 0:

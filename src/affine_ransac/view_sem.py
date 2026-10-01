@@ -7,8 +7,9 @@ Usage:
 
 Mouse: drag to pan, wheel to zoom, right-click for more options.
 Adjust contrast with the histogram on the right.
-The label above the image shows the pixel under the cursor: u (column), v (row,
-pointing down, as in the image file) and its grey value.
+The label above the image shows the pixel under the cursor: x (column), y (row,
+pointing DOWN, as in the image file) and its grey value. (0, 0) is the centre of
+the top-left pixel.
 """
 
 import argparse
@@ -27,14 +28,14 @@ pg.setConfigOptions(imageAxisOrder="row-major")
 
 
 def pixel_at(image: np.ndarray, x: float, y: float):
-    """Return (u, v, value) for the pixel containing view point (x, y), or None if outside.
+    """Return (column, row, value) of the pixel containing view point (x, y), or None if outside.
 
-    Pixel centres are at integer coordinates, so pixel u covers x in [u - 0.5, u + 0.5).
+    Pixel centres are at integer coordinates, so column c covers x in [c - 0.5, c + 0.5).
     """
-    u, v = int(np.floor(x + 0.5)), int(np.floor(y + 0.5))
+    col, row = int(np.floor(x + 0.5)), int(np.floor(y + 0.5))
     rows, cols = image.shape
-    if 0 <= u < cols and 0 <= v < rows:
-        return u, v, int(image[v, u])
+    if 0 <= col < cols and 0 <= row < rows:
+        return col, row, int(image[row, col])
     return None
 
 
@@ -64,8 +65,8 @@ def build_window(path, contacts: DetectedContacts | None = None):
     plot = pg.PlotItem()
     plot.invertY(True)  # row 0 at the top, like the image file
     plot.setAspectLocked(True)
-    plot.setLabel("bottom", "u (column, px)")
-    plot.setLabel("left", "v (row, px)")
+    plot.setLabel("bottom", "x (px)")
+    plot.setLabel("left", "y (px, pointing down)")
 
     image_view = pg.ImageView(view=plot)
     # Shift by half a pixel so pixel centres land on integer coordinates (SPEC §3).
@@ -73,13 +74,13 @@ def build_window(path, contacts: DetectedContacts | None = None):
     if contacts is not None:
         add_contacts(plot, contacts)
 
-    cursor_label = QtWidgets.QLabel("u = -, v = -, value = -")
+    cursor_label = QtWidgets.QLabel("x = -, y = -, value = -")
 
     def show_cursor(scene_pos):
         pos = plot.vb.mapSceneToView(scene_pos)
         hit = pixel_at(image, pos.x(), pos.y())
         if hit:
-            cursor_label.setText(f"u = {hit[0]}, v = {hit[1]}, value = {hit[2]}")
+            cursor_label.setText(f"x = {hit[0]} px, y = {hit[1]} px, value = {hit[2]}")
 
     plot.scene().sigMouseMoved.connect(show_cursor)
 
