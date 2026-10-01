@@ -303,6 +303,12 @@ tiles, keep **all** observations. For comparison with the design, use their mean
 the spread as a stitching-quality metric.
 
 ### S6 — SEM↔design matching
+**Implemented (v1, D20):** `matching.py::match_points(a, b, max_distance)` gives one-to-one
+pairs of mutual nearest neighbours closer than `max_distance`. Only contacts found in **both**
+the design and the SEM are used. Edge contacts that SEM detection drops (cut off by the image
+border) are left out. v1 works per tile, by brute-force distances (fine for hundreds of points);
+use a KD-tree once whole masks are matched at once.
+
 1. Coarse alignment: stitched frame ≈ design frame, plus a configurable offset/orientation
    (from config or from an initial correlation). The same periodicity caveat as in S4 applies.
 2. For each stitched SEM point, find the nearest design point (KD-tree). Accept it if the
@@ -514,6 +520,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D17 | 2026-10-01 | Tone-reversed `.oas`: contacts = connected empty regions of (frame − drawn shapes), via a KLayout Region boolean. Regions touching the frame are dropped by default. A separate function, `read_contacts_tone_reversed()`. | Some files are tone reversed (user). The boolean handles OASIS keyhole polygons. Automatic detection comes later. |
 | D18 | 2026-10-01 | Data-specific work is done by a **remote agent** (opencode, unknown model) with data access. It is **one-way**: task files in `docs/tasks/` go out by `git pull`; the remote agent never commits; findings come back only via the user. Remote-only modules are used through exact interfaces guarded by contract tests (protocol in `CLAUDE.md`, rules for the remote agent in `AGENTS.md`). | The real data and the remote agent's work cannot be sent to the local agent. |
 | D19 | 2026-10-01 | SEM image and `.oas` share the same orientation: no flip or rotation between them. | Stated by the user, who knows the data. Replaces the orientation analysis requested in T001 §5e; its result isn't needed. |
+| D20 | 2026-10-01 | Only design↔SEM pairs (mutual nearest, within a gate) are used downstream. Unpaired contacts are excluded, e.g. design contacts whose SEM image is cut off at the image edge. | User: "coordinates that only have a corresponding point in both design and image must be detected". Seen on real data: left-edge contacts were in the design but not detected in SEM. |
 
 ---
 
