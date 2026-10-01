@@ -113,7 +113,14 @@ Rules:
   prefer that later.
 - SEM images often have an **info/data bar** (scale bar, text). Crop it using a configurable
   crop rectangle, or auto-detect it.
-- Loader: `opencv-python` or `imageio`. Grayscale images are returned as `float32` arrays.
+- Loader: `io/sem_image.py::load_sem_image()` using **`opencv-python-headless`**. The regular
+  `opencv-python` wheel bundles its own Qt, which clashes with PySide6. It returns a 2-D
+  **uint8** array, exactly as stored in the file. Processing steps convert to float
+  themselves (D13).
+- Files are read with `np.fromfile` + `cv2.imdecode`, **not** `cv2.imread`, which silently
+  returns `None` for non-ASCII paths on Windows.
+- Viewer: `view_sem.py` (pyqtgraph). It draws pixel centres at integer (u, v), with v pointing
+  down, matching §3.
 
 ### 4.3 SEM metadata
 Needed per tile: **stage position (X_i, Y_i)** and **pixel size (s_x, s_y)**. Also useful if
@@ -476,6 +483,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D10 | 2026-09-30 | Interfaces and options in this spec are the long-term target. Build the simplest concrete version first, and add an interface or option only when a second real implementation is needed. | User rule: never overengineer; small, reviewable steps. |
 | D11 | 2026-09-30 | Keep **KLayout** for OASIS reading. Extract centres without per-vertex Python work (bounding-box/centroid per shape). | Benchmark with 1,000 small files × 400 contacts: KLayout ≈ gdstk ≈ 1.2 ms/file, so speed is not a differentiator, and reading ≪ SEM image processing. KLayout has the strongest OASIS compliance. GPL does not affect the user (sole user) or the vendor, who implements from the spec, not our code. Hand over the spec + test data, not code. The per-vertex reader was 10 ms/file and must be replaced. |
 | D12 | 2026-09-30 | **All viewers are interactive, built with pyqtgraph** on PySide6. No matplotlib. | User requirement. PySide6 (LGPL) chosen over PyQt (GPL). |
+| D13 | 2026-10-01 | SEM images are loaded as **uint8** (not float32, as first drafted). | Keeps the exact file values and uses 4× less memory across ~1,000 tiles. Conversion to float belongs in the processing step that needs it. |
 
 ---
 

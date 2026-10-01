@@ -9,6 +9,7 @@ description = "Photomask registration error: OASIS design vs. stitched SEM image
 requires-python = ">=3.11"
 dependencies = [
     "klayout",
+    "opencv-python-headless",
     "numpy",
     "pyqtgraph",
     "PySide6",
