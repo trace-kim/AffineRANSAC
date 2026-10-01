@@ -8,6 +8,7 @@ from affine_ransac.io.design import (
     load_layout,
     polygon_centroid,
     read_contacts,
+    read_contacts_tone_reversed,
     read_polygons,
 )
 from sample_design import write_contact_array
@@ -110,3 +111,62 @@ def test_polygon_centroid_of_l_shape():
     l_shape = np.array([[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]], dtype=float)
     # Bar (area 2, centroid (1, 0.5)) + square (area 1, centroid (0.5, 1.5))
     np.testing.assert_allclose(polygon_centroid(l_shape), [5 / 6, 5 / 6])
+
+
+def write_tone_reversed(path, polygons, dbu_nm=1.0):
+    """Write the given klayout polygons/boxes (in nm) on layer 1/0 of a TOP cell."""
+    layout = kdb.Layout()
+    layout.dbu = dbu_nm / 1000.0
+    shapes = layout.create_cell("TOP").shapes(layout.layer(1, 0))
+    for polygon in polygons:
+        shapes.insert(polygon)
+    layout.write(str(path))
+    return load_layout(path)
+
+
+def test_tone_reversed_single_polygon_with_holes(tmp_path):
+    # Drawn: a 1000 x 1000 nm square centred at (0, 0) with two rectangular holes cut out.
+    drawn = kdb.Polygon(kdb.Box(-500, -500, 500, 500))
+    drawn.insert_hole(kdb.Box(-300, -100, -100, 100))  # centre (-200, 0), 200 x 200
+    drawn.insert_hole(kdb.Box(100, -50, 250, 100))  # centre (175, 25), 150 x 150
+    layout = write_tone_reversed(tmp_path / "rev.oas", [drawn])
+
+    centers, sizes = read_contacts_tone_reversed(layout, 1, 0)
+
+    np.testing.assert_allclose(sort_rows(centers), [[-200, 0], [175, 25]])
+    np.testing.assert_allclose(sizes[np.lexsort((centers[:, 0], centers[:, 1]))], [[200, 200], [150, 150]])
+    # The normal reader sees the drawn shape itself as ONE "contact": the wrong answer here.
+    assert len(read_contacts(layout, 1, 0)[0]) == 1
+
+
+def test_tone_reversed_separate_shapes_and_border(tmp_path):
+    # Drawn: four separate bars enclosing a 200 x 200 nm hole centred at (100, 0), inside
+    # a 1200 x 1000 nm frame. The empty space between the bars and the frame edge is one
+    # region touching the border.
+    # Box coordinates are in database units; with dbu = 0.5 nm that is 2 units per nm.
+    bars = [
+        kdb.Box(-600, -800, 0, 800),     # left:   x -300..0,   y -400..400 nm
+        kdb.Box(400, -800, 1000, 800),   # right:  x  200..500, y -400..400 nm
+        kdb.Box(0, -800, 400, -200),     # bottom: x    0..200, y -400..-100 nm
+        kdb.Box(0, 200, 400, 800),       # top:    x    0..200, y  100..400 nm
+    ]
+    layout = write_tone_reversed(tmp_path / "bars.oas", bars, dbu_nm=0.5)
+
+    centers, sizes = read_contacts_tone_reversed(layout, 1, 0, frame_nm=(1200, 1000))
+    np.testing.assert_allclose(centers, [[100, 0]])  # border region dropped
+    np.testing.assert_allclose(sizes, [[200, 200]])
+
+    centers, _ = read_contacts_tone_reversed(layout, 1, 0, frame_nm=(1200, 1000), drop_border=False)
+    assert len(centers) == 2  # the hole + the border region
+
+
+def test_oasis_stores_holes_as_cut_lines(tmp_path):
+    # OASIS has no holes: a polygon with a hole comes back as ONE outline that runs
+    # into the hole and back (a "keyhole"). read_polygons returns it as stored.
+    drawn = kdb.Polygon(kdb.Box(-500, -500, 500, 500))
+    drawn.insert_hole(kdb.Box(-100, -100, 100, 100))
+    layout = write_tone_reversed(tmp_path / "rev.oas", [drawn])
+
+    polygons = read_polygons(layout, 1, 0)
+    assert len(polygons) == 1
+    assert [-100, -100] in polygons[0].tolist()  # the hole's corner is on the outline

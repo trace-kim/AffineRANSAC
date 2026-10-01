@@ -74,7 +74,7 @@ conversions must go through one module (`geometry/frames.py`) and be unit-tested
 | Frame | Origin / axes | Units | Notes |
 |---|---|---|---|
 | **Pixel** `(x, y)` px | Centre of the top-left pixel, **y points down** | px | x = column, y = row. Pixel centres at integer coordinates. Named `x_px, y_px` where it could be confused with nm frames. |
-| **Tile-local** `(x_t, y_t)` | Image centre, **y points up** | nm | `x_t = (x_px − x_c)·s_x`, `y_t = −(y_px − y_c)·s_y`, where `(x_c, y_c)` is the image centre in px and `s` is the pixel size. |
+| **Tile-local** `(x_t, y_t)` | Image centre, **y points up**. Same frame as the per-tile `.oas` (centred on (0, 0)) | nm | `x_t = (x_px − x_c)·s_x`, `y_t = −(y_px − y_c)·s_y`, where `(x_c, y_c)` is the image centre in px and `s` is the pixel size. |
 | **Nominal stage** `(X, Y)` | SEM stage origin | nm | `(X, Y) = R_stage · (x_t, y_t) + (X_i, Y_i)`. `R_stage` is a configurable orientation (rotation/flip) between the image axes and the stage axes. |
 | **Stitched** | Same as nominal stage after the tile affines are applied | nm | Output of stitching. |
 | **Design** | OASIS coordinates, **y up** | nm internally | Converted from database units (DBU) on load. |
@@ -93,6 +93,13 @@ Rules:
 
 ### 4.1 Design: OASIS files (one per SEM tile)
 - **Each SEM image comes with its own small, pre-processed `.oas` file** covering that image.
+  It is in **local coordinates centred on (0, 0) = the image centre**, i.e. the tile-local
+  frame (§3). The global mask position of each file's (0, 0) is in the metadata CSV (§4.3).
+- Folder layout: `<DATA_DIR>/*.jpg` + one metadata `.csv`, and `<DATA_DIR>/Contour/*.oas`.
+- **Tone reversal:** some `.oas` files draw the area *around* the holes. For those, use
+  `read_contacts_tone_reversed()` (holes = frame − drawn shapes, D17). Detecting which files are
+  reversed is future work (rule to be proposed by T001 §5f). OASIS cannot store holes, so a
+  polygon with holes arrives as one outline with zero-width cut lines.
   We do *not* read one large full-mask layout. The workload is therefore **many small files**
   (about 1,000 tiles × a few hundred contacts). Per-file overhead matters, not large-file
   tricks (see D11).
@@ -125,6 +132,12 @@ Rules:
 ### 4.3 SEM metadata
 Needed per tile: **stage position (X_i, Y_i)** and **pixel size (s_x, s_y)**. Also useful if
 available: FOV, magnification, scan rotation, timestamp, tile row/col.
+
+Known (user, 2026-10-01): one CSV per data folder with per-image metadata, including the
+**global mask position of each `.oas` centre**, **FOV = 2.88 µm** and **image size
+2048 × 2048 px** → pixel size 1.40625 nm. The reader (`io/metadata.py::read_tile_index`) and the
+format reference (`docs/data/metadata_format.md`) are being built by the remote agent: task
+**T001** (`docs/tasks/T001-tile-index-reader.md`, D18).
 
 The file format is **not yet known** (§13). Define an abstract interface:
 
@@ -491,6 +504,10 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D12 | 2026-09-30 | **All viewers are interactive, built with pyqtgraph** on PySide6. No matplotlib. | User requirement. PySide6 (LGPL) chosen over PyQt (GPL). |
 | D13 | 2026-10-01 | SEM images are loaded as **uint8** (not float32, as first drafted). | Keeps the exact file values and uses 4× less memory across ~1,000 tiles. Conversion to float belongs in the processing step that needs it. |
 | D14 | 2026-10-01 | v1 contact detection = blur + **Otsu** threshold + connected regions; centre = region pixel centroid. Regions touching the border or below `min_area_px` are dropped. The data bar is removed by cropping bottom rows (`crop_databar`), which leaves pixel (x, y) unchanged. | User request: start with a simple Otsu-based method. Synthetic test: 176/176 found, 0.03 px RMS. Without cropping, letter interiors in the data-bar text can be detected as contacts. |
+| D15 | 2026-10-01 | matplotlib is allowed in **notebooks** for quick plots (in the `dev` extra). Package viewers stay pyqtgraph. | User request. Narrows D12. |
+| D16 | 2026-10-01 | SEM contact centres are converted to the **tile-local frame** (origin = image centre, y up, nm) with pixel size = FOV / image width. That is the frame of the (0,0)-centred `.oas`, so the two compare directly. | `.oas` files are local and centred (user). |
+| D17 | 2026-10-01 | Tone-reversed `.oas`: contacts = connected empty regions of (frame − drawn shapes), via a KLayout Region boolean. Regions touching the frame are dropped by default. A separate function, `read_contacts_tone_reversed()`. | Some files are tone reversed (user). The boolean handles OASIS keyhole polygons. Automatic detection comes later. |
+| D18 | 2026-10-01 | Data-specific work is done by a **remote agent** with data access, via task files in `docs/tasks/` (protocol in `CLAUDE.md`). | The real data cannot be sent to the local agent. |
 
 ---
 
@@ -515,10 +532,10 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
    `SEM − design` vs `design − SEM`).
 9. **Data bar:** do the JPEGs include an info bar that must be cropped? Is it always the same
    size?
-10. **Per-tile `.oas` coordinate frame:** *Tentative (user to confirm):* **global mask
-    coordinates**. If confirmed, each tile's design file gives its absolute position on the
-    mask. That is a strong prior for placement and stitching, and it largely removes the
-    periodicity/aliasing risk in S4/S6.
+10. **Per-tile `.oas` coordinate frame:** *Answered (2026-10-01):* **local, centred on
+    (0, 0)** = image centre. The global position of each file's centre is in the metadata CSV.
+    Global design position = tile-local + CSV centre (no rotation assumed until T001 §5e
+    confirms the orientation).
 11. **Per-tile `.oas` extent:** *Tentative:* exactly the image FOV. Contacts in an overlap
     region appear in **both** neighbouring tiles' files, so the design IDs of the same physical
     contact must be matched across tiles, e.g. by identical global design coordinates.

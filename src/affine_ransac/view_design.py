@@ -4,6 +4,8 @@ Usage:
     python -m affine_ransac.view_design FILE.oas                 # all layers
     python -m affine_ransac.view_design FILE.oas --layer 1/0     # one layer
     python -m affine_ransac.view_design FILE.oas --cell TOP      # choose top cell
+    python -m affine_ransac.view_design FILE.oas --tone-reversed --fov-nm 2880
+                                         # holes = empty space between drawn shapes
 
 Mouse: drag to pan, wheel to zoom, right-click for more options.
 The cursor position (in nm) is shown above the plot.
@@ -16,7 +18,13 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets
 
-from affine_ransac.io.design import contact_centers, list_layers, load_layout, read_polygons
+from affine_ransac.io.design import (
+    list_layers,
+    load_layout,
+    read_contacts,
+    read_contacts_tone_reversed,
+    read_polygons,
+)
 
 
 def parse_layer(text: str) -> tuple[int, int]:
@@ -39,8 +47,8 @@ def polygons_to_path(polygons: list[np.ndarray]):
     return pg.arrayToQPath(xy[:, 0], xy[:, 1], connect="finite")
 
 
-def add_layer(plot, polygons: list[np.ndarray], color, label: str):
-    """Draw one layer: filled polygons plus a '+' at each polygon centroid."""
+def add_layer(plot, polygons: list[np.ndarray], centers: np.ndarray, color, label: str):
+    """Draw one layer: filled polygons plus a '+' at each contact centre."""
     fill = pg.mkColor(color)
     fill.setAlpha(90)
     outline = QtWidgets.QGraphicsPathItem(polygons_to_path(polygons))
@@ -48,16 +56,19 @@ def add_layer(plot, polygons: list[np.ndarray], color, label: str):
     outline.setBrush(pg.mkBrush(fill))
     plot.addItem(outline)
 
-    centers, _ = contact_centers(polygons)
     markers = pg.ScatterPlotItem(
         centers[:, 0], centers[:, 1], symbol="+", size=8, pen=pg.mkPen(color), brush=None,
-        name=f"{label} ({len(polygons)})",
+        name=f"{label} ({len(centers)} contacts)",
     )
     plot.addItem(markers)
 
 
-def build_window(path, layer=None, cell=None):
-    """Create the viewer window (without starting the Qt event loop)."""
+def build_window(path, layer=None, cell=None, tone_reversed=False, frame_nm=None):
+    """Create the viewer window (without starting the Qt event loop).
+
+    tone_reversed: mark contacts with read_contacts_tone_reversed (holes = empty
+        space inside frame_nm) instead of read_contacts (holes = drawn polygons).
+    """
     layout = load_layout(path)
     layers = [layer] if layer else list_layers(layout)
     print(f"Database unit: {layout.dbu * 1000} nm")
@@ -77,9 +88,13 @@ def build_window(path, layer=None, cell=None):
 
     for i, (lay, dt) in enumerate(layers):
         polygons = read_polygons(layout, lay, dt, cell)
-        print(f"Layer {lay}/{dt}: {len(polygons)} polygons")
+        if tone_reversed:
+            centers, _ = read_contacts_tone_reversed(layout, lay, dt, cell, frame_nm)
+        else:
+            centers, _ = read_contacts(layout, lay, dt, cell)
+        print(f"Layer {lay}/{dt}: {len(polygons)} polygons, {len(centers)} contacts")
         if polygons:
-            add_layer(plot, polygons, pg.intColor(i, hues=8), f"{lay}/{dt}")
+            add_layer(plot, polygons, centers, pg.intColor(i, hues=8), f"{lay}/{dt}")
     plot.autoRange()
 
     def show_cursor(scene_pos):
@@ -96,10 +111,15 @@ def main():
     parser.add_argument("path", help="Path to the .oas file")
     parser.add_argument("--layer", type=parse_layer, help="Show only this layer, as L/D (e.g. 1/0)")
     parser.add_argument("--cell", help="Top cell name (needed if the file has several top cells)")
+    parser.add_argument("--tone-reversed", action="store_true",
+                        help="Contacts are the empty space between the drawn shapes")
+    parser.add_argument("--fov-nm", type=float,
+                        help="Square frame size (nm) centred at (0, 0) for --tone-reversed")
     args = parser.parse_args()
 
+    frame_nm = (args.fov_nm, args.fov_nm) if args.fov_nm else None
     app = pg.mkQApp("Design viewer")
-    win = build_window(args.path, args.layer, args.cell)
+    win = build_window(args.path, args.layer, args.cell, args.tone_reversed, frame_nm)
     win.show()
     app.exec()
 
