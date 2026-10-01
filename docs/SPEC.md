@@ -229,6 +229,13 @@ starting guess. Stage error is expected to be small relative to the pattern pitc
 matching constraint in S4/S6).
 
 ### S4 — Tile↔tile matching (overlap)
+**Implemented (v1, D21):** `overlap.py`. `overlap_box()` gives the overlap rectangle of two
+tiles from their centres and FOVs. `match_overlap(points_a, points_b, box, max_distance)` pairs the
+contacts both tiles see inside that box (grown by `max_distance`), using `match_points`. Points
+are SEM centres in mask nm at the **nominal** placement (tile-local + CSV centre). The pairs'
+B − A differences are the input to S5. Contacts cut by either image's edge are already dropped
+by detection, so a narrow strip may keep only one row of contacts.
+
 **Acquisition geometry:** tiles are acquired in **stripes**. Within a stripe, adjacent tiles
 overlap in a thin strip at the top/bottom of the image. Once multiple stripes are measured,
 adjacent stripes overlap in a thin strip at the left/right of the image. Each overlap strip
@@ -521,6 +528,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D18 | 2026-10-01 | Data-specific work is done by a **remote agent** (opencode, unknown model) with data access. It is **one-way**: task files in `docs/tasks/` go out by `git pull`; the remote agent never commits; findings come back only via the user. Remote-only modules are used through exact interfaces guarded by contract tests (protocol in `CLAUDE.md`, rules for the remote agent in `AGENTS.md`). | The real data and the remote agent's work cannot be sent to the local agent. |
 | D19 | 2026-10-01 | SEM image and `.oas` share the same orientation: no flip or rotation between them. | Stated by the user, who knows the data. Replaces the orientation analysis requested in T001 §5e; its result isn't needed. |
 | D20 | 2026-10-01 | Only design↔SEM pairs (mutual nearest, within a gate) are used downstream. Unpaired contacts are excluded, e.g. design contacts whose SEM image is cut off at the image edge. | User: "coordinates that only have a corresponding point in both design and image must be detected". Seen on real data: left-edge contacts were in the design but not detected in SEM. |
+| D21 | 2026-10-01 | Overlap matching v1: contacts in the nominal overlap box (grown by the match gate) are paired by mutual nearest neighbour. Nominal placement = CSV tile centre. Flat module `overlap.py` (not a `stitching/` package) until more stitching code exists. | User: build overlap matching between two tiles. Synthetic check: recovers a built-in (−6, +4) nm stage difference to ±0.05 nm. |
 
 ---
 
