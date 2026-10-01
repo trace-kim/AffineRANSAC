@@ -204,10 +204,13 @@ centre = pixel centroid of the region, plus its outer contour. On synthetic imag
 ≈0.03 px RMS centre error. Steps 3–4 below (better sub-pixel methods, quality metrics) are
 future refinements.
 
-**Edge refinement (D22):** `features/edges.py::refine_edges()`. Rays from each Otsu centre
-(64 by default) sample the lightly smoothed image. Each edge point is put at the steepest
-dark→bright rise (bright→dark for bright contacts) within ±50 % of the Otsu radius, with a
-sub-pixel parabola fit. The refined centre is the area centroid of the edge polygon. Why: on
+**Edge refinement (D22, D23):** `features/edges.py::refine_edges()`. Every Otsu contour point
+is moved along its own **outward normal** (tangent from neighbours ±3 points) within a **fixed
+±`search_px`** (default 5 px) to the steepest dark→bright rise (bright→dark for bright
+contacts) of the lightly smoothed image, with a sub-pixel parabola fit. No radius or centre is
+assumed, so it works for any shape (circles, ellipses, rectangles). The refined centre is the
+area centroid of the refined contour. Known limit: at sharply curved edges (curvature radius
+of a few px) image blur pulls the steepest gradient slightly inward. Why: on
 real data the `.oas` contours sit on the white band, while Otsu contours sit just outside the
 dark area. Note: a uniform radial shift of a contour does not move its centroid, so
 refinement matters for centres only where the edge bias is not the same all around.
@@ -538,6 +541,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D20 | 2026-10-01 | Only design↔SEM pairs (mutual nearest, within a gate) are used downstream. Unpaired contacts are excluded, e.g. design contacts whose SEM image is cut off at the image edge. | User: "coordinates that only have a corresponding point in both design and image must be detected". Seen on real data: left-edge contacts were in the design but not detected in SEM. |
 | D21 | 2026-10-01 | Overlap matching v1: contacts in the nominal overlap box (grown by the match gate) are paired by mutual nearest neighbour. Nominal placement = CSV tile centre. Flat module `overlap.py` (not a `stitching/` package) until more stitching code exists. | User: build overlap matching between two tiles. Synthetic check: recovers a built-in (−6, +4) nm stage difference to ±0.05 nm. |
 | D22 | 2026-10-01 | SEM contours are refined after Otsu to the **maximum intensity gradient** along rays (steepest rise for dark contacts). `refine_edges()` is a separate step, so Otsu and refined results can be compared. | User request: Otsu contours sit just outside the dark area, while the `.oas` contours lie on the white band. Whether the steepest rise is the right physical edge is to be judged on real data (contour check in `tile_index.ipynb`). |
+| D23 | 2026-10-01 | Refinement searches along each Otsu contour point's **outward normal** within a **fixed pixel distance** (`search_px`), replacing radial rays from the centre with a window of ±50 % of the circle-equivalent radius. | User: radius-based search misbehaves; contacts are elliptical and other shapes will follow; the pixel size is known, so a fixed pixel window is better. Synthetic 24×10 px ellipse: centre error 0.014 px, mean edge distance 0.2 px. |
 
 ---
 
