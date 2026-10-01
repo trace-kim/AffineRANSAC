@@ -13,7 +13,7 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 ## Key rules
 - If code deviates from the spec, update `docs/SPEC.md` in the same change and add a Decision Log entry.
 - Don't guess answers to the open questions in §13; ask the user.
-- Internal units: nm, float64. Design frame is y-up; image pixel frame `(x, y)` px is y-down (origin = centre of the top-left pixel). All frame conversions go through `geometry/frames.py`.
+- Internal units: nm, float64. **Display** (notebooks, plots, tables): positions in **µm**, position errors/differences in **nm**. Design frame is y-up; image pixel frame `(x, y)` px is y-down (origin = centre of the top-left pixel). All frame conversions go through `geometry/frames.py`.
 - RANSAC is used only for the SEM→design fit, never for tile stitching. Its outliers are excluded from fitting the affine, never from reporting.
 - Viewers in the package (`view_*.py`) must be interactive and use **pyqtgraph** (PySide6). matplotlib is only for quick plots in notebooks.
 - Notebooks (`notebooks/`) are for the user to test implemented functions on **real data** in VS Code. A notebook is a settings cell (paths/params) plus short cells that call library functions and print results. **No demo modes or synthetic-data code.** Commit notebooks with outputs cleared.
