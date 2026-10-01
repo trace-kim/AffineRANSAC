@@ -180,6 +180,12 @@ See §4.1. Build a **KD-tree** (`scipy.spatial.cKDTree`) over the design points 
 matching.
 
 ### S2 — SEM feature extraction (contact holes)
+**Implemented (v1, D14):** `features/contact.py::detect_contacts()`. It applies a Gaussian
+blur → Otsu threshold → connected regions → drops border-touching and too-small regions →
+centre = pixel centroid of the region, plus its outer contour. On synthetic images it gives
+≈0.03 px RMS centre error. Steps 3–4 below (better sub-pixel methods, quality metrics) are
+future refinements.
+
 1. Crop the data bar. Optionally denoise (Gaussian or median, configurable σ).
 2. Detect candidates: threshold (Otsu or adaptive) + connected components, or
    blob/template matching. Contacts usually appear as dark discs with bright edges, but
@@ -484,6 +490,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D11 | 2026-09-30 | Keep **KLayout** for OASIS reading. Extract centres without per-vertex Python work (bounding-box/centroid per shape). | Benchmark with 1,000 small files × 400 contacts: KLayout ≈ gdstk ≈ 1.2 ms/file, so speed is not a differentiator, and reading ≪ SEM image processing. KLayout has the strongest OASIS compliance. GPL does not affect the user (sole user) or the vendor, who implements from the spec, not our code. Hand over the spec + test data, not code. The per-vertex reader was 10 ms/file and must be replaced. |
 | D12 | 2026-09-30 | **All viewers are interactive, built with pyqtgraph** on PySide6. No matplotlib. | User requirement. PySide6 (LGPL) chosen over PyQt (GPL). |
 | D13 | 2026-10-01 | SEM images are loaded as **uint8** (not float32, as first drafted). | Keeps the exact file values and uses 4× less memory across ~1,000 tiles. Conversion to float belongs in the processing step that needs it. |
+| D14 | 2026-10-01 | v1 contact detection = blur + **Otsu** threshold + connected regions; centre = region pixel centroid. Regions touching the border or below `min_area_px` are dropped. The data bar is removed by cropping bottom rows (`crop_databar`), which leaves (u, v) unchanged. | User request: start with a simple Otsu-based method. Synthetic test: 176/176 found, 0.03 px RMS. Without cropping, letter interiors in the data-bar text can be detected as contacts. |
 
 ---
 

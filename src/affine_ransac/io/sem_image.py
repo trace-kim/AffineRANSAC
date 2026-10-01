@@ -28,3 +28,14 @@ def load_sem_image(path: str | Path) -> np.ndarray:
     if image is None:
         raise ValueError(f"Could not decode image: {path}")
     return image
+
+
+def crop_databar(image: np.ndarray, databar_rows: int) -> np.ndarray:
+    """Remove the SEM info/data bar from the bottom of the image.
+
+    Removing BOTTOM rows does not change the (u, v) coordinates of the pixels
+    that remain, so results on the cropped image need no correction.
+    """
+    if databar_rows <= 0:
+        return image
+    return image[: image.shape[0] - databar_rows]

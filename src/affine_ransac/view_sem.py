@@ -2,6 +2,8 @@
 
 Usage:
     python -m affine_ransac.view_sem IMAGE.jpg
+    python -m affine_ransac.view_sem IMAGE.jpg --detect                    # overlay contacts
+    python -m affine_ransac.view_sem IMAGE.jpg --detect --databar-rows 64  # ignore data bar
 
 Mouse: drag to pan, wheel to zoom, right-click for more options.
 Adjust contrast with the histogram on the right.
@@ -16,7 +18,9 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets
 
-from affine_ransac.io.sem_image import load_sem_image
+from affine_ransac.features.contact import DetectedContacts, detect_contacts
+from affine_ransac.io.sem_image import crop_databar, load_sem_image
+from affine_ransac.view_design import polygons_to_path
 
 # Our arrays are image[row, col]; tell pyqtgraph so it doesn't transpose them.
 pg.setConfigOptions(imageAxisOrder="row-major")
@@ -34,8 +38,24 @@ def pixel_at(image: np.ndarray, x: float, y: float):
     return None
 
 
-def build_window(path):
-    """Create the viewer window (without starting the Qt event loop)."""
+def add_contacts(plot, contacts: DetectedContacts):
+    """Overlay detected contact contours (green) and centres (red '+')."""
+    if not contacts.contours:
+        return
+    outlines = QtWidgets.QGraphicsPathItem(polygons_to_path(contacts.contours))
+    outlines.setPen(pg.mkPen("g"))
+    plot.addItem(outlines)
+    plot.addItem(pg.ScatterPlotItem(
+        contacts.centers[:, 0], contacts.centers[:, 1],
+        symbol="+", size=10, pen=pg.mkPen("r"), brush=None,
+    ))
+
+
+def build_window(path, contacts: DetectedContacts | None = None):
+    """Create the viewer window (without starting the Qt event loop).
+
+    If contacts are given, their contours and centres are drawn over the image.
+    """
     image = load_sem_image(path)
     rows, cols = image.shape
     print(f"{Path(path).name}: {cols} x {rows} px, {image.dtype}, "
@@ -50,6 +70,8 @@ def build_window(path):
     image_view = pg.ImageView(view=plot)
     # Shift by half a pixel so pixel centres land on integer coordinates (SPEC §3).
     image_view.setImage(image, pos=(-0.5, -0.5), autoRange=True, autoLevels=True)
+    if contacts is not None:
+        add_contacts(plot, contacts)
 
     cursor_label = QtWidgets.QLabel("u = -, v = -, value = -")
 
@@ -74,10 +96,20 @@ def build_window(path):
 def main():
     parser = argparse.ArgumentParser(description="Interactive viewer for SEM images.")
     parser.add_argument("path", help="Path to the image file (e.g. .jpg)")
+    parser.add_argument("--detect", action="store_true", help="Detect contacts and overlay them")
+    parser.add_argument("--databar-rows", type=int, default=0,
+                        help="Rows of data bar at the bottom to ignore when detecting")
+    parser.add_argument("--bright", action="store_true", help="Contacts are bright, not dark")
     args = parser.parse_args()
 
+    contacts = None
+    if args.detect:
+        image = crop_databar(load_sem_image(args.path), args.databar_rows)
+        contacts = detect_contacts(image, dark_contacts=not args.bright)
+        print(f"Detected {len(contacts.centers)} contacts (Otsu threshold {contacts.threshold:.0f})")
+
     app = pg.mkQApp("SEM viewer")
-    win = build_window(args.path)
+    win = build_window(args.path, contacts)
     win.show()
     app.exec()
 

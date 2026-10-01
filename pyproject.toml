@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+notebook = ["notebook", "pandas"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

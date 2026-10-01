@@ -7,6 +7,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt s
 import numpy as np
 import pyqtgraph as pg
 
+from affine_ransac.features.contact import detect_contacts
+from affine_ransac.io.sem_image import crop_databar, load_sem_image
 from affine_ransac.view_sem import build_window, pixel_at
 from sample_sem import write_sem_like
 
@@ -36,4 +38,21 @@ def test_build_window_places_pixel_centres_on_integers(tmp_path):
     # Top-left corner of pixel (0, 0) must sit at (-0.5, -0.5), so its centre is at (0, 0).
     corner = image_item.mapToView(pg.QtCore.QPointF(0, 0))
     assert (corner.x(), corner.y()) == (-0.5, -0.5)
+    win.close()
+
+
+def test_build_window_with_contact_overlay(tmp_path):
+    path = tmp_path / "tile.jpg"
+    write_sem_like(path, rows=200, cols=260, databar_px=30)
+    contacts = detect_contacts(crop_databar(load_sem_image(path), 30))
+    app = pg.mkQApp()
+
+    win = build_window(path, contacts)
+    win.show()
+    app.processEvents()
+
+    # Image + contour outline + centre markers are in the plot.
+    items = win.image_view.getView().items
+    scatter = [i for i in items if isinstance(i, pg.ScatterPlotItem)]
+    assert len(scatter) == 1 and len(scatter[0].data) == len(contacts.centers) > 0
     win.close()
