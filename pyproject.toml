@@ -16,8 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
-notebook = ["notebook", "pandas"]
+# Everything for development: tests and VS Code notebooks.
+# Install with:  pip install -e ".[dev]"
+dev = ["pytest", "ipykernel", "pandas"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
