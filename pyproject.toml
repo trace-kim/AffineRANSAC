@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 # Everything for development: tests and VS Code notebooks.
 # Install with:  pip install -e ".[dev]"
-dev = ["pytest", "ipykernel", "pandas", "matplotlib"]
+dev = ["pytest", "ipykernel", "pandas", "matplotlib", "ipympl"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
