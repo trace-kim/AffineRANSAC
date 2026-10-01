@@ -136,8 +136,10 @@ available: FOV, magnification, scan rotation, timestamp, tile row/col.
 Known (user, 2026-10-01): one CSV per data folder with per-image metadata, including the
 **global mask position of each `.oas` centre**, **FOV = 2.88 µm** and **image size
 2048 × 2048 px** → pixel size 1.40625 nm. The reader (`io/metadata.py::read_tile_index`) and the
-format reference (`docs/data/metadata_format.md`) are being built by the remote agent: task
-**T001** (`docs/tasks/T001-tile-index-reader.md`, D18).
+format description are being produced by the remote agent: task **T001**
+(`docs/tasks/T001-tile-index-reader.md`, D18). The module exists only on the remote machine.
+Local code is built against the T001 interface, which `tests/test_metadata_contract.py` checks
+on the remote.
 
 The file format is **not yet known** (§13). Define an abstract interface:
 
@@ -507,7 +509,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D15 | 2026-10-01 | matplotlib is allowed in **notebooks** for quick plots (in the `dev` extra). Package viewers stay pyqtgraph. | User request. Narrows D12. |
 | D16 | 2026-10-01 | SEM contact centres are converted to the **tile-local frame** (origin = image centre, y up, nm) with pixel size = FOV / image width. That is the frame of the (0,0)-centred `.oas`, so the two compare directly. | `.oas` files are local and centred (user). |
 | D17 | 2026-10-01 | Tone-reversed `.oas`: contacts = connected empty regions of (frame − drawn shapes), via a KLayout Region boolean. Regions touching the frame are dropped by default. A separate function, `read_contacts_tone_reversed()`. | Some files are tone reversed (user). The boolean handles OASIS keyhole polygons. Automatic detection comes later. |
-| D18 | 2026-10-01 | Data-specific work is done by a **remote agent** with data access, via task files in `docs/tasks/` (protocol in `CLAUDE.md`). | The real data cannot be sent to the local agent. |
+| D18 | 2026-10-01 | Data-specific work is done by a **remote agent** (opencode, unknown model) with data access. It is **one-way**: task files in `docs/tasks/` go out by `git pull`; the remote agent never commits; findings come back only via the user. Remote-only modules are used through exact interfaces guarded by contract tests (protocol in `CLAUDE.md`, rules for the remote agent in `AGENTS.md`). | The real data and the remote agent's work cannot be sent to the local agent. |
 
 ---
 

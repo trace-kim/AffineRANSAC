@@ -9,3 +9,9 @@ __pycache__/
 *.gds
 *.jpg
 *.jpeg
+
+# Remote agent's reports and scratch files (never leave the data machine)
+docs/remote/
+
+# Personal notebook copies with real paths/outputs (keep tracked notebooks clean for git pull)
+*.local.ipynb

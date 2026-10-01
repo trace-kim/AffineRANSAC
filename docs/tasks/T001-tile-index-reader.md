@@ -1,26 +1,35 @@
 # T001: Tile index reader (metadata CSV + file pairing) and data report
 
-**Status: OPEN**
+**Status: OPEN** (maintained by the local agent, from what the user reports back)
 **For:** the remote agent, which has access to the real data
 **From:** the local agent (no data access), 2026-10-01
+
+**You create exactly these files and nothing else:**
+- `src/affine_ransac/io/metadata.py` (§2)
+- `tests/test_metadata.py` (§3)
+- `docs/remote/T001-report.md` (§4–§5; `docs/remote/` is gitignored)
+
+**Never commit, never push, never modify tracked files** (see `AGENTS.md`). The user pulls new
+tasks with `git pull`, and that must keep working.
 
 ---
 
 ## 0. Read first
 
-1. `CLAUDE.md`: project rules, especially "Development approach" (small, simple, readable code).
-2. `docs/SPEC.md` §3 (coordinate frames) and §4 (inputs).
-3. This whole file before starting.
+1. `AGENTS.md`: your standing rules.
+2. `CLAUDE.md`: only "Development approach" and "Key rules" (small, simple, readable code; units).
+3. `docs/SPEC.md` §3 (coordinate frames) and §4 (inputs).
+4. This whole file before starting.
 
-**Why this task is written so strictly:** the local agent cannot see the data or review your
-code. It will build the stitching and registration stages on top of the function you write,
-using only (a) the interface defined in §2 and (b) your written reports (§4, §5). Follow the
-interface **exactly**, and make the reports precise. When something is unclear or differs from
-what this file assumes, don't guess silently: do the sensible thing and **state it explicitly
-in the report**.
+**Why this task is written so strictly:** the local agent cannot see the data, your code or
+your files, ever. It builds the next stages against the interface in §2 **without seeing your
+implementation**. Its only feedback is what the user forwards from your report. So follow the
+interface **exactly** (a contract test checks it, §7), and make the report precise. When
+something is unclear or differs from what this file assumes, don't guess silently: do the
+sensible thing and **state it explicitly in the report**.
 
-**Confidentiality:** never commit data files (`.jpg`, `.oas`, `.csv`) and never copy real rows,
-file names or coordinate values into the repo. In docs and tests, use **made-up values in exactly
+**Confidentiality:** never put data files (`.jpg`, `.oas`, `.csv`) or real rows, file names or
+coordinate values into any repo file outside `docs/remote/`. In docs and tests, use **made-up values in exactly
 the real format**: same column names, delimiter, number formatting, magnitudes, naming pattern.
 Reports contain **aggregate statistics only** (counts, mean/std/min/max).
 
@@ -81,7 +90,7 @@ def read_tile_index(data_dir: str | Path) -> list[TileRecord]:
 Rules:
 
 - **Units:** convert to **nm inside this module**. Callers never convert units. Document the
-  source units in `docs/data/metadata_format.md`.
+  source units in the report's "Format" section (§4).
 - **Axis convention:** `center_x_nm, center_y_nm` must be in the **design frame**: the frame
   of the `.oas` files, y pointing **up**. If the CSV uses another convention (y down, swapped
   axes, different origin), convert here and document it. If you cannot determine the
@@ -109,9 +118,9 @@ Rules:
   CSVs → `ValueError`.
 - `pytest` must pass for the **whole** suite.
 
-## 4. Format reference: `docs/data/metadata_format.md`
+## 4. Format reference (report section "Format")
 
-The local agent relies on this document. Include:
+Part of `docs/remote/T001-report.md`. The local agent relies on it. Include:
 
 1. CSV file name pattern, delimiter, encoding, header, typical number of rows.
 2. A table of **every** column: exact name, meaning, unit, type, made-up example value in the
@@ -122,11 +131,12 @@ The local agent relies on this document. Include:
    whether a stage position exists and how it relates to the centre.
 5. Anything surprising or inconsistent.
 
-## 5. Data checks → `docs/tasks/T001-report.md`
+## 5. Data checks (report sections a–g)
 
 Run these on the real data: all tiles if practical, otherwise at least 30 spread over the
-dataset. Use the existing library functions as named. Put analysis scripts **outside the
-repo** (don't commit them). Report **aggregate numbers only**, in sections a–g with tables.
+dataset. Use the existing library functions as named. Put analysis scripts in `docs/remote/`
+or outside the repo. In the report, give **aggregate numbers only**, in sections a–g with
+tables.
 
 **a. Counts:** CSV rows; `.jpg` on disk; `.oas` in `Contour/`; paired tiles; tiles missing `.oas`.
 
@@ -193,16 +203,30 @@ those tiles?
 
 ## 6. Do not
 
-- Do not modify existing modules (`io/design.py`, `io/sem_image.py`, `features/contact.py`,
-  `geometry/frames.py`, the viewers). If something there is wrong or limiting for the real data,
-  describe it in the report **with evidence**; the local agent will change it.
-- Do not commit data or real values. Do not add dependencies.
+- Do not commit, push, or modify/delete any tracked file. That includes existing modules
+  (`io/design.py`, `io/sem_image.py`, `features/contact.py`, `geometry/frames.py`, the viewers),
+  `tests/test_metadata_contract.py`, `docs/SPEC.md`, `CLAUDE.md`, `AGENTS.md`, this file and the
+  notebooks. If something is wrong or limiting for the real data, describe it in the report
+  **with evidence**; the local agent will change it.
+- Do not put data or real values in any file outside `docs/remote/`. Do not add dependencies.
 
 ## 7. Finish
 
-1. `pytest`: the whole suite passes.
-2. `docs/SPEC.md`: in §4.3, a short summary plus a link to `docs/data/metadata_format.md`;
-   in §13, mark which open questions your findings answer; a Decision Log row (§12) for each
-   decision you made.
-3. Set the status line at the top of this file to `DONE` (or `BLOCKED: <reason>`).
-4. Commit with a message starting with `T001:` and push to `main`.
+1. Run the whole suite, `pytest`. Everything must pass.
+2. Run the contract test against the real data:
+   `AFFINE_RANSAC_DATA_DIR=<data folder> pytest tests/test_metadata_contract.py -v`
+   (on Windows PowerShell: `$env:AFFINE_RANSAC_DATA_DIR="<data folder>"` first). All tests must
+   pass, none skipped. If one fails and you believe the test itself is wrong, don't edit it:
+   explain why in the report.
+3. Check `git status`: it must list only your new files as untracked (`docs/remote/` is
+   ignored, so it won't appear), and no modified tracked files.
+4. Write `docs/remote/T001-report.md` in this order:
+   - **Summary for the local agent** (at most ~40 lines; the user forwards this part): status
+     (DONE / BLOCKED + reason); the CSV columns used for each `TileRecord` field with source
+     units and any axis conversion; how `tile_id` and the image ↔ `.oas` pairing work; the
+     pytest and contract-test results; and one line each for findings a–g (data-bar rows,
+     contact layer, winning orientation and how conclusive it was, the tone-reversal rule).
+     Mention anything the local agent must change.
+   - **Format** (§4).
+   - **Data checks a–g** (§5).
+5. Show the user the summary section.

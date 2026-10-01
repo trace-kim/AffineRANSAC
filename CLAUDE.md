@@ -20,10 +20,14 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 - Every new dependency goes in `pyproject.toml`: in `dependencies` if production code needs it, otherwise in the `dev` extra. When dependencies change, tell the user to re-run `pip install -e ".[dev]"`.
 - Always seed the RNG. Validate with synthetic data (spec §10).
 
-## Task handoff: local agent ↔ remote agent
-The real data (SEM images, `.oas`, metadata CSV) is only on a remote machine. Data-specific work (parsing, checks on real data) is done there by a **remote agent**, instructed through task files.
-- Tasks live in `docs/tasks/TNNN-<name>.md` with a `**Status:**` line (`OPEN`, `DONE`, `BLOCKED: <reason>`). Reports go in `docs/tasks/TNNN-report.md`.
-- **If you can see the real data (remote agent):** do the `OPEN` tasks in number order, exactly as written. Then set the status, write the report, commit with a message starting `TNNN:`, and push.
-- **If you can't see the data (local agent):** write tasks with an exact interface (names, types, units), required tests, and the facts to report. Build only on what the reports state; don't guess data formats.
-- Never commit data files or real data values. Docs and tests use made-up values in the real format.
-- The remote agent changes only the files its task names. It reports needed changes elsewhere, with evidence, instead of making them.
+## Remote agent (one-way handoff)
+The real data (SEM images, `.oas`, metadata CSV) is only on the user's remote machine. Data-specific work there is done by a **remote agent**: **opencode** with an unknown model, *not* Claude Code. Its standing rules are in `AGENTS.md`.
+- **One-way:** you write tasks in `docs/tasks/TNNN-<name>.md` and push them; the user pulls them on the remote. The remote agent **never commits or pushes**, and you **never see its code, files or reports**. Its results reach you only through the user's prompts (the "Summary for the local agent" of its report).
+- **Assume its work is correct.** If something comes back wrong, fix it with a new or updated task file.
+- **Task files must be self-contained and exact:** list the files it may create; give the exact interface (names, types, units, frames), the required tests, the checks to run on the real data, and what the summary must contain. Never rely on it reading `CLAUDE.md`.
+- **Build against the interface, never the implementation.** Guard each interface with a contract test (`tests/test_*_contract.py`) that skips where the module is missing, so it runs only on the remote. Production code you write must not import remote-only modules at import time. Take their data as plain arguments; the notebooks (run on the remote) glue them together.
+- **Keep `git pull` on the remote working:** never create or modify the paths reserved for the remote agent:
+  - `src/affine_ransac/io/metadata.py`, `tests/test_metadata.py` (T001)
+  - `docs/remote/` (gitignored; its reports and scratch scripts)
+- The task's `**Status:**` line is maintained by you, from what the user reports.
+- Never commit data files or real data values.

@@ -35,5 +35,6 @@ python -m affine_ransac.view_design tile.oas               # design viewer
 python -m affine_ransac.view_sem tile.jpg --detect         # SEM viewer with detected contacts
 ```
 
-Notebooks in `notebooks/` test the functions on real data: set the paths in the first cell
-and run all cells.
+Notebooks in `notebooks/` test the functions on real data. **Work on a copy** named
+`<name>.local.ipynb` (gitignored): set the paths in its first cell and run all cells. Editing the
+tracked notebook itself would make the next `git pull` fail.
