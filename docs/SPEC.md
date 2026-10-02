@@ -309,6 +309,12 @@ least squares, gauge: corrections average zero). `mosaic.build_mosaic()` stitche
 sub-pixel positions (overlaps averaged), to show the result before/after correction. Rotation
 or affine tile models are added only if the pairwise analysis shows they are needed.
 
+**Pipeline v1 (D26):** `pipeline.py` composes the library functions, nothing else:
+`process_tile()` (S2: load, Otsu, edge refinement; design contacts from the tile's `.oas`) and
+`stitch_tiles()` (S4 + S5: `overlapping_pairs` → `match_overlap` → `fit_overlap` per pair →
+`solve_tile_shifts`, weighted by inlier count). Tile data comes in as plain arguments, so it
+does not depend on the remote-only metadata reader.
+
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
 
