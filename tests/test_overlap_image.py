@@ -49,3 +49,13 @@ def test_contact_and_image_methods_agree():
     assert len(ia) >= 3
     np.testing.assert_allclose(fit.shift, expected, atol=0.3)
     np.testing.assert_allclose(image_shift, fit.shift, atol=0.5)
+
+
+def test_shift_image_and_crop_shift_px_agree():
+    from affine_ransac.overlap_image import crop_shift_px, shift_image
+
+    image_a, *_ = two_tiles()
+    crop = image_a[100:300, 50:450].astype(np.float32)
+    moved = shift_image(crop, (2.0, -1.0))
+    measured, _ = crop_shift_px(crop, moved)
+    np.testing.assert_allclose(measured, [2.0, -1.0], atol=0.05)

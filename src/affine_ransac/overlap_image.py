@@ -49,6 +49,24 @@ def overlap_crops(image_a, center_a, image_b, center_b, pixel_size_nm: float, bo
     return crop_a, crop_b, np.array([xb0, yb0]) - exact_b
 
 
+def crop_shift_px(crop_a: np.ndarray, crop_b: np.ndarray):
+    """How far crop B's content is moved relative to crop A's, as (x, y) px (right/down
+    positive), and the match error (0..1, low = good)."""
+    window = cv2.createHanningWindow((crop_a.shape[1], crop_a.shape[0]), cv2.CV_32F)
+    a = (crop_a - crop_a.mean()) * window
+    b = (crop_b - crop_b.mean()) * window
+    register, error, _ = phase_cross_correlation(a, b, upsample_factor=100, normalization=None)
+    # scikit-image returns the (row, col) shift that moves B back onto A: the move is its negative.
+    return -np.array([register[1], register[0]]), float(error)
+
+
+def shift_image(image: np.ndarray, move_px) -> np.ndarray:
+    """The image with its content moved by move_px = (x, y) px (sub-pixel, bilinear)."""
+    matrix = np.float32([[1, 0, move_px[0]], [0, 1, move_px[1]]])
+    return cv2.warpAffine(image.astype(np.float32), matrix, (image.shape[1], image.shape[0]),
+                          flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
 def image_overlap_shift(image_a, center_a, image_b, center_b, pixel_size_nm: float, box):
     """B − A shift (nm, mask frame) of the overlap content, and the match error.
 
@@ -56,13 +74,7 @@ def image_overlap_shift(image_a, center_a, image_b, center_b, pixel_size_nm: flo
     The error (0..1, from scikit-image) is low for a good match and high for an unreliable one.
     """
     crop_a, crop_b, remainder_px = overlap_crops(image_a, center_a, image_b, center_b, pixel_size_nm, box)
-    window = cv2.createHanningWindow((crop_a.shape[1], crop_a.shape[0]), cv2.CV_32F)
-    a = (crop_a - crop_a.mean()) * window
-    b = (crop_b - crop_b.mean()) * window
-    register, error, _ = phase_cross_correlation(a, b, upsample_factor=100, normalization=None)
-
-    # scikit-image returns the (row, col) shift that moves crop B back onto crop A, so crop B's
-    # content moved by its negative, as (x, y) px, right/down positive. Crop B started
-    # remainder_px later than exact, which moved its content back by that much: add it back.
-    move_px = -np.array([register[1], register[0]]) + remainder_px
-    return np.array([move_px[0], -move_px[1]]) * pixel_size_nm, float(error)  # px (y down) -> nm (y up)
+    move_px, error = crop_shift_px(crop_a, crop_b)
+    # Crop B started remainder_px later than exact, which moved its content back by that much.
+    move_px = move_px + remainder_px
+    return np.array([move_px[0], -move_px[1]]) * pixel_size_nm, error  # px (y down) -> nm (y up)

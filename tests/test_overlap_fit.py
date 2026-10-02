@@ -27,7 +27,7 @@ def test_outlier_is_flagged_and_does_not_pull_the_shift():
 
     assert not fit.inliers[3] and fit.inliers.sum() >= 13
     np.testing.assert_allclose(fit.shift, [-6, 4], atol=0.25)
-    assert fit.rms() < 0.6
+    assert fit.rms() < 0.6 < fit.rms(include_outliers=True)  # the outlier inflates the all-point RMS
 
 
 def test_rotation_is_recovered_about_the_centroid():

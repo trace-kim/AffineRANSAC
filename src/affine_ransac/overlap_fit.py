@@ -24,9 +24,11 @@ class OverlapFit:
     inliers: np.ndarray    # (N,) bool: points used in the final fit
     residuals: np.ndarray  # (N, 2) b − model(a) for every point, nm
 
-    def rms(self) -> float:
-        """Root-mean-square residual length of the inliers, nm (the measurement noise floor)."""
-        return float(np.sqrt((self.residuals[self.inliers] ** 2).sum(axis=1).mean()))
+    def rms(self, include_outliers: bool = False) -> float:
+        """Root-mean-square residual length, nm. Inliers only by default (the measurement noise
+        floor); include_outliers=True uses every matched point."""
+        residuals = self.residuals if include_outliers else self.residuals[self.inliers]
+        return float(np.sqrt((residuals ** 2).sum(axis=1).mean()))
 
 
 def apply_fit(fit: OverlapFit, a: np.ndarray) -> np.ndarray:
