@@ -434,6 +434,14 @@ Details are in §7.
 RANSAC is used **only here** (SEM↔design), not in stitching (D8).
 
 ### S8 — Registration error and reporting
+**Final registration error (v1, D34):** `RansacResult.residuals`, i.e. G(SEM) − design for
+**every** merged contact (inliers and outliers). `registration.binned_mean_2d()` (mean per square
+bin, heatmap) and `registration.profile()` (mean / σ / count per bin along one axis, e.g. dx and
+dy against y averaged over x) summarise it; `view_registration.RegistrationView` shows dx/dy
+heatmaps (shared symmetric colour scale, outliers ringed, option to bin the inliers only) and the
+dx/dy-vs-y profiles (all contacts with ±1σ bars, and inliers only). The RANSAC monitor also draws
+the residual after the current model on its dx/dy plots (crosses), next to the raw error (dots).
+
 **Implemented first (v1, D29): raw error, no affine removed.** `registration.design_errors()`
 matches each tile's SEM centres to that tile's design centres, each placed with its own
 corrections (one placement of `placement_corrections`; `match_points`, 40 nm gate), and returns
@@ -657,6 +665,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D31 | 2026-10-02 | Overlap observations of the same contact are merged before RANSAC: grouped by stitched design position within **5 nm** (different tiles only), SEM and design positions averaged, spread and count kept, nothing dropped. scipy (`cKDTree`) becomes a declared dependency. Viewer layers start mostly off (only SEM images, design centres, refined centres, overlaps used, error arrows, tile outlines and failure markers on). | User: 2–4 observations per overlap contact would be counted several times in RANSAC; averaging agreed; radius 5 nm because design coordinates have very small residuals; viewer too slow with all layers on. |
 | D32 | 2026-10-02 | RANSAC (S7) implemented as a **step generator** (`ransac_affine_steps`) plus a UI-free runner (`ransac_affine`), on the merged contacts, τ = 0.5 nm to start. Affine-only (not generic over model types, D10) and small-angle decomposition only (no polar/QR) until needed. A live pyqtgraph monitor (`view_ransac.RansacMonitor`) shows each iteration's sample, inliers/outliers, residuals, raw-error-vs-position plots with the model's line, inlier counts and the decomposed terms. | User: RANSAC pipeline that can run on its own, plus a UI to watch in real time which points are sampled, the parameter values, the linear-fit scatter and the outliers at every step. |
 | D33 | 2026-10-02 | Affine terms are displayed as the correction G (sign as in §8.2) with rotation and orthogonality in degrees, magnification in ppm, plus a "nm at field edge" value per term (`report_terms`). | User: not used to µrad; wants degrees, and a shift in nm comparable to the threshold. Kept the correction-G sign (opposite to the raw-error plots). |
+| D34 | 2026-10-02 | Final registration error = residual after the RANSAC affine for every contact, shown as dx/dy heatmaps (binned mean) and dx/dy-vs-y profiles averaged over x, via library functions (`binned_mean_2d`, `profile`). Heatmaps and means include outliers by default (they are the defects); the heatmaps can be rebinned from the inliers only, and the profiles also show the inlier-only mean. | User: the final registration error is the wanted result; wants a heatmap and the x-averaged dx/dy trend along y; the monitor's raw dx/dy plots alone could mislead, so the residual goes on the same plots. |
 
 ---
 

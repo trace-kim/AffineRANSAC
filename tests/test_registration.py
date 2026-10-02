@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from affine_ransac.registration import design_errors, error_summary, merge_observations
+from affine_ransac.registration import binned_mean_2d, design_errors, error_summary, merge_observations, profile
 
 DESIGN = np.array([(x, y) for x in np.arange(0, 500, 100.0) for y in np.arange(0, 300, 100.0)])
 
@@ -91,3 +91,22 @@ def test_merge_never_joins_two_contacts_of_one_tile():
     design = np.array([[0.0, 0.0], [3.0, 0.0]])  # 3 nm apart in the same tile: not the same contact
     errors = design_errors([design], [design], np.zeros((1, 2)), np.zeros((1, 2)), [True], max_match_nm=1.0)
     assert len(merge_observations(errors, np.zeros((1, 2))).count) == 2
+
+
+def test_binned_mean_2d():
+    points = np.array([[0.0, 0.0], [10.0, 0.0], [5.0, 5.0], [150.0, 150.0]])
+    values = np.array([1.0, 3.0, 5.0, 7.0])
+    grid, x_edges, y_edges = binned_mean_2d(points, values, bin_nm=100.0)
+    np.testing.assert_allclose(x_edges, [0, 100, 200]) and np.testing.assert_allclose(y_edges, [0, 100, 200])
+    assert grid[0, 0] == 3.0 and grid[1, 1] == 7.0  # (1 + 3 + 5) / 3 in the lower-left bin
+    assert np.isnan(grid[0, 1]) and np.isnan(grid[1, 0])
+
+
+def test_profile_averages_along_one_axis():
+    y = np.array([0.0, 10.0, 20.0, 120.0, 130.0, 350.0])
+    dx = np.array([1.0, 2.0, 3.0, -1.0, -3.0, 4.0])
+    centers, mean, std, count = profile(y, dx, bin_nm=100.0)
+    np.testing.assert_allclose(centers, [50, 150, 350])  # the empty bin 200-300 is left out
+    np.testing.assert_allclose(mean, [2.0, -2.0, 4.0])
+    np.testing.assert_allclose(std, [np.std([1, 2, 3]), 1.0, 0.0])
+    np.testing.assert_array_equal(count, [3, 2, 1])

@@ -166,3 +166,31 @@ def merge_observations(errors: DesignErrors, design_corrections: np.ndarray, rad
         members=[np.asarray(m) for m in groups],
         skipped=errors.skipped,
     )
+
+
+def binned_mean_2d(points: np.ndarray, values: np.ndarray, bin_nm: float):
+    """Mean of values (N,) in square bins of bin_nm over points (N, 2), e.g. a heatmap of one error
+    component. Returns (grid, x_edges, y_edges): grid[iy, ix] is the mean in bin (ix, iy), NaN
+    where no point falls; row 0 is the lowest y."""
+    x_edges = np.arange(points[:, 0].min(), points[:, 0].max() + bin_nm, bin_nm)
+    y_edges = np.arange(points[:, 1].min(), points[:, 1].max() + bin_nm, bin_nm)
+    total, *_ = np.histogram2d(points[:, 1], points[:, 0], bins=(y_edges, x_edges), weights=values)
+    count, *_ = np.histogram2d(points[:, 1], points[:, 0], bins=(y_edges, x_edges))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        grid = np.where(count > 0, total / count, np.nan)
+    return grid, x_edges, y_edges
+
+
+def profile(positions: np.ndarray, values: np.ndarray, bin_nm: float):
+    """Values (N,) averaged in bins of bin_nm along positions (N,), e.g. dx against y, averaged
+    over x. Returns (centers, mean, std, count) for the bins that hold at least one point."""
+    edges = np.arange(positions.min(), positions.max() + bin_nm, bin_nm)
+    index = np.clip(np.digitize(positions, edges) - 1, 0, len(edges) - 2)
+    count = np.bincount(index, minlength=len(edges) - 1)
+    total = np.bincount(index, weights=values, minlength=len(edges) - 1)
+    squares = np.bincount(index, weights=values ** 2, minlength=len(edges) - 1)
+    used = count > 0
+    mean = total[used] / count[used]
+    std = np.sqrt(np.maximum(squares[used] / count[used] - mean ** 2, 0))
+    centers = (edges[:-1] + edges[1:])[used] / 2
+    return centers, mean, std, count[used]
