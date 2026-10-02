@@ -318,6 +318,19 @@ viewport) shows the result for any tile selection: SEM images, design contours/c
 refined contours/centres, overlap boxes and overlap outliers, at nominal or stitched placement,
 with layers and single tiles hideable (`notebooks/stitch_viewer.ipynb`).
 
+**Stitching failures are never silent (D27).** Every overlapping pair is solved together (no
+stripe-by-stripe order): a tile in stripe 2 is constrained by its top/bottom and left/right
+neighbours at once. The overlap match gate defaults to **25 nm** (largest B − A stage offset,
+user); it must stay below P/2. `stitch_tiles` keeps every pair it does not use
+(`StitchResult.rejected`): *failed* = both tiles have ≥ `min_matched` contacts in the overlap
+but they do not pair up; otherwise *skipped* (too few contacts, e.g. corner-only).
+`solve_tile_shifts` solves only the largest group of tiles connected through used pairs; every
+other tile gets a **NaN** correction (`StitchResult.unplaced`), and `stitch_tiles` warns. The
+viewer marks failed overlaps and unstitched tiles in magenta and never moves the latter. The
+gauge stays mean-zero over the stitched group (D6); `stitching.fix_tile()` re-expresses the
+solution with one tile fixed (viewer: "first tile fixed"), e.g. for later comparison with design
+centres.
+
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
 
@@ -575,6 +588,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D24 | 2026-10-02 | Pairwise overlap analysis in four steps: (1) robust translation, (2) image cross-correlation check, (3) robust translation + rotation (no scale), (4) residual map across pairs. Outliers come from a median-residual threshold, not RANSAC. Image registration uses scikit-image `phase_cross_correlation` (normalization=None, Hann window, upsample 100); `cv2.phaseCorrelate` and the "phase" normalisation were rejected (sub-pixel errors up to 0.38 / 0.6 px). | User: overlap arrows mostly agree but some differ (noise vs outliers); compare translation-only, robust rigid and image-based registration before choosing the stitching model. |
 | D25 | 2026-10-02 | First global stitching solve is **translation per tile** (gauge: mean correction 0), plus a mosaic builder for before/after views. `overlap_flow.ipynb` shows every step as diagnostic plots: before/after arrows at separate raw/residual magnifications with 1 nm key arrows, difference scatter with the outlier threshold, an image overlay before/after registration, a rotation trend plot, all-pairs comparison plots, stitched residual maps, and a mosaic with zoom. | User: results must be checkable visually, not just as numbers; a stitched result before/after correction is needed. Translation first, because the rotation model is not yet justified by data. |
 | D26 | 2026-10-02 | `pipeline.py` (S2, S4+S5 composed only from library functions) and one interactive stitch viewer for all chosen tiles. Placement is a Nominal/Stitched switch (SEM items move, design stays) rather than two copies of every layer. Each tile is its own image item (no single mosaic image), so ~1,000 tiles fit in memory. Drawing is relative to a local origin in whole µm, because the OpenGL viewport works in float32 (mask coordinates ~10⁷ nm would round to several nm). Opaque tiles: the later tile covers the earlier one in an overlap; hide a tile to see the other. | User: one viewer showing design, SEM before/after stitching, all contour methods, centres and overlaps, with zoom/pan and hideable layers; pipeline must use production functions; OpenGL for speed. |
+| D27 | 2026-10-02 | Overlap match gate default 10 → **25 nm**. Pairs that do not match are kept and classified (failed / skipped); tiles not connected to the largest stitched group get **NaN** corrections plus a warning, instead of the previous silent correction of 0. Gauge stays mean-zero; a "first tile fixed" view (`fix_tile`) is offered in the viewer. | User: SEM stage offsets between neighbours reach 25 nm, so the 10 nm gate rejected real pairs; those tiles then silently kept a 0 correction and misaligned in the stitched view. A stitching failure contaminates every later error and must be visible for diagnosis. User chose mean-zero gauge with an optional first-tile-fixed view (for a later global rotation/scale check against the design). |
 
 ---
 

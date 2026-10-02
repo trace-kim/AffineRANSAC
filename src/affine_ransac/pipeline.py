@@ -3,12 +3,14 @@
 - process_tile(): load one SEM image, detect its contacts (Otsu, then edge refinement) and read
   its design contacts.
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
-  (translation) and solve one translation correction per tile.
+  (translation) and solve one translation correction per tile. Pairs that fail to match and
+  tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
 
 Tile data is passed as plain arguments (paths, nm values), not as metadata records, so this
 module works with any metadata reader.
 """
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +21,7 @@ from affine_ransac.features.edges import refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.io.design import load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.overlap import match_overlap, overlapping_pairs
+from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import solve_tile_shifts
 
@@ -89,16 +91,36 @@ class PairResult:
 
 
 @dataclass
+class RejectedPair:
+    i: int
+    j: int
+    box: tuple       # nominal overlap box, mask nm
+    in_box: int      # contacts in the overlap box: the smaller of the two tiles' counts
+    matched: int     # contacts that paired up (fewer than min_matched)
+    # True: both tiles had at least min_matched contacts in the overlap, yet they did not pair up
+    # (e.g. a B − A offset beyond the match gate). False: the overlap holds too few contacts to
+    # be used (e.g. a corner-only overlap).
+    failed: bool
+
+
+@dataclass
 class StitchResult:
-    pairs: list[PairResult]
-    corrections: np.ndarray  # (n_tiles, 2) translation added to each nominal centre, nm
+    pairs: list[PairResult]        # pairs used in the solve
+    rejected: list[RejectedPair]   # overlapping pairs not used (fewer than min_matched matches)
+    corrections: np.ndarray        # (n_tiles, 2) translation added to each nominal centre, nm;
+                                   # NaN for tiles that could not be stitched to the others
+
+    @property
+    def unplaced(self) -> np.ndarray:
+        """Indices of the tiles that could not be stitched (NaN correction)."""
+        return np.flatnonzero(np.isnan(self.corrections[:, 0]))
 
 
 def stitch_tiles(
     points: list[np.ndarray],
     centers: np.ndarray,
     fovs: np.ndarray,
-    max_match_nm: float = 10.0,
+    max_match_nm: float = 25.0,
     outlier_factor: float = 3.0,
     min_matched: int = 5,
 ) -> StitchResult:
@@ -106,15 +128,20 @@ def stitch_tiles(
 
     points: per tile, SEM contact centres in mask nm at the nominal placement.
     centers, fovs: (n_tiles, 2) nominal tile centres and fields of view, nm.
-    Pairs with fewer than min_matched contacts (e.g. corner-only overlaps) are skipped.
-    Each pair is weighted by its number of inlier contacts.
+    max_match_nm: largest expected B − A offset (stage error); must stay below half the pitch.
+    Pairs with fewer than min_matched matched contacts are not used; they are kept in
+    `rejected`. Each used pair is weighted by its number of inlier contacts.
+    Warns if a pair failed to match or a tile could not be stitched (see StitchResult).
     """
-    pairs = []
+    pairs, rejected = [], []
     for i, j, box in overlapping_pairs(centers, fovs):
         ia, ib = match_overlap(points[i], points[j], box, max_match_nm)
         if len(ia) >= min_matched:
             fit = fit_overlap(points[i][ia], points[j][ib], outlier_factor=outlier_factor)
             pairs.append(PairResult(i, j, box, ia, ib, fit))
+        else:
+            in_box = min(len(points_in_box(points[i], box)), len(points_in_box(points[j], box)))
+            rejected.append(RejectedPair(i, j, box, in_box, len(ia), failed=in_box >= min_matched))
 
     corrections = solve_tile_shifts(
         len(centers),
@@ -122,4 +149,17 @@ def stitch_tiles(
         [p.fit.shift for p in pairs],
         weights=[p.fit.inliers.sum() for p in pairs],
     )
-    return StitchResult(pairs, corrections)
+    result = StitchResult(pairs, rejected, corrections)
+    _warn_about_failures(result)
+    return result
+
+
+def _warn_about_failures(result: StitchResult):
+    failed = [(r.i, r.j, r.matched) for r in result.rejected if r.failed]
+    if failed or len(result.unplaced):
+        warnings.warn(
+            f"Stitching incomplete: {len(failed)} overlapping pair(s) did not match "
+            f"(tile i, tile j, matched contacts): {failed}; {len(result.unplaced)} tile(s) could not be "
+            f"stitched (NaN correction): {result.unplaced.tolist()}",
+            stacklevel=3,
+        )

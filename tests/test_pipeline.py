@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from affine_ransac.pipeline import process_tile, stitch_tiles
 from sample_design import write_contact_array
@@ -55,3 +56,35 @@ def test_stitch_tiles_recovers_stage_errors(tmp_path):
     assert sorted((p.i, p.j) for p in result.pairs) == [(0, 1), (0, 2), (1, 3), (2, 3)]
     # A tile seen at nominal + error needs the correction +error (gauge: corrections average 0).
     np.testing.assert_allclose(result.corrections, ERRORS - ERRORS.mean(axis=0), atol=0.3)
+
+
+def seen_points(errors, noise_nm=0.2, seed=0):
+    """Per tile, the lattice contacts it sees (fully inside its true FOV), at nominal placement:
+    a tile whose true centre is nominal + error reports contact p at p − error."""
+    rng = np.random.default_rng(seed)
+    points = []
+    for nominal, error in zip(NOMINAL, errors):
+        inside = np.all(np.abs(LATTICE - (nominal + error)) < FOV / 2 - 10, axis=1)  # cut-off contacts dropped
+        points.append(LATTICE[inside] - error + rng.normal(0, noise_nm, (inside.sum(), 2)))
+    return points
+
+
+def test_default_gate_pairs_offsets_beyond_10_nm():
+    errors = np.array([[0.0, 0.0], [12.0, -8.0], [-10.0, 6.0], [4.0, 9.0]])  # B − A up to ~20 nm
+
+    result = stitch_tiles(seen_points(errors), NOMINAL, np.full((4, 2), FOV))
+
+    assert len(result.pairs) == 4 and not any(r.failed for r in result.rejected)
+    np.testing.assert_allclose(result.corrections, errors - errors.mean(axis=0), atol=0.3)
+
+
+def test_unmatched_tile_is_reported_never_silently_zero():
+    errors = np.array([[0.0, 0.0], [3.0, -2.0], [-2.0, 1.0], [40.0, 0.0]])  # tile 3: 40 nm off, beyond the gate
+
+    with pytest.warns(UserWarning, match="Stitching incomplete"):
+        result = stitch_tiles(seen_points(errors), NOMINAL, np.full((4, 2), FOV))
+
+    assert sorted((r.i, r.j) for r in result.rejected if r.failed) == [(1, 3), (2, 3)]
+    assert result.unplaced.tolist() == [3]
+    assert np.isnan(result.corrections[3]).all()
+    np.testing.assert_allclose(result.corrections[:3], errors[:3] - errors[:3].mean(axis=0), atol=0.3)

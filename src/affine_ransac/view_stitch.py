@@ -2,10 +2,14 @@
 
 Shows, in mask coordinates: every tile's SEM image, the design (.oas) contours and centres,
 the SEM contours and centres from Otsu and from edge refinement, the nominal overlap boxes, and
-the contacts flagged as outliers by the pairwise overlap fits.
+the contacts flagged as outliers by the pairwise overlap fits. Stitching failures are marked in
+magenta: overlaps whose contacts did not match, and tiles that could not be stitched (these stay
+at their nominal position in every placement).
 
 - Placement: "Nominal" puts each tile at its metadata centre; "Stitched" adds the tile's
-  stitching correction. SEM items move, the design stays. Switch back and forth to compare.
+  stitching correction (corrections average zero); "Stitched, first tile fixed" shifts all
+  corrections so the first stitched tile stays at its nominal position. SEM items move, the
+  design stays. Switch back and forth to compare.
 - Layers and tiles can be hidden with the check boxes on the right (hide a tile to see the
   tile beneath it in an overlap).
 - Mouse: drag to pan, wheel to zoom, right-click for more options.
@@ -24,6 +28,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.pipeline import StitchResult, TileResult
+from affine_ransac.stitching import fix_tile
 from affine_ransac.view_design import polygons_to_path
 
 IMAGES = "SEM images"
@@ -34,12 +39,17 @@ OTSU_CENTRES = "Otsu centres"
 REFINED = "Refined contours"
 REFINED_CENTRES = "Refined centres"
 OUTLIERS = "Overlap outliers"
-BOXES = "Overlap boxes (nominal)"
+BOXES = "Overlaps used (nominal)"
+FAILED = "Overlaps not matched"
+SKIPPED = "Overlaps skipped (few contacts)"
+UNSTITCHED = "Tiles not stitched"
 
+FAILURE_COLOR = "#ff00ff"
 COLORS = {
     IMAGES: "#c0c0c0", DESIGN: "#3c8cff", DESIGN_CENTRES: "#3c8cff", OTSU: "#33cc33",
     OTSU_CENTRES: "#33cc33", REFINED: "#ff4040", REFINED_CENTRES: "#ff4040",
-    OUTLIERS: "#ffa500", BOXES: "#ffff00",
+    OUTLIERS: "#ffa500", BOXES: "#ffff00", FAILED: FAILURE_COLOR, SKIPPED: "#909090",
+    UNSTITCHED: FAILURE_COLOR,
 }
 SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by placement
 
@@ -54,9 +64,13 @@ def image_item(tile: TileResult) -> pg.ImageItem:
     return item
 
 
-def path_item(polygons: list[np.ndarray], color, style=QtCore.Qt.PenStyle.SolidLine):
+def rectangle(left, right, bottom, top) -> np.ndarray:
+    return np.array([[left, bottom], [right, bottom], [right, top], [left, top]])
+
+
+def path_item(polygons: list[np.ndarray], color, style=QtCore.Qt.PenStyle.SolidLine, width=1):
     item = QtWidgets.QGraphicsPathItem(polygons_to_path(polygons))
-    item.setPen(pg.mkPen(color, style=style))
+    item.setPen(pg.mkPen(color, style=style, width=width))
     return item
 
 
@@ -89,7 +103,17 @@ class StitchViewer(QtWidgets.QWidget):
         given the refined (True) or the Otsu centres, for the outlier markers."""
         super().__init__()
         self.setWindowTitle(f"Stitch viewer - {len(tiles)} tiles")
-        self.tiles, self.corrections = tiles, stitch.corrections
+        self.tiles = tiles
+        self.unplaced = set(stitch.unplaced.tolist())
+        placed = [k for k in range(len(tiles)) if k not in self.unplaced]
+        self.reference = placed[0] if placed else None  # first stitched tile, for "first tile fixed"
+        no_move = np.zeros((len(tiles), 2))
+        # Per placement mode, the shift added to each tile. Unstitched tiles (NaN) never move.
+        self.corrections = {
+            "nominal": no_move,
+            "mean": np.nan_to_num(stitch.corrections),
+            "first": np.nan_to_num(fix_tile(stitch.corrections, self.reference)) if placed else no_move,
+        }
         centers = np.array([t.center_nm for t in tiles])
         self.origin = np.round(centers.mean(axis=0), -3)  # whole µm, see module docstring
         self.items = []  # (layer, tile index or None, graphics item)
@@ -107,25 +131,37 @@ class StitchViewer(QtWidgets.QWidget):
         outliers = outlier_indices(stitch, len(tiles))
         for k, tile in enumerate(tiles):
             self._add_tile(k, tile, design_polygons[k], outliers[k], refined)
-        boxes = [np.array([[left, bottom], [right, bottom], [right, top], [left, top]]) - self.origin
-                 for left, right, bottom, top in (p.box for p in stitch.pairs)]
-        if boxes:
-            self._add(BOXES, None, path_item(boxes, COLORS[BOXES], QtCore.Qt.PenStyle.DashLine))
+        dash, dot = QtCore.Qt.PenStyle.DashLine, QtCore.Qt.PenStyle.DotLine
+        for layer, boxes, style in ((BOXES, [p.box for p in stitch.pairs], dash),
+                                    (FAILED, [r.box for r in stitch.rejected if r.failed], dash),
+                                    (SKIPPED, [r.box for r in stitch.rejected if not r.failed], dot)):
+            if boxes:
+                width = 2 if layer == FAILED else 1
+                self._add(layer, None, path_item([rectangle(*b) - self.origin for b in boxes], COLORS[layer], style, width))
 
+        self.status_label = QtWidgets.QLabel(self._status_text(stitch))
         self.cursor_label = QtWidgets.QLabel("x = -, y = - (mask µm)")
         self.plot.scene().sigMouseMoved.connect(self._show_cursor)
 
         layout = QtWidgets.QHBoxLayout(self)
         left = QtWidgets.QVBoxLayout()
+        left.addWidget(self.status_label)
         left.addWidget(self.cursor_label)
         left.addWidget(self.plot)
         layout.addLayout(left, stretch=1)
         layout.addWidget(self._side_panel(tile_ids))
 
-        self.set_placement(stitched=False)
+        self.set_placement("nominal")
         self.update_visibility()
         self.plot.autoRange()
         self.resize(1400, 950)
+
+    def _status_text(self, stitch: StitchResult) -> str:
+        failed = sum(r.failed for r in stitch.rejected)
+        if self.unplaced or failed:
+            return (f"<b style='color:{FAILURE_COLOR}'>Stitching incomplete: {len(self.unplaced)} tile(s) not "
+                    f"stitched, {failed} overlap(s) not matched (magenta)</b>")
+        return f"All {len(self.tiles)} tiles stitched ({len(stitch.pairs)} overlaps used)"
 
     def _add(self, layer, k, item):
         item.setZValue(0 if layer == IMAGES else 1)
@@ -148,19 +184,26 @@ class StitchViewer(QtWidgets.QWidget):
         if len(outliers):
             found = tile.refined if refined else tile.otsu
             self._add(OUTLIERS, k, centres_item(local(found.centers[outliers]), COLORS[OUTLIERS], "o", 16))
+        if k in self.unplaced:  # a thick frame around the whole tile, at its nominal position
+            half_w, half_h = tile.fov_nm / 2
+            self._add(UNSTITCHED, k, path_item([rectangle(-half_w, half_w, -half_h, half_h)], COLORS[UNSTITCHED], width=3))
 
     def _side_panel(self, tile_ids):
         panel = QtWidgets.QWidget()
-        panel.setFixedWidth(260)
+        panel.setFixedWidth(280)
         column = QtWidgets.QVBoxLayout(panel)
 
         column.addWidget(QtWidgets.QLabel("Placement"))
-        self.nominal_button = QtWidgets.QRadioButton("Nominal (metadata centres)")
-        self.stitched_button = QtWidgets.QRadioButton("Stitched (corrected)")
-        self.nominal_button.setChecked(True)
-        self.stitched_button.toggled.connect(lambda on: self.set_placement(stitched=on))
-        column.addWidget(self.nominal_button)
-        column.addWidget(self.stitched_button)
+        reference = tile_ids[self.reference] if self.reference is not None else "-"
+        self.placement_buttons = {}
+        for mode, text in (("nominal", "Nominal (metadata centres)"),
+                           ("mean", "Stitched (corrections average 0)"),
+                           ("first", f"Stitched, first tile fixed ({reference})")):
+            button = QtWidgets.QRadioButton(text)
+            button.toggled.connect(lambda on, mode=mode: on and self.set_placement(mode))
+            column.addWidget(button)
+            self.placement_buttons[mode] = button
+        self.placement_buttons["nominal"].setChecked(True)
 
         column.addWidget(QtWidgets.QLabel("Layers"))
         self.layer_boxes = {}
@@ -174,8 +217,11 @@ class StitchViewer(QtWidgets.QWidget):
 
         column.addWidget(QtWidgets.QLabel("Tiles"))
         self.tile_list = QtWidgets.QListWidget()
-        for tile_id in tile_ids:
+        for k, tile_id in enumerate(tile_ids):
             entry = QtWidgets.QListWidgetItem(tile_id)
+            if k in self.unplaced:
+                entry.setText(f"{tile_id}  (not stitched)")
+                entry.setForeground(pg.mkColor(FAILURE_COLOR))
             entry.setCheckState(QtCore.Qt.CheckState.Checked)
             self.tile_list.addItem(entry)
         self.tile_list.itemChanged.connect(self.update_visibility)
@@ -189,14 +235,15 @@ class StitchViewer(QtWidgets.QWidget):
         for layer, k, item in self.items:
             item.setVisible(self.layer_boxes[layer].isChecked() and (k is None or self.tile_shown(k)))
 
-    def set_placement(self, stitched: bool):
-        """Move every tile's items to its nominal or its stitched (corrected) position."""
+    def set_placement(self, mode: str):
+        """Move every tile's SEM items: mode "nominal", "mean" (stitched, corrections average 0)
+        or "first" (stitched, first stitched tile fixed). Design items stay at the nominal centre."""
         for layer, k, item in self.items:
             if k is None:
                 continue
             position = self.tiles[k].center_nm - self.origin
-            if stitched and layer in SEM_LAYERS:
-                position = position + self.corrections[k]
+            if layer in SEM_LAYERS:
+                position = position + self.corrections[mode][k]
             item.setPos(*position)
 
     def _show_cursor(self, scene_pos):
