@@ -72,13 +72,14 @@ def test_crop_databar_keeps_coordinates():
     assert crop_databar(image, 0) is image
 
 
-def wide_band_image(band_px, pitch_px=64, radius_px=14, seed=0):
-    """Dark holes inside bright bands band_px wide on a grey background; returns (image, centres)."""
+def wide_band_image(band_px, pitch_px=64, radius_px=14, hole_grey=40, seed=0):
+    """Holes (grey level hole_grey) inside bright bands band_px wide on a grey (110) background;
+    returns (image, centres)."""
     image = np.full((512, 512), 110, dtype=np.uint8)
     centers = np.array([(x, y) for y in range(40, 480, pitch_px) for x in range(40, 480, pitch_px)])
     for x, y in centers:
         cv2.circle(image, (int(x), int(y)), radius_px + band_px // 2 + 1, 200, thickness=band_px)
-        cv2.circle(image, (int(x), int(y)), radius_px, 40, thickness=-1)
+        cv2.circle(image, (int(x), int(y)), radius_px, hole_grey, thickness=-1)
     image = cv2.GaussianBlur(image, (0, 0), sigmaX=1.5)
     noise = np.random.default_rng(seed).normal(0, 6, image.shape)
     return np.clip(image + noise, 0, 255).astype(np.uint8), centers.astype(float)
@@ -90,7 +91,7 @@ def test_three_classes_find_the_holes_when_bands_are_wide():
     image, truth = wide_band_image(band_px=16)
     assert len(detect_contacts(image).centers) > len(truth)
 
-    found = detect_contacts(image, classes=3)
+    found = detect_contacts(image, method="otsu3")
 
     assert len(found.centers) == len(truth)
     assert nearest_distances(found.centers, truth).max() < 0.2
@@ -98,14 +99,35 @@ def test_three_classes_find_the_holes_when_bands_are_wide():
 
 def test_three_classes_agree_with_plain_otsu_on_narrow_bands():
     image, truth = wide_band_image(band_px=3)
-    plain, three = detect_contacts(image), detect_contacts(image, classes=3)
+    plain, three = detect_contacts(image), detect_contacts(image, method="otsu3")
     assert len(plain.centers) == len(three.centers) == len(truth)
     assert nearest_distances(three.centers, truth).max() < 0.2
 
 
-def test_three_classes_bright_contacts_and_bad_class_count():
+def test_three_classes_bright_contacts_and_bad_method():
     image, truth = wide_band_image(band_px=16)
-    found = detect_contacts(255 - image, dark_contacts=False, classes=3)  # bright holes, dark bands
+    found = detect_contacts(255 - image, dark_contacts=False, method="otsu3")  # bright holes, dark bands
     assert len(found.centers) == len(truth)
-    with pytest.raises(ValueError, match="2 or 3"):
-        detect_contacts(image, classes=4)
+    with pytest.raises(ValueError, match="method must be one of"):
+        detect_contacts(image, method="nope")
+
+
+def test_band_method_finds_the_regions_enclosed_by_bands():
+    for band_px in (3, 16):  # narrow, and wide bands that nearly touch (background pinched off)
+        image, truth = wide_band_image(band_px)
+        found = detect_contacts(image, method="band")
+        assert len(found.centers) == len(truth), band_px
+        assert nearest_distances(found.centers, truth).max() < 0.2
+
+
+def test_band_method_does_not_need_holes_darker_than_the_background():
+    image, truth = wide_band_image(band_px=16, hole_grey=110)  # interior = background grey
+    found = detect_contacts(image, method="band")
+    assert len(found.centers) == len(truth)
+    assert nearest_distances(found.centers, truth).max() < 0.2
+
+
+def test_solidity_filter_drops_the_pinched_off_background():
+    image, truth = wide_band_image(band_px=16)
+    unfiltered = detect_contacts(image, method="band", min_solidity=0.0)
+    assert len(unfiltered.centers) > len(truth)  # the concave background pieces between the bands

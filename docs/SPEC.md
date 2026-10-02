@@ -208,11 +208,15 @@ blur → Otsu threshold → connected regions → drops border-touching and too-
 centre = pixel centroid of the region, plus its outer contour. On synthetic images it gives
 ≈0.03 px RMS centre error. Steps 3–4 below (better sub-pixel methods, quality metrics) are
 future refinements.
-`classes=3` (D39; pipeline `otsu_classes`, notebook `OTSU_CLASSES`) uses a three-class Otsu
-(`skimage.filters.threshold_multiotsu`: hole interior | background | bright band) and the
-threshold between the hole and the background classes (the top one for bright contacts). Needed
-when the bright bands are wide: plain Otsu then separates background from band, and background
-pinched off between nearly touching bands becomes "contacts". On narrow bands both agree.
+`method` (D39, D40; pipeline `detection`, notebook `DETECTION`): `"otsu"` (plain, default),
+`"otsu3"` (three-class Otsu, `skimage.filters.threshold_multiotsu`: hole | background | bright
+band; threshold between hole and background) or `"band"` (the bright band: pixels above the
+background | band threshold; candidates are the non-band regions, 4-connected; the background
+touches the border and is dropped, so the regions enclosed by a band remain; regions with solidity
+< 0.9 are dropped, removing background pinched off between nearly touching bands). `"band"` does
+not need the hole interior to be darker than the background. Wide bands break plain Otsu: it then
+separates background from band. `tile_index.ipynb` shows the histogram, thresholds and the mask of
+every method for one tile.
 
 **Edge refinement (D22, D23):** `features/edges.py::refine_edges()`. Every Otsu contour point
 is moved along its own **outward normal** (tangent from neighbours ±3 points) within a **fixed
@@ -699,6 +703,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D37 | 2026-10-02 | Interactive **moving-window tuner** (`MovingWindowTuner`, pyqtgraph): sliders for window and step (0.5 µm resolution), recompute 150 ms after a change, invalid settings reported and the last result kept. `RegistrationView` gains `set_errors` (and a `correction` name for its summary). Per-window terms are compared with the RANSAC affine recentred on each window's reference point, not with its Tx, Ty at the global centroid. | User: wants to change the moving-window parameters with sliders and watch the results in real time. Recentring: a global rotation or scale makes the shift depend on position, so only the shift at the same point is comparable. |
 | D38 | 2026-10-02 | **Row-to-row pitch** along y (`row_pitch`, `PitchView`) for the design, the stitched SEM without affine and the SEM after the RANSAC affine; SEM − design pitch below; tile edges marked. Row position = plain mean y of the row's contacts. | User: the moving-window affine did not find the cause; the relative position of each row (pitch) should be compared along y for design and SEM, including the bare stitched SEM. Tile edges added to tell stitching seams from mask errors. |
 | D39 | 2026-10-02 | Contact detection option **three-class Otsu** (`detect_contacts(classes=3)`), threshold hole | background; plain Otsu stays the library default, the notebooks use 3. A band-enclosure method (bright band threshold, holes = regions enclosed by bands) was rejected. | User: on a second dataset with wider white bands Otsu detected regions inside and outside the bands; the hole interior is clearly darker than the background; bands come close but never touch. Synthetic test: 16 px bands, plain Otsu 85 regions for 49 holes, three-class 49 (< 0.1 px). Band enclosure fails the same way as plain Otsu, because the blurred gaps between nearly touching bands rise above a band threshold and close the rings. |
+| D40 | 2026-10-02 | Detection `method="band"` added (regions enclosed by the bright band, 4-connected, solidity ≥ 0.9) and made the notebook default; `classes` replaced by `method` (`"otsu"`, `"otsu3"`, `"band"`). Supersedes the rejection in D39: the solidity filter removes the pinched-off background. Detection check cell in `tile_index.ipynb`. | User: three-class Otsu still fails on the second dataset; asked for the white-band method that had been proposed. Synthetic: 16 px bands 49/49 (< 0.2 px), also with the hole interior at background grey; background pieces have solidity 0.73–0.88, holes ~1.04. |
 
 ---
 
