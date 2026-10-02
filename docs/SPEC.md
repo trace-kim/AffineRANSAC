@@ -100,8 +100,11 @@ Rules:
   frame (§3). The global mask position of each file's (0, 0) is in the metadata CSV (§4.3).
 - Folder layout: `<DATA_DIR>/*.jpg` + one metadata `.csv`, and `<DATA_DIR>/Contour/*.oas`.
 - **Tone reversal:** some `.oas` files draw the area *around* the holes. For those, use
-  `read_contacts_tone_reversed()` (holes = frame − drawn shapes, D17). Detecting which files are
-  reversed is future work (rule to be proposed by T001 §5f). OASIS cannot store holes, so a
+  `read_contacts_tone_reversed()` (holes = frame − drawn shapes, D17). Which tone a file uses is
+  decided per tile by matching against the SEM (D28, `pipeline.choose_design_contacts`): normal
+  tone if ≥ 50 % of the SEM contacts match a design contact (tile-local, 25 nm gate), else tone
+  reversed if that reaches 50 %, else the tile is **flagged** (`DesignContacts.ok = False`).
+  No file property alone identifies reversed files (user). OASIS cannot store holes, so a
   polygon with holes arrives as one outline with zero-width cut lines.
   We do *not* read one large full-mask layout. The workload is therefore **many small files**
   (about 1,000 tiles × a few hundred contacts). Per-file overhead matters, not large-file
@@ -589,6 +592,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D25 | 2026-10-02 | First global stitching solve is **translation per tile** (gauge: mean correction 0), plus a mosaic builder for before/after views. `overlap_flow.ipynb` shows every step as diagnostic plots: before/after arrows at separate raw/residual magnifications with 1 nm key arrows, difference scatter with the outlier threshold, an image overlay before/after registration, a rotation trend plot, all-pairs comparison plots, stitched residual maps, and a mosaic with zoom. | User: results must be checkable visually, not just as numbers; a stitched result before/after correction is needed. Translation first, because the rotation model is not yet justified by data. |
 | D26 | 2026-10-02 | `pipeline.py` (S2, S4+S5 composed only from library functions) and one interactive stitch viewer for all chosen tiles. Placement is a Nominal/Stitched switch (SEM items move, design stays) rather than two copies of every layer. Each tile is its own image item (no single mosaic image), so ~1,000 tiles fit in memory. Drawing is relative to a local origin in whole µm, because the OpenGL viewport works in float32 (mask coordinates ~10⁷ nm would round to several nm). Opaque tiles: the later tile covers the earlier one in an overlap; hide a tile to see the other. | User: one viewer showing design, SEM before/after stitching, all contour methods, centres and overlaps, with zoom/pan and hideable layers; pipeline must use production functions; OpenGL for speed. |
 | D27 | 2026-10-02 | Overlap match gate default 10 → **25 nm**. Pairs that do not match are kept and classified (failed / skipped); tiles not connected to the largest stitched group get **NaN** corrections plus a warning, instead of the previous silent correction of 0. Gauge stays mean-zero; a "first tile fixed" view (`fix_tile`) is offered in the viewer. | User: SEM stage offsets between neighbours reach 25 nm, so the 10 nm gate rejected real pairs; those tiles then silently kept a 0 correction and misaligned in the stitched view. A stitching failure contaminates every later error and must be visible for diagnosis. User chose mean-zero gauge with an optional first-tile-fixed view (for a later global rotation/scale check against the design). |
+| D28 | 2026-10-02 | Design tone chosen per tile by matching: normal first, tone reversed if fewer than 50 % of the SEM contacts match, flag the tile if neither reaches 50 %. Replaces the single `TONE_REVERSED` setting. | User: no simple file property identifies reversed files; compare with the SEM contacts using the existing matching. |
 
 ---
 

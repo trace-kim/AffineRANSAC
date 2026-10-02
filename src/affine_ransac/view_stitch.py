@@ -175,8 +175,8 @@ class StitchViewer(QtWidgets.QWidget):
         self._add(IMAGES, k, image_item(tile))
         if design_polygons:
             self._add(DESIGN, k, path_item(design_polygons, COLORS[DESIGN]))
-        if len(tile.design_centers):
-            self._add(DESIGN_CENTRES, k, centres_item(tile.design_centers, COLORS[DESIGN_CENTRES], "x"))
+        if len(tile.design.centers):
+            self._add(DESIGN_CENTRES, k, centres_item(tile.design.centers, COLORS[DESIGN_CENTRES], "x"))
         for layer, centres_layer, found in ((OTSU, OTSU_CENTRES, tile.otsu), (REFINED, REFINED_CENTRES, tile.refined)):
             if found.contours:
                 self._add(layer, k, path_item([local(c) for c in found.contours], COLORS[layer]))

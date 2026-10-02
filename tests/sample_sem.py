@@ -71,7 +71,7 @@ def render_tile(lattice_nm, true_center_nm, fov_nm=720.0, size_px=512, radius_nm
         y = -y_nm / pixel_nm + (size_px - 1) / 2
         if -2 * radius_px < x < size_px + 2 * radius_px and -2 * radius_px < y < size_px + 2 * radius_px:
             center = (int(round(x * 16)), int(round(y * 16)))  # 4 fractional bits: sub-pixel drawing
-            cv2.circle(image, center, int(round((radius_px + 2) * 16)), 200, thickness=3 * 16, shift=4)
+            cv2.circle(image, center, int(round((radius_px + 2) * 16)), 200, thickness=3, shift=4)  # thickness is not scaled by shift
             cv2.circle(image, center, int(round(radius_px * 16)), 40, thickness=-1, shift=4)
     image = cv2.GaussianBlur(image, (0, 0), sigmaX=1.5)
     noise = np.random.default_rng(seed).normal(0, 6, image.shape)

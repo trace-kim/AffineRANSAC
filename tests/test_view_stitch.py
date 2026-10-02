@@ -11,7 +11,7 @@ from pyqtgraph.Qt import QtCore
 from affine_ransac.features.contact import detect_contacts
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.overlap_fit import OverlapFit
-from affine_ransac.pipeline import PairResult, RejectedPair, StitchResult, TileResult
+from affine_ransac.pipeline import DesignContacts, PairResult, RejectedPair, StitchResult, TileResult
 from affine_ransac.view_stitch import (DESIGN, FAILED, IMAGES, OUTLIERS, REFINED, UNSTITCHED, StitchViewer,
                                        outlier_indices)
 
@@ -23,7 +23,8 @@ def make_tile(center):
     image[10:16, 20:26] = 20  # one dark contact
     found = detect_contacts(image, blur_sigma=0)
     return TileResult(image=image, center_nm=np.array(center, float), fov_nm=np.array([120.0, 80.0]),
-                      pixel_size_nm=PIXEL, otsu=found, refined=found, design_centers=np.array([[0.0, 0.0]]))
+                      pixel_size_nm=PIXEL, otsu=found, refined=found,
+                      design=DesignContacts(np.array([[0.0, 0.0]]), False, 1.0, ok=True))
 
 
 def make_viewer():

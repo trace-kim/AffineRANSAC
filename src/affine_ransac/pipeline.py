@@ -1,7 +1,8 @@
 """Steps S2–S5 for a set of tiles, built only from the library functions (docs/SPEC.md §5).
 
 - process_tile(): load one SEM image, detect its contacts (Otsu, then edge refinement) and read
-  its design contacts.
+  its design contacts in the tone (normal / reversed) that matches the SEM contacts; tiles where
+  neither tone matches are flagged (DesignContacts.ok).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
   (translation) and solve one translation correction per tile. Pairs that fail to match and
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
@@ -21,9 +22,53 @@ from affine_ransac.features.edges import refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.io.design import load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
+from affine_ransac.matching import match_points
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import solve_tile_shifts
+
+
+@dataclass
+class DesignContacts:
+    centers: np.ndarray     # (N, 2) design contact centres, tile-local nm
+    reversed: bool          # True if read as tone reversed (holes = space between drawn shapes)
+    match_fraction: float   # fraction of the SEM contacts that matched a design contact
+    ok: bool                # False: neither tone matched well enough (flagged), or no .oas
+
+
+def matched_fraction(design: np.ndarray, sem: np.ndarray, max_match_nm: float) -> float:
+    """Fraction of the SEM points that pair one-to-one with a design point within the gate."""
+    if len(sem) == 0:
+        return 0.0
+    return len(match_points(design, sem, max_match_nm)[0]) / len(sem)
+
+
+def choose_design_contacts(
+    layout,
+    layer: tuple[int, int],
+    fov_nm,
+    sem_local: np.ndarray,
+    max_match_nm: float = 25.0,
+    min_fraction: float = 0.5,
+) -> DesignContacts:
+    """Read the design contacts with whichever tone matches the SEM contacts.
+
+    Normal tone first (holes = drawn shapes). If fewer than min_fraction of the SEM contacts
+    (sem_local, tile-local nm) match a design contact within max_match_nm, try tone reversed.
+    If that does not reach min_fraction either, the better of the two is returned with ok=False.
+    """
+    normal, _ = read_contacts(layout, *layer)
+    normal_fraction = matched_fraction(normal, sem_local, max_match_nm)
+    if normal_fraction >= min_fraction:
+        return DesignContacts(normal, False, normal_fraction, ok=True)
+
+    reversed_, _ = read_contacts_tone_reversed(layout, *layer, frame_nm=tuple(fov_nm))
+    reversed_fraction = matched_fraction(reversed_, sem_local, max_match_nm)
+    if reversed_fraction >= min_fraction:
+        return DesignContacts(reversed_, True, reversed_fraction, ok=True)
+    if reversed_fraction > normal_fraction:
+        return DesignContacts(reversed_, True, reversed_fraction, ok=False)
+    return DesignContacts(normal, False, normal_fraction, ok=False)
 
 
 @dataclass
@@ -34,12 +79,16 @@ class TileResult:
     pixel_size_nm: float
     otsu: DetectedContacts      # pixel frame
     refined: DetectedContacts   # pixel frame: Otsu contours moved to the maximum gradient
-    design_centers: np.ndarray  # (N, 2) design contact centres, tile-local nm (empty if no .oas)
+    design: DesignContacts      # design contacts in the tone that matches the SEM
 
     def sem_points_nm(self, refined: bool = True) -> np.ndarray:
         """SEM contact centres in mask nm at the nominal placement."""
         found = self.refined if refined else self.otsu
         return pixel_to_tile_nm(found.centers, self.image.shape, self.pixel_size_nm) + self.center_nm
+
+    def design_points_nm(self) -> np.ndarray:
+        """Design contact centres in mask nm (tile-local + nominal centre; the design never moves)."""
+        return self.design.centers + self.center_nm
 
 
 def process_tile(
@@ -48,35 +97,37 @@ def process_tile(
     center_nm,
     fov_nm,
     layer: tuple[int, int],
-    tone_reversed: bool = False,
     search_px: float = 5.0,
+    design_match_nm: float = 25.0,
+    min_match_fraction: float = 0.5,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
     center_nm: (x, y) mask position of the image centre; fov_nm: (width, height), nm.
-    layer: (layer, datatype) of the contacts in the .oas.
+    layer: (layer, datatype) of the contacts in the .oas. The design tone is chosen by matching
+    against the refined SEM centres (choose_design_contacts).
     """
     image = load_sem_image(image_path)
     fov_nm = np.asarray(fov_nm, dtype=float)
+    pixel_size_nm = fov_nm[0] / image.shape[1]
     otsu = detect_contacts(image)
     refined = refine_edges(image, otsu, search_px=search_px)
 
-    design_centers = np.empty((0, 2))
-    if oas_path is not None:
-        layout = load_layout(oas_path)
-        if tone_reversed:
-            design_centers, _ = read_contacts_tone_reversed(layout, *layer, frame_nm=tuple(fov_nm))
-        else:
-            design_centers, _ = read_contacts(layout, *layer)
+    if oas_path is None:
+        design = DesignContacts(np.empty((0, 2)), False, 0.0, ok=False)
+    else:
+        sem_local = pixel_to_tile_nm(refined.centers, image.shape, pixel_size_nm)
+        design = choose_design_contacts(load_layout(oas_path), layer, fov_nm, sem_local,
+                                        design_match_nm, min_match_fraction)
 
     return TileResult(
         image=image,
         center_nm=np.asarray(center_nm, dtype=float),
         fov_nm=fov_nm,
-        pixel_size_nm=fov_nm[0] / image.shape[1],
+        pixel_size_nm=pixel_size_nm,
         otsu=otsu,
         refined=refined,
-        design_centers=design_centers,
+        design=design,
     )
 
 
