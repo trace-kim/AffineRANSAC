@@ -9,8 +9,8 @@ import pyqtgraph as pg
 import pytest
 
 from affine_ransac.fitting.ransac import ransac_affine
-from affine_ransac.geometry.affine import decompose
-from affine_ransac.view_ransac import TERMS, RansacMonitor
+from affine_ransac.geometry.affine import decompose, report_terms
+from affine_ransac.view_ransac import RansacMonitor
 from test_ransac import synthetic
 
 
@@ -38,9 +38,13 @@ def test_run_to_end_shows_the_final_affine():
     monitor.run_to_end()
     assert monitor.done and monitor.last_step.stage == "refit"
 
-    final = decompose(ransac_affine(sem, design, threshold_nm=0.5, seed=1).model)
-    best_column = [float(monitor.table.item(row, 1).text()) for row in range(len(TERMS))]
-    np.testing.assert_allclose(best_column, [final[key] for key, _ in TERMS], atol=1e-3)
+    result = ransac_affine(sem, design, threshold_nm=0.5, seed=1)
+    rows = report_terms(result.model, design - result.reference)
+    best = [float(monitor.table.item(row, 2).text()) for row in range(len(rows))]
+    best_edge = [float(monitor.table.item(row, 3).text()) for row in range(len(rows))]
+    np.testing.assert_allclose(best, [value for _, value, _ in rows], atol=1e-3)
+    np.testing.assert_allclose(best_edge, [edge for *_, edge in rows], atol=1e-3)
+    assert monitor.table.verticalHeaderItem(4).text() == "rotation (°)"
     assert "Finished" in monitor.status.text()
     assert not monitor.step()  # nothing left
     monitor.close()

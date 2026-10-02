@@ -11,7 +11,9 @@ on the inliers):
   the model's magnification / rotation / orthogonality terms.
 - Inlier count per iteration: this sample (dots) and the best so far (line); the needed number
   of iterations N is in the status line.
-- Table: Tx, Ty (nm), Mx, My (ppm), rotation, orthogonality (µrad) of this model and the best one.
+- Table: the correction G of this model and of the best one (geometry.affine.report_terms):
+  Tx, Ty (nm), Mx, My (ppm = nm per mm), rotation and orthogonality (degrees), each with how far
+  that term alone moves the furthest contact (nm at the field edge).
 
 Controls: Run / Pause, Step, Run to end, delay per step; Restart applies τ and the seed.
 """
@@ -21,11 +23,11 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.fitting.ransac import RansacStep, ransac_affine_steps, residuals
-from affine_ransac.geometry.affine import apply_affine, decompose
+from affine_ransac.geometry.affine import apply_affine, report_terms
 
 INLIER, OUTLIER, SAMPLE, MODEL = "#33cc33", "#ff4040", "#ffff00", "#3c8cff"
-TERMS = [("Tx_nm", "Tx (nm)"), ("Ty_nm", "Ty (nm)"), ("Mx_ppm", "Mx (ppm)"), ("My_ppm", "My (ppm)"),
-         ("rotation_urad", "rotation (µrad)"), ("orthogonality_urad", "orthogonality (µrad)")]
+TERM_LABELS = [label for label, *_ in report_terms(np.eye(3), np.zeros((1, 2)))]
+COLUMNS = ["this model", "edge (nm)", "best so far", "edge (nm)"]
 
 
 def two_scatters(plot, size=4):
@@ -117,7 +119,7 @@ class RansacMonitor(QtWidgets.QWidget):
 
     def _make_panel(self, threshold_nm, seed, interval_ms):
         panel = QtWidgets.QWidget()
-        panel.setFixedWidth(330)
+        panel.setFixedWidth(420)
         column = QtWidgets.QVBoxLayout(panel)
 
         buttons = QtWidgets.QGridLayout()
@@ -156,9 +158,11 @@ class RansacMonitor(QtWidgets.QWidget):
         self.status.setWordWrap(True)
         column.addWidget(self.status)
 
-        self.table = QtWidgets.QTableWidget(len(TERMS), 2)
-        self.table.setHorizontalHeaderLabels(["this model", "best so far"])
-        self.table.setVerticalHeaderLabels([label for _, label in TERMS])
+        self.table = QtWidgets.QTableWidget(len(TERM_LABELS), len(COLUMNS))
+        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.table.setVerticalHeaderLabels(TERM_LABELS)
+        self.table.setToolTip("Correction G (SEM -> design). edge (nm): how far the term alone moves the "
+                              "furthest contact. ppm = nm per mm.")
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         column.addWidget(self.table)
         column.addStretch(1)
@@ -279,8 +283,11 @@ class RansacMonitor(QtWidgets.QWidget):
         self.best_counts.setData(iteration, best)
 
     def _show_table(self, step: RansacStep):
-        for col, model in enumerate((step.model, step.best_model)):
-            terms = decompose(model) if model is not None else {}
-            for row, (key, _) in enumerate(TERMS):
-                text = f"{terms[key]:+.3f}" if key in terms else "-"
-                self.table.setItem(row, col, QtWidgets.QTableWidgetItem(text))
+        points = self.design - step.reference
+        for col, model in ((0, step.model), (2, step.best_model)):
+            rows = report_terms(model, points) if model is not None else [(label, None, None) for label in TERM_LABELS]
+            for row, (label, value, edge) in enumerate(rows):
+                digits = 6 if "°" in label else 3  # degrees are tiny numbers (1 µrad = 0.0000573°)
+                texts = ("-", "-") if value is None else (f"{value:+.{digits}f}", f"{edge:.3f}")
+                for offset, text in enumerate(texts):
+                    self.table.setItem(row, col + offset, QtWidgets.QTableWidgetItem(text))

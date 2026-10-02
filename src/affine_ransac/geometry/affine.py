@@ -41,3 +41,25 @@ def decompose(matrix: np.ndarray) -> dict:
         "Mx_ppm": (a - 1) * 1e6, "My_ppm": (d - 1) * 1e6,
         "rotation_urad": (rx + ry) / 2 * 1e6, "orthogonality_urad": (rx - ry) * 1e6,
     }
+
+
+def report_terms(matrix: np.ndarray, points: np.ndarray) -> list[tuple[str, float, float]]:
+    """Rows (label, value, edge_nm) for display: translation in nm, magnification in ppm (= nm per
+    mm), rotation and orthogonality in degrees. edge_nm = how far that term alone moves the
+    furthest of `points` (relative to the reference point, nm).
+
+    For a small rotation θ a point at distance r moves θ·r; a pure orthogonality ω moves it at
+    most ω/2·r (each axis turns by ω/2, in opposite directions).
+    """
+    terms = decompose(matrix)
+    x_max, y_max = np.abs(points).max(axis=0)
+    r_max = np.linalg.norm(points, axis=1).max()
+    rotation, orthogonality = terms["rotation_urad"] * 1e-6, terms["orthogonality_urad"] * 1e-6
+    return [
+        ("Tx (nm)", terms["Tx_nm"], abs(terms["Tx_nm"])),
+        ("Ty (nm)", terms["Ty_nm"], abs(terms["Ty_nm"])),
+        ("Mx (ppm)", terms["Mx_ppm"], abs(terms["Mx_ppm"]) * 1e-6 * x_max),
+        ("My (ppm)", terms["My_ppm"], abs(terms["My_ppm"]) * 1e-6 * y_max),
+        ("rotation (°)", np.degrees(rotation), abs(rotation) * r_max),
+        ("orthogonality (°)", np.degrees(orthogonality), abs(orthogonality) / 2 * r_max),
+    ]

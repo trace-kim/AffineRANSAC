@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from affine_ransac.geometry.affine import apply_affine, decompose, fit_affine, triangle_area
+from affine_ransac.geometry.affine import apply_affine, decompose, fit_affine, report_terms, triangle_area
 
 
 def known_affine(theta_urad=0.0, mx_ppm=0.0, my_ppm=0.0, skew_urad=0.0, t=(0.0, 0.0)):
@@ -42,3 +42,16 @@ def test_decomposition_signs():
 def test_triangle_area():
     assert triangle_area([0, 0], [4, 0], [0, 3]) == 6
     assert triangle_area([0, 0], [1, 1], [2, 2]) == 0
+
+
+def test_report_terms_degrees_and_shift_at_the_field_edge():
+    points = np.array([[-10_000.0, 0.0], [10_000.0, 0.0], [0.0, 5_000.0]])  # furthest point 10 um away
+    rows = {label: (value, edge) for label, value, edge in report_terms(known_affine(theta_urad=100, mx_ppm=50), points)}
+
+    value, edge = rows["rotation (°)"]
+    assert value == pytest.approx(np.degrees(100e-6)) and edge == pytest.approx(1.0)  # 100 urad * 10 um = 1 nm
+    value, edge = rows["Mx (ppm)"]
+    assert value == pytest.approx(50) and edge == pytest.approx(0.5)  # 50 ppm * 10 um = 0.5 nm
+    # The edge shift of each term matches moving the furthest point with that term alone.
+    moved = apply_affine(known_affine(theta_urad=100), points) - points
+    assert np.linalg.norm(moved, axis=1).max() == pytest.approx(1.0, rel=1e-3)
