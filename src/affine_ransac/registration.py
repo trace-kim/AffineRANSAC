@@ -197,3 +197,15 @@ def row_means(design_y: np.ndarray, values: np.ndarray, gap_nm: float = 10.0):
     mean = np.column_stack([np.bincount(rows, weights=c) / count for c in columns.T]).reshape(
         (len(count),) + values.shape[1:])
     return row_y, mean, count
+
+
+def row_pitch(design_y: np.ndarray, y: np.ndarray, gap_nm: float = 10.0):
+    """Row-to-row pitch along y (nm) of one set of positions y (N,), rows grouped by design y.
+
+    Each row's position is the mean y of its contacts (row_means); the pitch is the difference
+    between neighbouring rows, from the lowest up. Returns (mid_y, pitch): the mean of the two rows'
+    DESIGN y (nm, so every set is plotted at the same places) and the pitch, both (R − 1,).
+    """
+    row_design, _, _ = row_means(design_y, design_y, gap_nm)
+    _, row_y, _ = row_means(design_y, y, gap_nm)
+    return (row_design[1:] + row_design[:-1]) / 2, np.diff(row_y)

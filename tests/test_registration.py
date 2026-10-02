@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from affine_ransac.registration import design_errors, error_summary, group_rows, merge_observations, row_means
+from affine_ransac.registration import design_errors, error_summary, group_rows, merge_observations, row_means, row_pitch
 
 DESIGN = np.array([(x, y) for x in np.arange(0, 500, 100.0) for y in np.arange(0, 300, 100.0)])
 
@@ -107,3 +107,12 @@ def test_row_means_average_the_contacts_of_each_row():
     np.testing.assert_allclose(row_y, [0.1, 100.05, 200.0])
     np.testing.assert_allclose(mean, [[3.0, 1.0], [2.0, 0.0], [5.0, 5.0]])
     np.testing.assert_array_equal(count, [2, 2, 1])
+
+
+def test_row_pitch_is_the_spacing_of_neighbouring_row_means():
+    design_y = np.array([0.0, 0.0, 100.0, 100.0, 200.0])
+    sem_y = np.array([0.5, -0.5, 101.0, 103.0, 199.0])  # rows at 0, 102, 199
+    mid_y, pitch = row_pitch(design_y, sem_y, gap_nm=10)
+    np.testing.assert_allclose(mid_y, [50.0, 150.0])
+    np.testing.assert_allclose(pitch, [102.0, 97.0])
+    np.testing.assert_allclose(row_pitch(design_y, design_y, gap_nm=10)[1], [100.0, 100.0])
