@@ -434,13 +434,16 @@ Details are in §7.
 RANSAC is used **only here** (SEM↔design), not in stitching (D8).
 
 ### S8 — Registration error and reporting
-**Final registration error (v1, D34):** `RansacResult.residuals`, i.e. G(SEM) − design for
-**every** merged contact (inliers and outliers). `registration.binned_mean_2d()` (mean per square
-bin, heatmap) and `registration.profile()` (mean / σ / count per bin along one axis, e.g. dx and
-dy against y averaged over x) summarise it; `view_registration.RegistrationView` shows dx/dy
-heatmaps (shared symmetric colour scale, outliers ringed, option to bin the inliers only) and the
-dx/dy-vs-y profiles (all contacts with ±1σ bars, and inliers only). The RANSAC monitor also draws
-the residual after the current model on its dx/dy plots (crosses), next to the raw error (dots).
+**Final registration error (v1, D34, D35):** `RansacResult.residuals`, i.e. G(SEM) − design for
+**every** merged contact (inliers and outliers). `view_registration.RegistrationView` shows two
+error maps (dx, dy): every contact a dot coloured by its error (jet), **not binned**, rasterized to
+the screen (one image pixel per device pixel, redrawn on zoom, pan and resize; contacts on the
+same pixel are averaged when zoomed out; disks of ~0.4 × pitch when zoomed in). Below, the mean
+dx and dy **per row of contacts** against the row's y: `registration.group_rows()` groups contacts
+by design y (a new row where the sorted y jumps by more than `gap_nm`, default 10 nm) and
+`registration.row_means()` averages each row. No inlier/outlier distinction in these views. The
+RANSAC monitor also draws the residual after the current model on its dx/dy plots (crosses),
+next to the raw error (dots).
 
 **Implemented first (v1, D29): raw error, no affine removed.** `registration.design_errors()`
 matches each tile's SEM centres to that tile's design centres, each placed with its own
@@ -666,6 +669,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D32 | 2026-10-02 | RANSAC (S7) implemented as a **step generator** (`ransac_affine_steps`) plus a UI-free runner (`ransac_affine`), on the merged contacts, τ = 0.5 nm to start. Affine-only (not generic over model types, D10) and small-angle decomposition only (no polar/QR) until needed. A live pyqtgraph monitor (`view_ransac.RansacMonitor`) shows each iteration's sample, inliers/outliers, residuals, raw-error-vs-position plots with the model's line, inlier counts and the decomposed terms. | User: RANSAC pipeline that can run on its own, plus a UI to watch in real time which points are sampled, the parameter values, the linear-fit scatter and the outliers at every step. |
 | D33 | 2026-10-02 | Affine terms are displayed as the correction G (sign as in §8.2) with rotation and orthogonality in degrees, magnification in ppm, plus a "nm at field edge" value per term (`report_terms`). | User: not used to µrad; wants degrees, and a shift in nm comparable to the threshold. Kept the correction-G sign (opposite to the raw-error plots). |
 | D34 | 2026-10-02 | Final registration error = residual after the RANSAC affine for every contact, shown as dx/dy heatmaps (binned mean) and dx/dy-vs-y profiles averaged over x, via library functions (`binned_mean_2d`, `profile`). Heatmaps and means include outliers by default (they are the defects); the heatmaps can be rebinned from the inliers only, and the profiles also show the inlier-only mean. | User: the final registration error is the wanted result; wants a heatmap and the x-averaged dx/dy trend along y; the monitor's raw dx/dy plots alone could mislead, so the residual goes on the same plots. |
+| D35 | 2026-10-02 | Registration error maps are per-contact coloured dots (jet), rasterized to the screen, replacing the binned heatmaps; the trend along y is the mean error per contact **row** (grouped by design y), drawn as plain lines for dx and dy, replacing the binned profile with scatter, ±1σ and inlier/outlier lines. Colours are computed by the view (opaque RGB) rather than by ImageItem. | User: heatmap must not be binned; a coloured scatter with suitable rasterization for the zoomed-out view; jet colour map; the x-averaged trend must average the contacts of each row; only the mean lines, no inlier/outlier split. |
 
 ---
 
