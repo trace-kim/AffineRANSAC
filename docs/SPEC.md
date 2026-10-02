@@ -289,6 +289,9 @@ mutually consistent. Requirements:
   non-periodic: image correlation over an aperiodic region, a unique mark, or a pattern
   boundary.
 - Log a warning when the matched fraction is low or the offset is close to `P/2`.
+- *Deferred idea (user, 2026-10-02):* make matching more robust by ranking several candidate
+  matchings (offsets) by matching score and choosing, among the good ones, the one with the
+  smallest translation. Not urgent: input images are controlled so offsets stay within 25 nm.
 
 ### S5 — Global stitching solve (per-tile affines)
 **Pairwise analysis before the global solve (D24):** before choosing the tile model, each
@@ -411,6 +414,15 @@ Details are in §7.
 RANSAC is used **only here** (SEM↔design), not in stitching (D8).
 
 ### S8 — Registration error and reporting
+**Implemented first (v1, D29): raw error, no affine removed.** `registration.design_errors()`
+matches each tile's stitched SEM centres (nominal + correction) to that tile's design centres
+(`match_points`, 25 nm gate) and returns `DesignErrors` (tile, design, SEM, error per contact).
+Tiles that are not stitched, have a flagged design tone or match nothing are listed in `skipped`
+with the reason, plus a warning. `error_summary()` gives count, mean, 3σ and max. Overlap
+contacts get one entry per tile (all observations kept, S5). The sign is set only in
+`registration_error()`: SEM − design, tentative (§13-8). The viewer shows it as an error map
+beside the SEM view with shared zoom. The RANSAC affine (S7) and residuals after `G` follow.
+
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
 - **Reported registration error = residuals after the full affine is removed** (decision D4).
@@ -593,6 +605,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D26 | 2026-10-02 | `pipeline.py` (S2, S4+S5 composed only from library functions) and one interactive stitch viewer for all chosen tiles. Placement is a Nominal/Stitched switch (SEM items move, design stays) rather than two copies of every layer. Each tile is its own image item (no single mosaic image), so ~1,000 tiles fit in memory. Drawing is relative to a local origin in whole µm, because the OpenGL viewport works in float32 (mask coordinates ~10⁷ nm would round to several nm). Opaque tiles: the later tile covers the earlier one in an overlap; hide a tile to see the other. | User: one viewer showing design, SEM before/after stitching, all contour methods, centres and overlaps, with zoom/pan and hideable layers; pipeline must use production functions; OpenGL for speed. |
 | D27 | 2026-10-02 | Overlap match gate default 10 → **25 nm**. Pairs that do not match are kept and classified (failed / skipped); tiles not connected to the largest stitched group get **NaN** corrections plus a warning, instead of the previous silent correction of 0. Gauge stays mean-zero; a "first tile fixed" view (`fix_tile`) is offered in the viewer. | User: SEM stage offsets between neighbours reach 25 nm, so the 10 nm gate rejected real pairs; those tiles then silently kept a 0 correction and misaligned in the stitched view. A stitching failure contaminates every later error and must be visible for diagnosis. User chose mean-zero gauge with an optional first-tile-fixed view (for a later global rotation/scale check against the design). |
 | D28 | 2026-10-02 | Design tone chosen per tile by matching: normal first, tone reversed if fewer than 50 % of the SEM contacts match, flag the tile if neither reaches 50 %. Replaces the single `TONE_REVERSED` setting. | User: no simple file property identifies reversed files; compare with the SEM contacts using the existing matching. |
+| D29 | 2026-10-02 | First design comparison = **raw** error per contact (stitched SEM − design, no affine removed), per tile against its own design, in `registration.py` (`design_errors`, `error_summary`). Tiles without errors are listed with a reason and warned. Sign SEM − design is tentative and lives in one function. The viewer shows an error map beside the SEM view; zoom/pan are linked by copying the visible rectangle, because pyqtgraph's setXLink aligns views by screen position (shifts side-by-side plots). | User: apply the tone choice, compute the error of the stitched centres vs the design, show it side by side with shared zoom, using library functions reusable in other pipelines; sign convention to be checked later. RANSAC (S7) next. |
 
 ---
 
@@ -615,7 +628,8 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
    shared-intrafield + per-tile rigid model be acceptable if it proves more stable on
    synthetic data?
 8. **Output format** preferred by downstream tools (CSV columns, units, sign convention
-   `SEM − design` vs `design − SEM`).
+   `SEM − design` vs `design − SEM`). *Tentative (user, 2026-10-02):* SEM − design, to be
+   checked; set only in `registration.registration_error()` so it can be changed in one place.
 9. **Data bar:** do the JPEGs include an info bar that must be cropped? Is it always the same
    size?
 10. **Per-tile `.oas` coordinate frame:** *Answered (2026-10-01):* **local, centred on

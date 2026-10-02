@@ -10,6 +10,10 @@ at their nominal position in every placement).
   stitching correction (corrections average zero); "Stitched, first tile fixed" shifts all
   corrections so the first stitched tile stays at its nominal position. SEM items move, the
   design stays. Switch back and forth to compare.
+- Error map (if design errors are given): a second plot beside the SEM view, sharing its zoom
+  and pan, with one arrow per contact from the design position along the raw error
+  (registration.design_errors; sign as in registration_error), magnified by the arrow scale.
+  Tiles without errors (not stitched, design tone flagged) are framed in magenta.
 - Layers and tiles can be hidden with the check boxes on the right (hide a tile to see the
   tile beneath it in an overlap).
 - Mouse: drag to pan, wheel to zoom, right-click for more options.
@@ -28,6 +32,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.pipeline import StitchResult, TileResult
+from affine_ransac.registration import DesignErrors, error_summary
 from affine_ransac.stitching import fix_tile
 from affine_ransac.view_design import polygons_to_path
 
@@ -43,13 +48,16 @@ BOXES = "Overlaps used (nominal)"
 FAILED = "Overlaps not matched"
 SKIPPED = "Overlaps skipped (few contacts)"
 UNSTITCHED = "Tiles not stitched"
+ERRORS = "Error arrows (error map)"
+TILE_FRAMES = "Tile outlines (error map)"
+NO_ERRORS = "Tiles without errors (error map)"
 
 FAILURE_COLOR = "#ff00ff"
 COLORS = {
     IMAGES: "#c0c0c0", DESIGN: "#3c8cff", DESIGN_CENTRES: "#3c8cff", OTSU: "#33cc33",
     OTSU_CENTRES: "#33cc33", REFINED: "#ff4040", REFINED_CENTRES: "#ff4040",
     OUTLIERS: "#ffa500", BOXES: "#ffff00", FAILED: FAILURE_COLOR, SKIPPED: "#909090",
-    UNSTITCHED: FAILURE_COLOR,
+    UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060", NO_ERRORS: FAILURE_COLOR,
 }
 SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by placement
 
@@ -78,6 +86,41 @@ def centres_item(points: np.ndarray, color, symbol="+", size=8):
     return pg.ScatterPlotItem(points[:, 0], points[:, 1], symbol=symbol, size=size, pen=pg.mkPen(color), brush=None)
 
 
+def make_plot(use_opengl: bool) -> pg.PlotWidget:
+    """A plot of nm data relative to the viewer's origin, axes labelled x − x0, y − y0 in µm."""
+    plot = pg.PlotWidget()
+    if use_opengl:
+        plot.useOpenGL(True)
+    plot.setAspectLocked(True)
+    for side, name in (("bottom", "x − x0 (µm)"), ("left", "y − y0 (µm)")):
+        plot.setLabel(side, name)
+        plot.getAxis(side).setScale(1e-3)  # data is nm
+    return plot
+
+
+def link_views(a: pg.PlotWidget, b: pg.PlotWidget):
+    """Keep the same visible area in both plots. (pyqtgraph's setXLink aligns linked views by
+    their screen position, which shifts the content of plots placed side by side.)"""
+    busy = [False]
+
+    def follow(source, target):
+        def update(*_):
+            if not busy[0]:
+                busy[0] = True
+                target.getPlotItem().vb.setRange(rect=source.getPlotItem().vb.viewRect(), padding=0)
+                busy[0] = False
+        source.getPlotItem().vb.sigRangeChanged.connect(update)
+
+    follow(a, b)
+    follow(b, a)
+
+
+def arrow_segments(start: np.ndarray, vector: np.ndarray, scale: float):
+    """x, y arrays of line segments start -> start + scale * vector, for connect="pairs"."""
+    end = start + scale * vector
+    return np.column_stack([start[:, 0], end[:, 0]]).ravel(), np.column_stack([start[:, 1], end[:, 1]]).ravel()
+
+
 def outlier_indices(stitch: StitchResult, n_tiles: int) -> list[np.ndarray]:
     """Per tile, the indices of its contacts that some pair fit flagged as an outlier."""
     found = [[] for _ in range(n_tiles)]
@@ -97,10 +140,14 @@ class StitchViewer(QtWidgets.QWidget):
         stitch: StitchResult,
         refined: bool = True,
         use_opengl: bool = True,
+        errors: DesignErrors | None = None,
+        arrow_scale: float = 100.0,
     ):
         """tiles: from process_tile; design_polygons: per tile, read_polygons() of its .oas
         (tile-local nm, [] if none); stitch: from stitch_tiles; refined: whether stitch_tiles was
-        given the refined (True) or the Otsu centres, for the outlier markers."""
+        given the refined (True) or the Otsu centres, for the outlier markers; errors: from
+        registration.design_errors, shown as an error map beside the SEM view (None: no map);
+        arrow_scale: error arrows are drawn this many times longer than the error."""
         super().__init__()
         self.setWindowTitle(f"Stitch viewer - {len(tiles)} tiles")
         self.tiles = tiles
@@ -118,15 +165,9 @@ class StitchViewer(QtWidgets.QWidget):
         self.origin = np.round(centers.mean(axis=0), -3)  # whole µm, see module docstring
         self.items = []  # (layer, tile index or None, graphics item)
 
-        self.plot = pg.PlotWidget()
-        if use_opengl:
-            self.plot.useOpenGL(True)
-        self.plot.setAspectLocked(True)
+        self.plot = make_plot(use_opengl)
         x0, y0 = self.origin / 1000
-        self.plot.setTitle(f"origin x0 = {x0:.0f} µm, y0 = {y0:.0f} µm")
-        for side, name in (("bottom", "x − x0 (µm)"), ("left", "y − y0 (µm)")):
-            self.plot.setLabel(side, name)
-            self.plot.getAxis(side).setScale(1e-3)  # data is nm
+        self.plot.setTitle(f"SEM and design - origin x0 = {x0:.0f} µm, y0 = {y0:.0f} µm")
 
         outliers = outlier_indices(stitch, len(tiles))
         for k, tile in enumerate(tiles):
@@ -139,22 +180,71 @@ class StitchViewer(QtWidgets.QWidget):
                 width = 2 if layer == FAILED else 1
                 self._add(layer, None, path_item([rectangle(*b) - self.origin for b in boxes], COLORS[layer], style, width))
 
+        self.error_plot, self.errors, self.arrow_scale = None, errors, arrow_scale
+        if errors is not None:
+            self._add_error_map(errors, use_opengl)
+
         self.status_label = QtWidgets.QLabel(self._status_text(stitch))
         self.cursor_label = QtWidgets.QLabel("x = -, y = - (mask µm)")
-        self.plot.scene().sigMouseMoved.connect(self._show_cursor)
+        plots = QtWidgets.QSplitter()
+        for plot in (self.plot, self.error_plot):
+            if plot is not None:
+                plots.addWidget(plot)
+                plot.scene().sigMouseMoved.connect(lambda pos, plot=plot: self._show_cursor(plot, pos))
 
         layout = QtWidgets.QHBoxLayout(self)
         left = QtWidgets.QVBoxLayout()
         left.addWidget(self.status_label)
         left.addWidget(self.cursor_label)
-        left.addWidget(self.plot)
+        if self.error_plot is not None:
+            left.addWidget(self.error_label)
+        left.addWidget(plots, stretch=1)
         layout.addLayout(left, stretch=1)
         layout.addWidget(self._side_panel(tile_ids))
 
         self.set_placement("nominal")
         self.update_visibility()
         self.plot.autoRange()
-        self.resize(1400, 950)
+        self.resize(1900 if errors is not None else 1400, 950)
+
+    def _add_error_map(self, errors: DesignErrors, use_opengl: bool):
+        """The error plot: per tile, arrows from its design positions; it shares the SEM view's zoom."""
+        self.error_plot = make_plot(use_opengl)
+        self.error_plot.setTitle("Raw error map (SEM - design)")  # short: a long title widens the plot
+        self.error_label = QtWidgets.QLabel()
+        link_views(self.plot, self.error_plot)
+        self.error_arrows = {}  # tile -> (arrow curve, start relative to the tile centre, error)
+        for k, tile in enumerate(self.tiles):
+            half_w, half_h = tile.fov_nm / 2
+            frame = [rectangle(-half_w, half_w, -half_h, half_h)]
+            self._add(TILE_FRAMES, k, path_item(frame, COLORS[TILE_FRAMES]), self.error_plot)
+            if k in errors.skipped:
+                self._add(NO_ERRORS, k, path_item(frame, COLORS[NO_ERRORS], width=3), self.error_plot)
+            mine = errors.tile == k
+            if not mine.any():
+                continue
+            start = errors.design_nm[mine] - tile.center_nm  # relative to the tile, like the design
+            arrows = pg.PlotCurveItem(*arrow_segments(start, errors.error_nm[mine], self.arrow_scale),
+                                      connect="pairs", pen=pg.mkPen(COLORS[ERRORS]))
+            self._add(ERRORS, k, arrows, self.error_plot)
+            self._add(ERRORS, k, centres_item(start, COLORS[ERRORS], "o", 3), self.error_plot)
+            self.error_arrows[k] = (arrows, start, errors.error_nm[mine])
+        self._update_error_label()
+
+    def set_arrow_scale(self, scale: float):
+        self.arrow_scale = scale
+        for arrows, start, error in self.error_arrows.values():
+            arrows.setData(*arrow_segments(start, error, scale))
+        self._update_error_label()
+
+    def _update_error_label(self):
+        summary = error_summary(self.errors.error_nm)
+        text = (f"Raw error (SEM − design), dot = design position, line = error ×{self.arrow_scale:g}: "
+                f"{summary['count']} contacts")
+        if summary["count"]:
+            text += (f", mean ({summary['mean_x_nm']:+.2f}, {summary['mean_y_nm']:+.2f}) nm, "
+                     f"3σ ({summary['3sigma_x_nm']:.2f}, {summary['3sigma_y_nm']:.2f}) nm")
+        self.error_label.setText(text)
 
     def _status_text(self, stitch: StitchResult) -> str:
         failed = sum(r.failed for r in stitch.rejected)
@@ -163,9 +253,9 @@ class StitchViewer(QtWidgets.QWidget):
                     f"stitched, {failed} overlap(s) not matched (magenta)</b>")
         return f"All {len(self.tiles)} tiles stitched ({len(stitch.pairs)} overlaps used)"
 
-    def _add(self, layer, k, item):
+    def _add(self, layer, k, item, plot=None):
         item.setZValue(0 if layer == IMAGES else 1)
-        self.plot.addItem(item)
+        (plot or self.plot).addItem(item)
         self.items.append((layer, k, item))
 
     def _add_tile(self, k, tile: TileResult, design_polygons, outliers, refined):
@@ -204,6 +294,17 @@ class StitchViewer(QtWidgets.QWidget):
             column.addWidget(button)
             self.placement_buttons[mode] = button
         self.placement_buttons["nominal"].setChecked(True)
+
+        if self.error_plot is not None:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel("Error arrows ×"))
+            self.scale_box = QtWidgets.QDoubleSpinBox()
+            self.scale_box.setRange(1, 1e6)
+            self.scale_box.setDecimals(0)
+            self.scale_box.setValue(self.arrow_scale)
+            self.scale_box.valueChanged.connect(self.set_arrow_scale)
+            row.addWidget(self.scale_box)
+            column.addLayout(row)
 
         column.addWidget(QtWidgets.QLabel("Layers"))
         self.layer_boxes = {}
@@ -246,7 +347,7 @@ class StitchViewer(QtWidgets.QWidget):
                 position = position + self.corrections[mode][k]
             item.setPos(*position)
 
-    def _show_cursor(self, scene_pos):
-        pos = self.plot.getPlotItem().vb.mapSceneToView(scene_pos)
+    def _show_cursor(self, plot, scene_pos):
+        pos = plot.getPlotItem().vb.mapSceneToView(scene_pos)
         x, y = (np.array([pos.x(), pos.y()]) + self.origin) / 1000
         self.cursor_label.setText(f"x = {x:.4f} µm, y = {y:.4f} µm (mask)")
