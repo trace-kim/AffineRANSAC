@@ -4,11 +4,25 @@
    min_area_fraction × the squared RMS spread of the points: collinear or too close together).
 2. Exact affine mapping the 3 SEM points onto their 3 design points.
 3. Apply it to all SEM points; inliers = residual |G(sem) − design| < threshold_nm.
-4. Keep the model with the most inliers (ties: lower sum of inlier residuals). The number of
-   iterations needed, N = log(1 − p) / log(1 − w³), is updated whenever the best model improves
-   (w = its inlier ratio); stop at N or max_iters.
+4. Keep the model with the most inliers (ties: lower sum of inlier residuals).
 5. Refit: least squares on all inliers of the best model, recompute the inliers, repeat up to
    refine_iters times or until the inlier set is stable.
+
+Stop condition of the search (Fischler & Bolles 1981, the original RANSAC paper; Hartley &
+Zisserman, "Multiple View Geometry", 2nd ed., §4.7.1). One good sample (3 inliers) is enough to
+find the right model, so stop once a good sample has almost certainly been drawn:
+- If a fraction w of the points are inliers, a random 3-point sample is all inliers with
+  probability w³ (sampling with replacement; for hundreds of points or more the difference is
+  negligible).
+- N samples ALL fail (each contains an outlier) with probability (1 − w³)^N.
+- Require that to be at most 1 − p (p = confidence, 0.999):
+      (1 − w³)^N <= 1 − p   ->   N >= log(1 − p) / log(1 − w³)
+- w is unknown, so the best model's inlier ratio so far is used. It can only underestimate the
+  true ratio, so N is conservative; it is recomputed whenever a better model is found, and the
+  search stops when the iteration count reaches N, or at max_iters (degenerate samples count).
+  Examples: w = 0.9 -> N = 6, 0.5 -> 52, 0.3 -> 253, 0.1 -> 6905.
+The precision of the final model comes from the least-squares refit on all inliers (step 5),
+not from the number of samples.
 
 Everything is computed relative to a reference point, the centroid of the design points
 (SPEC §8), so the model's translation is the shift at that point.

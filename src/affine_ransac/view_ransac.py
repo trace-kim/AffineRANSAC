@@ -6,9 +6,10 @@ on the inliers):
 - Map: contacts at their design positions relative to the reference point (design centroid),
   inliers green, outliers red; the 3-point sample as large yellow stars joined by a triangle.
 - Residual scatter: G(SEM) − design, dx vs dy (nm), with the threshold circle τ.
-- Linear fit: the RAW error (SEM − design) along x and along y, each against x and against y.
-  The model's predicted error is drawn as a line (through the reference point). Its slopes are
-  the model's magnification / rotation / orthogonality terms.
+- Linear fit: the RAW error (SEM − design, dots) along x and along y, each against x and against
+  y, with the model's predicted error as a line (through the reference point; its slopes are the
+  model's magnification / rotation / orthogonality terms), and the RESIDUAL after the model
+  (G(SEM) − design, crosses) on the same axes: what is left once the line is taken away.
 - Inlier count per iteration: this sample (dots) and the best so far (line); the needed number
   of iterations N is in the status line.
 - Table: the correction G of this model and of the best one (geometry.affine.report_terms):
@@ -27,14 +28,25 @@ from affine_ransac.fitting.ransac import RansacStep, ransac_affine_steps, residu
 from affine_ransac.geometry.affine import apply_affine, coefficients, report_terms
 
 INLIER, OUTLIER, SAMPLE, MODEL = "#33cc33", "#ff4040", "#ffff00", "#3c8cff"
+RESIDUAL_INLIER, RESIDUAL_OUTLIER = "#00e5ff", "#ffa500"  # residual after the model, drawn as crosses
 TERM_LABELS = ([label for label, *_ in report_terms(np.eye(3), np.zeros((1, 2)))]
                + [label for label, _ in coefficients(np.eye(3))])
 COLUMNS = ["this model", "edge (nm)", "best so far", "edge (nm)"]
 
 
-def two_scatters(plot, size=4):
-    """An inlier and an outlier scatter item in plot."""
-    items = [pg.ScatterPlotItem(size=size, pen=None, brush=pg.mkBrush(color)) for color in (INLIER, OUTLIER)]
+def two_scatters(plot, size=4, names=(None, None)):
+    """An inlier and an outlier scatter item (filled dots) in plot."""
+    items = [pg.ScatterPlotItem(size=size, pen=None, brush=pg.mkBrush(color), name=name)
+             for color, name in zip((INLIER, OUTLIER), names)]
+    for item in items:
+        plot.addItem(item)
+    return items
+
+
+def two_cross_scatters(plot, size=6, names=(None, None)):
+    """An inlier and an outlier scatter item drawn as crosses (residuals) in plot."""
+    items = [pg.ScatterPlotItem(size=size, symbol="x", pen=pg.mkPen(color), brush=pg.mkBrush(color), name=name)
+             for color, name in zip((RESIDUAL_INLIER, RESIDUAL_OUTLIER), names)]
     for item in items:
         plot.addItem(item)
     return items
@@ -104,7 +116,8 @@ class RansacMonitor(QtWidgets.QWidget):
         self.count_plot.addItem(self.sample_counts)
         self.count_plot.addItem(self.best_counts)
 
-        # Linear fit: raw error component (0 = x, 1 = y) against position axis (0 = x, 1 = y).
+        # Linear fit: error component (0 = x, 1 = y) against position axis (0 = x, 1 = y):
+        # raw error (dots), the model's line, and the residual after the model (crosses).
         self.linear = {}
         for row, component in ((1, 0), (2, 1)):
             for col, axis in ((1, 0), (2, 1)):
@@ -112,9 +125,15 @@ class RansacMonitor(QtWidgets.QWidget):
                 plot = g.addPlot(row=row, col=col, title=f"d{name[component]} vs {name[axis]}")
                 plot.setLabel("bottom", f"{name[axis]} − {name[axis]}_ref (µm)")
                 plot.setLabel("left", f"d{name[component]} (nm)")
-                line = pg.PlotCurveItem(pen=pg.mkPen(MODEL, width=2))
-                self.linear[component, axis] = (two_scatters(plot, size=3), line)
+                first = not self.linear
+                if first:
+                    plot.addLegend(offset=(5, 5))
+                raw = two_scatters(plot, size=3, names=("raw, inlier", "raw, outlier") if first else (None, None))
+                line = pg.PlotCurveItem(pen=pg.mkPen(MODEL, width=2), name="model" if first else None)
                 plot.addItem(line)
+                residual = two_cross_scatters(plot, names=("residual, inlier", "residual, outlier") if first
+                                              else (None, None))
+                self.linear[component, axis] = (raw, line, residual)
         # Short titles above: a long plot title sets a minimum width and pushes plots off-screen.
         for col, stretch in enumerate((2, 1, 1)):
             g.ci.layout.setColumnStretchFactor(col, stretch)
@@ -250,7 +269,7 @@ class RansacMonitor(QtWidgets.QWidget):
                 item.setData(residual[mask, 0], residual[mask, 1])
             angle = np.linspace(0, 2 * np.pi, 100)
             self.threshold_circle.setData(self.threshold_nm * np.cos(angle), self.threshold_nm * np.sin(angle))
-            self._show_linear(model, position, groups)
+            self._show_linear(model, position, groups, residual)
         self._show_history()
         self._show_table(step)
 
@@ -265,12 +284,15 @@ class RansacMonitor(QtWidgets.QWidget):
             text += "\nNew best model."
         self.status.setText(text)
 
-    def _show_linear(self, model, position, groups):
-        """Raw error vs position, and the model's predicted error along each axis through the reference."""
+    def _show_linear(self, model, position, groups, residual):
+        """Raw error and residual vs position, and the model's predicted error along each axis
+        through the reference."""
         # The model maps SEM -> design, so its predicted SEM − design at a point p is p − G(p).
-        for (component, axis), (scatters, line) in self.linear.items():
+        for (component, axis), (scatters, line, residual_scatters) in self.linear.items():
             for item, mask in zip(scatters, groups):
                 item.setData(position[mask, axis] / 1000, self.raw_error[mask, component])
+            for item, mask in zip(residual_scatters, groups):
+                item.setData(position[mask, axis] / 1000, residual[mask, component])
             span = np.array([position[:, axis].min(), position[:, axis].max()])
             along = np.zeros((2, 2))
             along[:, axis] = span

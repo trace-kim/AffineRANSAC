@@ -489,6 +489,15 @@ Module: `fitting/ransac.py`. It is used by S7 only. Keep it generic over the mod
 
 - **Adaptive iterations:** `N = log(1 − p) / log(1 − w^s)`, where `w` is the current best
   inlier ratio and `s = 3` is the sample size. Update `N` whenever a better model is found.
+  *Derivation* (Fischler & Bolles 1981; Hartley & Zisserman, *Multiple View Geometry*, 2nd ed.,
+  §4.7.1): a random sample is all inliers with probability `w^s`; `N` samples all fail with
+  probability `(1 − w^s)^N`; requiring this to be `≤ 1 − p` gives `N ≥ log(1 − p) / log(1 − w^s)`.
+  One all-inlier sample suffices because the final model comes from the least-squares refit on
+  its inliers. `w` is estimated by the best model so far, which can only underestimate the true
+  ratio, so `N` is conservative. The search stops when the iteration count reaches `N` or
+  `max_iters` (degenerate samples count as iterations); then up to `refine_iters` refits, stopping
+  early when the inlier set no longer changes. Examples (p = 0.999, s = 3): w = 0.9 → 6,
+  0.8 → 10, 0.5 → 52, 0.3 → 253, 0.1 → 6905.
 - **Degenerate samples:** reject triplets that are (near-)collinear or too close together, i.e.
   triangle area `< min_area` (relative to the point spread). They produce ill-conditioned
   affines. Prefer samples spread over the field. Optionally use stratified sampling across

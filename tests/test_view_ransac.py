@@ -57,7 +57,7 @@ def test_linear_fit_line_slopes_are_the_model_terms():
     monitor.run_to_end()
     terms = decompose(monitor.last_step.best_model)
     # The model maps SEM -> design; SEM − design along x grows with x by −Mx (in nm per nm).
-    (_, line) = monitor.linear[0, 0]
+    (_, line, _) = monitor.linear[0, 0]
     x_um, dx_nm = line.getData()
     slope = (dx_nm[1] - dx_nm[0]) / ((x_um[1] - x_um[0]) * 1000)
     assert slope * 1e6 == pytest.approx(-terms["Mx_ppm"], rel=1e-6)
@@ -72,4 +72,18 @@ def test_restart_uses_the_panel_threshold():
     assert not monitor.done and monitor.threshold_nm == 2.0 and monitor.history == []
     monitor.step()
     assert monitor.last_step.iteration == 1
+    monitor.close()
+
+
+def test_linear_plots_show_the_residual_after_the_model():
+    monitor, sem, design = make_monitor()
+    monitor.run_to_end()
+    step = monitor.last_step
+    expected = (sem - step.reference) @ step.best_model[:2, :2].T + step.best_model[:2, 2] - (design - step.reference)
+    _, _, (residual_inliers, _) = monitor.linear[1, 0]  # dy vs x
+    x_um, dy_nm = residual_inliers.getData()
+    inliers = step.best_inliers
+    np.testing.assert_allclose(x_um, (design - step.reference)[inliers, 0] / 1000)
+    np.testing.assert_allclose(dy_nm, expected[inliers, 1])
+    assert np.abs(dy_nm).max() < 0.5  # inlier residuals lie within the threshold
     monitor.close()
