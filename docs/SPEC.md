@@ -468,6 +468,15 @@ group with two observations of one tile is warned about. RANSAC (S7) uses the me
 The viewer draws one line per merged contact; merged overlap contacts can be ringed and a
 magenta ring flags a spread above a display threshold (notebook `SPREAD_FLAG_NM`, default 2 nm). The RANSAC affine (S7) and residuals after `G` follow.
 
+**Moving-window affine (D36), for comparison with the global RANSAC affine.**
+`fitting/moving_window.moving_window_affine(sem, design, window_nm, step_nm)`: windows of height
+`window_nm` slide along the design y in steps of `step_nm`, from the first window with its lower
+edge at the lowest contact to the last with its upper edge at the highest. Each window gets a plain
+least-squares affine on all its contacts (no RANSAC, no outlier rejection), relative to its design
+centroid. Each contact's residual `G_w(SEM) − design` uses the window whose centre is nearest to its
+design y (windows overlap for the fits; every contact gets one residual). The notebook shows it
+beside the RANSAC result (summaries, per-row means, per-window terms, two registration views).
+
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
 - **Reported registration error = residuals after the full affine is removed** (decision D4).
@@ -572,7 +581,8 @@ AffineRANSAC/
 │  │  ├─ frames.py           # pixel↔tile↔stage↔design conversions
 │  │  └─ affine.py           # fit (exact/LSQ), apply, decompose, normalise
 │  ├─ fitting/
-│  │  └─ ransac.py           # generic RANSAC
+│  │  ├─ ransac.py           # generic RANSAC
+│  │  └─ moving_window.py    # moving-window affine along y (D36)
 │  ├─ matching.py            # KD-tree NN, mutual/one-to-one, gating
 │  ├─ stitching/
 │  │  ├─ overlap.py          # OverlapRegistration interface; FeatureOverlap (v1), PixelOverlap (future)
@@ -670,6 +680,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D33 | 2026-10-02 | Affine terms are displayed as the correction G (sign as in §8.2) with rotation and orthogonality in degrees, magnification in ppm, plus a "nm at field edge" value per term (`report_terms`). | User: not used to µrad; wants degrees, and a shift in nm comparable to the threshold. Kept the correction-G sign (opposite to the raw-error plots). |
 | D34 | 2026-10-02 | Final registration error = residual after the RANSAC affine for every contact, shown as dx/dy heatmaps (binned mean) and dx/dy-vs-y profiles averaged over x, via library functions (`binned_mean_2d`, `profile`). Heatmaps and means include outliers by default (they are the defects); the heatmaps can be rebinned from the inliers only, and the profiles also show the inlier-only mean. | User: the final registration error is the wanted result; wants a heatmap and the x-averaged dx/dy trend along y; the monitor's raw dx/dy plots alone could mislead, so the residual goes on the same plots. |
 | D35 | 2026-10-02 | Registration error maps are per-contact coloured dots (jet), rasterized to the screen, replacing the binned heatmaps; the trend along y is the mean error per contact **row** (grouped by design y), drawn as plain lines for dx and dy, replacing the binned profile with scatter, ±1σ and inlier/outlier lines. Colours are computed by the view (opaque RGB) rather than by ImageItem. | User: heatmap must not be binned; a coloured scatter with suitable rasterization for the zoomed-out view; jet colour map; the x-averaged trend must average the contacts of each row; only the mean lines, no inlier/outlier split. |
+| D36 | 2026-10-02 | Second correction, **moving-window affine** along y (`moving_window_affine`): window 40 µm, step 5 µm (notebook settings), plain least squares per window, each contact corrected by the window with the nearest centre. Shown side by side with the global RANSAC affine; does not replace it (D3/D4 unchanged). | User: the RANSAC result does not match the known values; the known-value algorithm fits an affine to the points within a window along y and slides it up. The nearest-centre rule and the 5 µm step are my defaults ("shift up a bit"), to be confirmed against the reference algorithm. |
 
 ---
 
