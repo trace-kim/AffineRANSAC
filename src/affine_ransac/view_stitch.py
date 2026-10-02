@@ -62,6 +62,8 @@ COLORS = {
     SKIPPED: "#909090", UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060",
     NOT_MEASURED: FAILURE_COLOR,
 }
+# Off at start: many items (slow to draw); switch on in the panel. Failure markers stay on.
+HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED}
 SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by SEM corrections
 DESIGN_LAYERS = {DESIGN, DESIGN_CENTRES}                                      # moved by design corrections
 PLACEMENTS = {"nominal": "Nominal (metadata centres)", "mean": "Stitched (corrections average 0)",
@@ -323,7 +325,7 @@ class StitchViewer(QtWidgets.QWidget):
         self.layer_boxes = {}
         for layer in COLORS:
             box = QtWidgets.QCheckBox(layer)
-            box.setChecked(True)
+            box.setChecked(layer not in HIDDEN_AT_START)
             box.setStyleSheet(f"color: {COLORS[layer]}")
             box.toggled.connect(self.update_visibility)
             column.addWidget(box)

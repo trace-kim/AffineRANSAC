@@ -13,8 +13,9 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.overlap_fit import OverlapFit
 from affine_ransac.pipeline import DesignContacts, PairResult, RejectedPair, StitchResult, TileResult
 from affine_ransac.registration import DesignErrors
-from affine_ransac.view_stitch import (DESIGN, DESIGN_FAILED, ERRORS, FAILED, IMAGES, NOT_MEASURED, OUTLIERS,
-                                       REFINED, UNSTITCHED, StitchViewer, outlier_indices)
+from affine_ransac.view_stitch import (BOXES, DESIGN, DESIGN_CENTRES, DESIGN_FAILED, ERRORS, FAILED, IMAGES,
+                                       NOT_MEASURED, OUTLIERS, REFINED, REFINED_CENTRES, TILE_FRAMES, UNSTITCHED,
+                                       StitchViewer, outlier_indices)
 
 PIXEL = 2.0  # nm
 CENTERS = [(5_000_000.0, 2_000_000.0), (5_000_100.0, 2_000_000.0), (5_000_000.0, 2_000_070.0)]
@@ -144,8 +145,18 @@ def test_error_map_shares_zoom():
     viewer.close()
 
 
+def test_start_with_heavy_layers_off():
+    _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
+    shown = {layer for layer, box in viewer.layer_boxes.items() if box.isChecked()}
+    assert shown == {IMAGES, DESIGN_CENTRES, REFINED_CENTRES, BOXES, ERRORS, TILE_FRAMES,
+                     FAILED, DESIGN_FAILED, UNSTITCHED, NOT_MEASURED}
+    viewer.close()
+
+
 def test_layers_and_tiles_can_be_hidden():
     _, viewer = make_viewer()
+    assert not item(viewer, REFINED, 0).isVisible()  # off at start
+    viewer.layer_boxes[REFINED].setChecked(True)
     assert item(viewer, REFINED, 0).isVisible()
 
     viewer.layer_boxes[REFINED].setChecked(False)
