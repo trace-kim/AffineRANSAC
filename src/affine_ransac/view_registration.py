@@ -68,13 +68,15 @@ class RegistrationView(QtWidgets.QWidget):
         reference_nm: np.ndarray,
         row_gap_nm: float = 10.0,
         use_opengl: bool = True,
+        correction: str = "the RANSAC affine",
     ):
         """design_nm: (N, 2) contact design positions (mask nm); error_nm: (N, 2) registration error
-        G(SEM) − design; reference_nm: (2,) RANSAC reference point; row_gap_nm: see group_rows."""
+        G(SEM) − design; reference_nm: (2,) RANSAC reference point; row_gap_nm: see group_rows;
+        correction: what G is, for the summary line."""
         super().__init__()
         self.setWindowTitle(f"Registration error - {len(error_nm)} contacts")
+        self.design_nm, self.reference_nm, self.row_gap_nm = design_nm, reference_nm, row_gap_nm
         self.position_um = (design_nm - reference_nm) / 1000
-        self.error_nm = error_nm
         if len(design_nm) > 1:
             distance, _ = cKDTree(design_nm).query(design_nm, k=2)
             self.dot_nm = 0.4 * np.median(distance[:, 1])  # ~0.4 x the contact pitch
@@ -105,10 +107,8 @@ class RegistrationView(QtWidgets.QWidget):
         self.row_plot.setLabel("bottom", "row y − y_ref (µm)")
         self.row_plot.setLabel("left", "mean error (nm)")
         self.row_plot.addLegend(offset=(5, 5))
-        self.row_y, self.row_mean, self.row_count = row_means(design_nm[:, 1], error_nm, row_gap_nm)
-        row_um = (self.row_y - reference_nm[1]) / 1000
-        self.row_plot.plot(row_um, self.row_mean[:, 0], pen=pg.mkPen("#ff6040", width=2), name="dx")
-        self.row_plot.plot(row_um, self.row_mean[:, 1], pen=pg.mkPen("#40a0ff", width=2), name="dy")
+        self.row_curves = [self.row_plot.plot(pen=pg.mkPen("#ff6040", width=2), name="dx"),
+                           self.row_plot.plot(pen=pg.mkPen("#40a0ff", width=2), name="dy")]
         self.row_plot.addLine(y=0, pen=pg.mkPen("#808080", style=QtCore.Qt.PenStyle.DashLine))
         self.graphics.ci.layout.setRowStretchFactor(0, 2)
         self.graphics.ci.layout.setRowStretchFactor(1, 1)
@@ -125,20 +125,31 @@ class RegistrationView(QtWidgets.QWidget):
             plot.vb.sigResized.connect(lambda *_: self.redraw_timer.start())
         self._link_maps()
 
-        summary = error_summary(error_nm)
-        label = QtWidgets.QLabel(
-            f"Registration error after the RANSAC affine, G(SEM) − design: {summary['count']} contacts, "
-            f"mean ({summary.get('mean_x_nm', 0):+.3f}, {summary.get('mean_y_nm', 0):+.3f}) nm, "
-            f"3σ ({summary.get('3sigma_x_nm', 0):.3f}, {summary.get('3sigma_y_nm', 0):.3f}) nm, "
-            f"max {summary.get('max_nm', 0):.3f} nm; {len(self.row_y)} rows")
-        label.setWordWrap(True)
+        self.label = QtWidgets.QLabel()
+        self.label.setWordWrap(True)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(label)
+        layout.addWidget(self.label)
         layout.addWidget(self.graphics, stretch=1)
         self.resize(1500, 1000)
         # Start on all contacts (autoRange cannot be used: the images are still empty here).
         low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
         self.maps[0][0].vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
+        self.set_errors(error_nm, correction)
+
+    def set_errors(self, error_nm: np.ndarray, correction: str):
+        """Show new registration errors for the same contacts (the colour scale is kept, so maps
+        stay comparable)."""
+        self.error_nm = error_nm
+        self.row_y, self.row_mean, self.row_count = row_means(self.design_nm[:, 1], error_nm, self.row_gap_nm)
+        row_um = (self.row_y - self.reference_nm[1]) / 1000
+        for curve, component in zip(self.row_curves, (0, 1)):
+            curve.setData(row_um, self.row_mean[:, component])
+        summary = error_summary(error_nm)
+        self.label.setText(
+            f"Registration error after {correction}, G(SEM) − design: {summary['count']} contacts, "
+            f"mean ({summary.get('mean_x_nm', 0):+.3f}, {summary.get('mean_y_nm', 0):+.3f}) nm, "
+            f"3σ ({summary.get('3sigma_x_nm', 0):.3f}, {summary.get('3sigma_y_nm', 0):.3f}) nm, "
+            f"max {summary.get('max_nm', 0):.3f} nm; {len(self.row_y)} rows")
         self.rasterize_maps()
 
     def _link_maps(self):

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from affine_ransac.geometry.affine import apply_affine, decompose, fit_affine, report_terms, triangle_area
+from affine_ransac.geometry.affine import apply_affine, decompose, fit_affine, recentre, report_terms, triangle_area
 
 
 def known_affine(theta_urad=0.0, mx_ppm=0.0, my_ppm=0.0, skew_urad=0.0, t=(0.0, 0.0)):
@@ -55,3 +55,12 @@ def test_report_terms_degrees_and_shift_at_the_field_edge():
     # The edge shift of each term matches moving the furthest point with that term alone.
     moved = apply_affine(known_affine(theta_urad=100), points) - points
     assert np.linalg.norm(moved, axis=1).max() == pytest.approx(1.0, rel=1e-3)
+
+
+def test_recentre_moves_the_reference_point_but_not_the_mapping():
+    m = known_affine(theta_urad=50, mx_ppm=20, t=(3.0, -2.0))
+    points = np.array([[0.0, 0.0], [10_000.0, 5_000.0], [-3_000.0, 8_000.0]])
+    offset = np.array([4_000.0, -6_000.0])  # new reference point, relative to the old one
+    moved = recentre(m, offset)
+    np.testing.assert_allclose(apply_affine(moved, points - offset) + offset, apply_affine(m, points), atol=1e-9)
+    np.testing.assert_allclose(moved[:2, :2], m[:2, :2])

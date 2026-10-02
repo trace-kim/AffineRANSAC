@@ -21,6 +21,14 @@ def apply_affine(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
     return points @ matrix[:2, :2].T + matrix[:2, 2]
 
 
+def recentre(matrix: np.ndarray, offset) -> np.ndarray:
+    """The same transform written about a reference point moved by offset (2,): the linear part is
+    unchanged, the translation becomes the shift at the new point."""
+    moved = matrix.copy()
+    moved[:2, 2] = matrix[:2, :2] @ offset + matrix[:2, 2] - offset
+    return moved
+
+
 def triangle_area(p0, p1, p2) -> float:
     """Area of the triangle p0, p1, p2 (0 for collinear points)."""
     (x1, y1), (x2, y2) = np.asarray(p1) - p0, np.asarray(p2) - p0

@@ -69,3 +69,13 @@ def test_colorize_jet_and_background_where_empty():
     np.testing.assert_array_equal(rgba[0, 0, :3], [0, 0, 128])    # low end: dark blue
     np.testing.assert_array_equal(rgba[0, 2, :3], [128, 0, 0])    # high end: dark red
     assert (rgba[0, 3] == 0).all()                                # NaN: black background
+
+
+def test_set_errors_updates_rows_and_summary_but_keeps_the_colour_scale():
+    view, design, result = make_view()
+    levels = view.color_bar.levels()
+    view.set_errors(np.zeros_like(result.residuals), "nothing")
+    np.testing.assert_allclose(view.row_mean, 0)
+    assert "after nothing" in view.label.text()
+    assert view.color_bar.levels() == levels
+    view.close()
