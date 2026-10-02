@@ -432,7 +432,19 @@ a warning; no error is computed for them. `error_summary()` gives count, mean, 3
 contacts get one entry per tile (all observations kept, S5). The sign is set only in
 `registration_error()`: SEM − design, tentative (§13-8). The viewer shows it as an error map
 beside the SEM view with shared zoom, one error set per placement (switching the placement
-switches the arrows). The RANSAC affine (S7) and residuals after `G` follow.
+switches the arrows).
+
+**Merging overlap observations (D31).** `design_errors` gives one *observation* per contact per
+tile, so a contact in an overlap has 2–4. `registration.merge_observations(errors,
+design_corrections, radius_nm=5)` turns them into one entry per physical contact
+(`MergedErrors`): observations from **different tiles** whose **stitched design** positions
+(nominal design + `stitch_design` correction, the same for every placement) are within 5 nm are
+one contact (KD-tree pairs → `connected_groups`). Its SEM and design positions are averaged; the
+**spread** (largest distance between its SEM observations), the count and the member observations
+are kept. SEM positions are never used for grouping (they hold the error being measured). A
+group with two observations of one tile is warned about. RANSAC (S7) uses the merged contacts.
+The viewer draws one line per merged contact; merged overlap contacts can be ringed and a
+magenta ring flags a spread above a display threshold (notebook `SPREAD_FLAG_NM`, default 2 nm). The RANSAC affine (S7) and residuals after `G` follow.
 
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
@@ -618,6 +630,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D28 | 2026-10-02 | Design tone chosen per tile by matching: normal first, tone reversed if fewer than 50 % of the SEM contacts match, flag the tile if neither reaches 50 %. Replaces the single `TONE_REVERSED` setting. | User: no simple file property identifies reversed files; compare with the SEM contacts using the existing matching. |
 | D29 | 2026-10-02 | First design comparison = **raw** error per contact (stitched SEM − design, no affine removed), per tile against its own design, in `registration.py` (`design_errors`, `error_summary`). Tiles without errors are listed with a reason and warned. Sign SEM − design is tentative and lives in one function. The viewer shows an error map beside the SEM view; zoom/pan are linked by copying the visible rectangle, because pyqtgraph's setXLink aligns views by screen position (shifts side-by-side plots). | User: apply the tone choice, compute the error of the stitched centres vs the design, show it side by side with shared zoom, using library functions reusable in other pipelines; sign convention to be checked later. RANSAC (S7) next. |
 | D30 | 2026-10-02 | The per-tile design files are **stitched** like the SEM (`stitch_design`, translation per tile). Design errors are computed per placement (nominal / stitched mean-0 / stitched first tile fixed) with each side's own corrections (`placement_corrections`). Design–SEM gate 25 → 40 nm. Normal-tone design contacts touching the FOV frame are dropped. Error-map arrows default ×10; tiles without a computed error are labelled "not measured". | User: `.oas` contours do not coincide in overlaps (file offsets, files cannot be fixed), so the design must be stitched too, translation only; the SEM-to-design offset exceeds 25 nm (40 nm works); arrows must differ between placements; "Tiles without errors" read as zero error. |
+| D31 | 2026-10-02 | Overlap observations of the same contact are merged before RANSAC: grouped by stitched design position within **5 nm** (different tiles only), SEM and design positions averaged, spread and count kept, nothing dropped. scipy (`cKDTree`) becomes a declared dependency. Viewer layers start mostly off (only SEM images, design centres, refined centres, overlaps used, error arrows, tile outlines and failure markers on). | User: 2–4 observations per overlap contact would be counted several times in RANSAC; averaging agreed; radius 5 nm because design coordinates have very small residuals; viewer too slow with all layers on. |
 
 ---
 

@@ -12,9 +12,10 @@ from affine_ransac.features.contact import detect_contacts
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.overlap_fit import OverlapFit
 from affine_ransac.pipeline import DesignContacts, PairResult, RejectedPair, StitchResult, TileResult
-from affine_ransac.registration import DesignErrors
+from affine_ransac.registration import MergedErrors
 from affine_ransac.view_stitch import (BOXES, DESIGN, DESIGN_CENTRES, DESIGN_FAILED, ERRORS, FAILED, IMAGES,
-                                       NOT_MEASURED, OUTLIERS, REFINED, REFINED_CENTRES, TILE_FRAMES, UNSTITCHED,
+                                       NOT_MEASURED, OUTLIERS, REFINED, REFINED_CENTRES, SPREAD, TILE_FRAMES,
+                                       UNSTITCHED,
                                        StitchViewer, outlier_indices)
 
 PIXEL = 2.0  # nm
@@ -33,10 +34,12 @@ def make_tile(center):
 
 
 def errors_at(error, skipped):
-    """Tile A: one contact at its centre with this error; the listed tiles not measured."""
-    design = np.array([CENTERS[0]])
-    return DesignErrors(tile=np.array([0]), design_nm=design, sem_nm=design + error,
-                        error_nm=np.array([error], float), skipped=skipped)
+    """Two contacts: one at tile A's centre with this error (seen once), one in the A|B overlap
+    seen twice with a 3 nm spread; the listed tiles not measured."""
+    design = np.array([CENTERS[0], (5_000_050.0, 2_000_000.0)])
+    errors = np.array([error, (0.5, 0.5)], float)
+    return MergedErrors(design_nm=design, sem_nm=design + errors, error_nm=errors, count=np.array([1, 2]),
+                        spread_nm=np.array([0.0, 3.0]), members=[np.array([0]), np.array([1, 2])], skipped=skipped)
 
 
 ERRORS_BY_PLACEMENT = {
@@ -110,7 +113,7 @@ def test_unstitched_tile_is_marked_and_stays_nominal():
 
 def test_error_lines_follow_the_selected_placement():
     tiles, viewer = make_viewer(ERRORS_BY_PLACEMENT)
-    lines = item(viewer, ERRORS, 0)
+    lines = viewer.error_lines
     start = tiles[0].center_nm - viewer.origin
 
     def end():
@@ -149,7 +152,7 @@ def test_start_with_heavy_layers_off():
     _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
     shown = {layer for layer, box in viewer.layer_boxes.items() if box.isChecked()}
     assert shown == {IMAGES, DESIGN_CENTRES, REFINED_CENTRES, BOXES, ERRORS, TILE_FRAMES,
-                     FAILED, DESIGN_FAILED, UNSTITCHED, NOT_MEASURED}
+                     FAILED, DESIGN_FAILED, UNSTITCHED, NOT_MEASURED, SPREAD}
     viewer.close()
 
 
@@ -178,3 +181,10 @@ def test_outlier_indices():
     stitch = StitchResult([PairResult(0, 2, (0, 1, 0, 1), np.array([4, 7, 9]), np.array([1, 2, 3]), fit)], [], np.zeros((3, 2)))
     found = outlier_indices(stitch, 3)
     assert [list(f) for f in found] == [[7], [], [2]]
+
+
+def test_merged_overlap_contacts_are_ringed_and_large_spread_flagged():
+    _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
+    assert len(viewer.merged_rings.data) == 1 and len(viewer.spread_rings.data) == 1  # spread 3 nm > 2 nm
+    assert "1 merged" in viewer.error_label.text() and "spread > 2 nm" in viewer.error_label.text()
+    viewer.close()

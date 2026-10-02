@@ -11,9 +11,11 @@ stitched (these stay at their nominal position in every placement).
   (stitch_design) to the design items; "Stitched, first tile fixed" shifts both so the first tile
   stitched in both stays at its nominal position. Switch back and forth to compare.
 - Error map (if design errors are given, one set per placement): a second plot beside the SEM
-  view, sharing its zoom and pan, with one line per contact from its design position along its
-  raw error (registration.design_errors; sign as in registration_error), magnified by the arrow
-  scale. It shows the errors of the selected placement. Tiles that were not measured (no error
+  view, sharing its zoom and pan, with one line per physical contact from its design position
+  along its raw error, magnified by the arrow scale (registration.merge_observations: overlap
+  contacts seen by several tiles are averaged; sign as in registration_error). Merged overlap
+  contacts can be ringed; a magenta ring marks a large spread between their SEM observations.
+  It shows the errors of the selected placement. Tiles that were not measured (no error
   computed: not stitched, or design tone flagged) are framed in magenta.
 - Layers and tiles can be hidden with the check boxes on the right (hide a tile to see the
   tile beneath it in an overlap).
@@ -33,7 +35,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.pipeline import StitchResult, TileResult
-from affine_ransac.registration import DesignErrors, error_summary
+from affine_ransac.registration import MergedErrors, error_summary
 from affine_ransac.stitching import first_stitched_tile, placement_corrections
 from affine_ransac.view_design import polygons_to_path
 
@@ -53,6 +55,8 @@ UNSTITCHED = "Tiles not stitched"
 ERRORS = "Error arrows (error map)"
 TILE_FRAMES = "Tile outlines (error map)"
 NOT_MEASURED = "Tiles not measured, no error computed (error map)"
+MERGED = "Overlap contacts, merged (error map)"
+SPREAD = "Overlap contacts, large spread (error map)"
 
 FAILURE_COLOR = "#ff00ff"
 COLORS = {
@@ -60,10 +64,10 @@ COLORS = {
     OTSU_CENTRES: "#33cc33", REFINED: "#ff4040", REFINED_CENTRES: "#ff4040",
     OUTLIERS: "#ffa500", BOXES: "#ffff00", FAILED: FAILURE_COLOR, DESIGN_FAILED: FAILURE_COLOR,
     SKIPPED: "#909090", UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060",
-    NOT_MEASURED: FAILURE_COLOR,
+    NOT_MEASURED: FAILURE_COLOR, MERGED: "#ffa500", SPREAD: FAILURE_COLOR,
 }
 # Off at start: many items (slow to draw); switch on in the panel. Failure markers stay on.
-HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED}
+HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED, MERGED}
 SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by SEM corrections
 DESIGN_LAYERS = {DESIGN, DESIGN_CENTRES}                                      # moved by design corrections
 PLACEMENTS = {"nominal": "Nominal (metadata centres)", "mean": "Stitched (corrections average 0)",
@@ -149,16 +153,19 @@ class StitchViewer(QtWidgets.QWidget):
         design_stitch: StitchResult,
         refined: bool = True,
         use_opengl: bool = True,
-        errors: dict[str, DesignErrors] | None = None,
+        errors: dict[str, MergedErrors] | None = None,
         arrow_scale: float = 10.0,
+        spread_flag_nm: float = 2.0,
     ):
         """tiles: from process_tile; design_polygons: per tile, read_polygons() of its .oas
         (tile-local nm, [] if none); stitch: SEM stitching (stitch_tiles); design_stitch: design
         stitching (stitch_design); refined: whether the SEM was stitched with the refined (True) or
         the Otsu centres, for the outlier markers; errors: per placement ("nominal", "mean",
-        "first"), registration.design_errors with that placement's corrections, shown as an
-        error map beside the SEM view (None: no map); arrow_scale: error lines are drawn this
-        many times longer than the error."""
+        "first"), registration.merge_observations of design_errors with that placement's
+        corrections, shown as an error map beside the SEM view, one line per contact (None: no
+        map); arrow_scale: error lines are drawn this many times longer than the error;
+        spread_flag_nm: overlap contacts whose SEM observations differ by more than this are
+        ringed in magenta."""
         super().__init__()
         self.setWindowTitle(f"Stitch viewer - {len(tiles)} tiles")
         self.tiles = tiles
@@ -191,6 +198,7 @@ class StitchViewer(QtWidgets.QWidget):
                 self._add(layer, None, path_item([rectangle(*b) - self.origin for b in boxes], COLORS[layer], style, width))
 
         self.error_plot, self.errors, self.arrow_scale = None, errors, arrow_scale
+        self.spread_flag_nm = spread_flag_nm
         if errors is not None:
             self._add_error_map(use_opengl)
 
@@ -252,38 +260,45 @@ class StitchViewer(QtWidgets.QWidget):
             self._add(UNSTITCHED, k, path_item([rectangle(-half_w, half_w, -half_h, half_h)], COLORS[UNSTITCHED], width=3))
 
     def _add_error_map(self, use_opengl: bool):
-        """The error plot: per tile, a frame, its error lines and a not-measured frame; the lines
-        and frames show the selected placement's errors (set_placement)."""
+        """The error plot: per tile a frame and a not-measured frame; for all contacts together the
+        error lines, design dots and overlap rings of the selected placement (set_placement)."""
         self.error_plot = make_plot(use_opengl)
         self.error_plot.setTitle("Raw error map (SEM - design)")  # short: a long title widens the plot
         self.error_label = QtWidgets.QLabel()
         link_views(self.plot, self.error_plot)
-        self.error_items = {}  # tile -> (lines, dots)
         for k, tile in enumerate(self.tiles):
             half_w, half_h = tile.fov_nm / 2
             frame = [rectangle(-half_w, half_w, -half_h, half_h)]
             self._add(TILE_FRAMES, k, path_item(frame, COLORS[TILE_FRAMES]), self.error_plot)
             self._add(NOT_MEASURED, k, path_item(frame, COLORS[NOT_MEASURED], width=3), self.error_plot)
-            lines = pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(COLORS[ERRORS]))
-            dots = pg.ScatterPlotItem(symbol="o", size=3, pen=pg.mkPen(COLORS[ERRORS]), brush=None)
-            self._add(ERRORS, k, lines, self.error_plot)
-            self._add(ERRORS, k, dots, self.error_plot)
-            self.error_items[k] = (lines, dots)
+        # Merged contacts belong to several tiles, so these items are not per tile (k = None).
+        self.error_lines = pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(COLORS[ERRORS]))
+        self.error_dots = pg.ScatterPlotItem(symbol="o", size=3, pen=pg.mkPen(COLORS[ERRORS]), brush=None)
+        self.merged_rings = pg.ScatterPlotItem(symbol="o", size=12, pen=pg.mkPen(COLORS[MERGED]), brush=None)
+        self.spread_rings = pg.ScatterPlotItem(symbol="o", size=18, pen=pg.mkPen(COLORS[SPREAD], width=2), brush=None)
+        for layer, item in ((ERRORS, self.error_lines), (ERRORS, self.error_dots),
+                            (MERGED, self.merged_rings), (SPREAD, self.spread_rings)):
+            self._add(layer, None, item, self.error_plot)
 
     def _show_errors(self):
-        """Error lines of the selected placement: from the (stitched) design position along the error."""
+        """Error lines of the selected placement: from each contact's mean design position along
+        its mean error; rings on merged overlap contacts (magenta: spread above the flag)."""
         errors = self.errors[self.mode]
-        for k, (lines, dots) in self.error_items.items():
-            mine = errors.tile == k
-            start = errors.design_nm[mine] - self.tiles[k].center_nm  # items sit at the tile centre
-            lines.setData(*arrow_segments(start, errors.error_nm[mine], self.arrow_scale))
-            dots.setData(start[:, 0], start[:, 1])
+        start = errors.design_nm - self.origin
+        self.error_lines.setData(*arrow_segments(start, errors.error_nm, self.arrow_scale))
+        self.error_dots.setData(start[:, 0], start[:, 1])
+        merged, flagged = errors.count > 1, errors.spread_nm > self.spread_flag_nm
+        self.merged_rings.setData(start[merged, 0], start[merged, 1])
+        self.spread_rings.setData(start[flagged, 0], start[flagged, 1])
+
         summary = error_summary(errors.error_nm)
         text = (f"Raw error (SEM − design), {PLACEMENTS[self.mode]}: dot = design position, "
-                f"line = error ×{self.arrow_scale:g}; {summary['count']} contacts")
+                f"line = error ×{self.arrow_scale:g}; {summary['count']} contacts ({merged.sum()} merged in overlaps)")
         if summary["count"]:
             text += (f", mean ({summary['mean_x_nm']:+.2f}, {summary['mean_y_nm']:+.2f}) nm, "
                      f"3σ ({summary['3sigma_x_nm']:.2f}, {summary['3sigma_y_nm']:.2f}) nm")
+        if flagged.any():
+            text += f"; {flagged.sum()} with spread > {self.spread_flag_nm:g} nm (magenta rings)"
         if errors.skipped:
             text += f"; {len(errors.skipped)} tile(s) not measured (magenta)"
         self.error_label.setText(text)
