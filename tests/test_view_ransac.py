@@ -10,7 +10,7 @@ import pytest
 
 from affine_ransac.fitting.ransac import ransac_affine
 from affine_ransac.geometry.affine import decompose, report_terms
-from affine_ransac.view_ransac import RansacMonitor
+from affine_ransac.view_ransac import TERM_LABELS, RansacMonitor
 from test_ransac import synthetic
 
 
@@ -45,6 +45,8 @@ def test_run_to_end_shows_the_final_affine():
     np.testing.assert_allclose(best, [value for _, value, _ in rows], atol=1e-3)
     np.testing.assert_allclose(best_edge, [edge for *_, edge in rows], atol=1e-3)
     assert monitor.table.verticalHeaderItem(4).text() == "rotation (°)"
+    a_row = TERM_LABELS.index("a")
+    assert float(monitor.table.item(a_row, 2).text()) == pytest.approx(result.model[0, 0], abs=1e-9)
     assert "Finished" in monitor.status.text()
     assert not monitor.step()  # nothing left
     monitor.close()

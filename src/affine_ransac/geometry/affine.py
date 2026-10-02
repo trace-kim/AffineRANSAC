@@ -43,6 +43,12 @@ def decompose(matrix: np.ndarray) -> dict:
     }
 
 
+def coefficients(matrix: np.ndarray) -> list[tuple[str, float]]:
+    """The affine's own coefficients (SPEC §8.1): x' = a·x + b·y + tx, y' = c·x + d·y + ty."""
+    (a, b, tx), (c, d, ty) = matrix[0], matrix[1]
+    return [("a", a), ("b", b), ("c", c), ("d", d), ("tx (nm)", tx), ("ty (nm)", ty)]
+
+
 def report_terms(matrix: np.ndarray, points: np.ndarray) -> list[tuple[str, float, float]]:
     """Rows (label, value, edge_nm) for display: translation in nm, magnification in ppm (= nm per
     mm), rotation and orthogonality in degrees. edge_nm = how far that term alone moves the

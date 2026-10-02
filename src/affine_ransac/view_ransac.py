@@ -13,7 +13,8 @@ on the inliers):
   of iterations N is in the status line.
 - Table: the correction G of this model and of the best one (geometry.affine.report_terms):
   Tx, Ty (nm), Mx, My (ppm = nm per mm), rotation and orthogonality (degrees), each with how far
-  that term alone moves the furthest contact (nm at the field edge).
+  that term alone moves the furthest contact (nm at the field edge); below them the affine's own
+  coefficients a, b, c, d, tx, ty (x' = a·x + b·y + tx, y' = c·x + d·y + ty, about the reference).
 
 Controls: Run / Pause, Step, Run to end, delay per step; Restart applies τ and the seed.
 """
@@ -23,10 +24,11 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.fitting.ransac import RansacStep, ransac_affine_steps, residuals
-from affine_ransac.geometry.affine import apply_affine, report_terms
+from affine_ransac.geometry.affine import apply_affine, coefficients, report_terms
 
 INLIER, OUTLIER, SAMPLE, MODEL = "#33cc33", "#ff4040", "#ffff00", "#3c8cff"
-TERM_LABELS = [label for label, *_ in report_terms(np.eye(3), np.zeros((1, 2)))]
+TERM_LABELS = ([label for label, *_ in report_terms(np.eye(3), np.zeros((1, 2)))]
+               + [label for label, _ in coefficients(np.eye(3))])
 COLUMNS = ["this model", "edge (nm)", "best so far", "edge (nm)"]
 
 
@@ -285,9 +287,13 @@ class RansacMonitor(QtWidgets.QWidget):
     def _show_table(self, step: RansacStep):
         points = self.design - step.reference
         for col, model in ((0, step.model), (2, step.best_model)):
-            rows = report_terms(model, points) if model is not None else [(label, None, None) for label in TERM_LABELS]
+            if model is None:
+                rows = [(label, None, None) for label in TERM_LABELS]
+            else:
+                rows = report_terms(model, points) + [(label, value, None) for label, value in coefficients(model)]
             for row, (label, value, edge) in enumerate(rows):
-                digits = 6 if "°" in label else 3  # degrees are tiny numbers (1 µrad = 0.0000573°)
-                texts = ("-", "-") if value is None else (f"{value:+.{digits}f}", f"{edge:.3f}")
+                # Degrees are tiny (1 µrad = 0.0000573°); a, b, c, d differ from 1 / 0 by ~1e-6.
+                digits = 6 if "°" in label else 9 if label in ("a", "b", "c", "d") else 3
+                texts = ("-", "-") if value is None else (f"{value:+.{digits}f}", "" if edge is None else f"{edge:.3f}")
                 for offset, text in enumerate(texts):
                     self.table.setItem(row, col + offset, QtWidgets.QTableWidgetItem(text))
