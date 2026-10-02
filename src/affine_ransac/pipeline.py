@@ -3,6 +3,8 @@
 - process_tile(): load one SEM image, detect its contacts (Otsu, then edge refinement) and read
   its design contacts in the tone (normal / reversed) that matches the SEM contacts; tiles where
   neither tone matches are flagged (DesignContacts.ok).
+- stitch_design(): the same for the per-tile design files, which can be offset against each
+  other (the same contact drawn at different positions in neighbouring .oas files).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
   (translation) and solve one translation correction per tile. Pairs that fail to match and
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
@@ -43,21 +45,33 @@ def matched_fraction(design: np.ndarray, sem: np.ndarray, max_match_nm: float) -
     return len(match_points(design, sem, max_match_nm)[0]) / len(sem)
 
 
+def inside_frame(centers: np.ndarray, sizes: np.ndarray, fov_nm, margin_nm: float = 1.0) -> np.ndarray:
+    """(N,) bool: contacts whose bounding box stays inside the FOV frame (centred on (0, 0)).
+
+    A contact touching the frame may be cut by it, which moves its centre; the SEM detection
+    drops border contacts for the same reason.
+    """
+    half = np.asarray(fov_nm, dtype=float) / 2
+    return np.all(np.abs(centers) + sizes / 2 < half - margin_nm, axis=1)
+
+
 def choose_design_contacts(
     layout,
     layer: tuple[int, int],
     fov_nm,
     sem_local: np.ndarray,
-    max_match_nm: float = 25.0,
+    max_match_nm: float = 40.0,
     min_fraction: float = 0.5,
 ) -> DesignContacts:
     """Read the design contacts with whichever tone matches the SEM contacts.
 
-    Normal tone first (holes = drawn shapes). If fewer than min_fraction of the SEM contacts
-    (sem_local, tile-local nm) match a design contact within max_match_nm, try tone reversed.
+    Normal tone first (holes = drawn shapes; contacts touching the FOV frame dropped). If fewer
+    than min_fraction of the SEM contacts (sem_local, tile-local nm) match a design contact
+    within max_match_nm, try tone reversed (frame-touching holes are dropped by its reader).
     If that does not reach min_fraction either, the better of the two is returned with ok=False.
     """
-    normal, _ = read_contacts(layout, *layer)
+    normal, sizes = read_contacts(layout, *layer)
+    normal = normal[inside_frame(normal, sizes, fov_nm)]
     normal_fraction = matched_fraction(normal, sem_local, max_match_nm)
     if normal_fraction >= min_fraction:
         return DesignContacts(normal, False, normal_fraction, ok=True)
@@ -98,7 +112,7 @@ def process_tile(
     fov_nm,
     layer: tuple[int, int],
     search_px: float = 5.0,
-    design_match_nm: float = 25.0,
+    design_match_nm: float = 40.0,
     min_match_fraction: float = 0.5,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
@@ -174,10 +188,12 @@ def stitch_tiles(
     max_match_nm: float = 25.0,
     outlier_factor: float = 3.0,
     min_matched: int = 5,
+    label: str = "SEM",
 ) -> StitchResult:
     """Pairwise overlap fits and the per-tile translation corrections.
 
-    points: per tile, SEM contact centres in mask nm at the nominal placement.
+    points: per tile, contact centres (SEM or design) in mask nm at the nominal placement.
+    label: what is being stitched, for the warning text.
     centers, fovs: (n_tiles, 2) nominal tile centres and fields of view, nm.
     max_match_nm: largest expected B − A offset (stage error); must stay below half the pitch.
     Pairs with fewer than min_matched matched contacts are not used; they are kept in
@@ -201,15 +217,33 @@ def stitch_tiles(
         weights=[p.fit.inliers.sum() for p in pairs],
     )
     result = StitchResult(pairs, rejected, corrections)
-    _warn_about_failures(result)
+    _warn_about_failures(result, label)
     return result
 
 
-def _warn_about_failures(result: StitchResult):
+def stitch_design(
+    tiles: list[TileResult],
+    max_match_nm: float = 25.0,
+    outlier_factor: float = 3.0,
+    min_matched: int = 5,
+) -> StitchResult:
+    """Stitch the per-tile design files exactly like the SEM tiles (translation per tile).
+
+    The same contact drawn in two neighbouring .oas files should sit at the same mask position;
+    where it does not, the files are offset against each other. Tiles whose design tone was
+    flagged are left out (their correction is NaN, reported as not stitched).
+    """
+    points = [t.design_points_nm() if t.design.ok else np.empty((0, 2)) for t in tiles]
+    centers = np.array([t.center_nm for t in tiles])
+    fovs = np.array([t.fov_nm for t in tiles])
+    return stitch_tiles(points, centers, fovs, max_match_nm, outlier_factor, min_matched, label="design")
+
+
+def _warn_about_failures(result: StitchResult, label: str):
     failed = [(r.i, r.j, r.matched) for r in result.rejected if r.failed]
     if failed or len(result.unplaced):
         warnings.warn(
-            f"Stitching incomplete: {len(failed)} overlapping pair(s) did not match "
+            f"{label} stitching incomplete: {len(failed)} overlapping pair(s) did not match "
             f"(tile i, tile j, matched contacts): {failed}; {len(result.unplaced)} tile(s) could not be "
             f"stitched (NaN correction): {result.unplaced.tolist()}",
             stacklevel=3,

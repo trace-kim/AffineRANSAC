@@ -1,9 +1,11 @@
-"""Registration error: stitched SEM contact centres vs design centres (docs/SPEC.md S6, S8).
+"""Registration error: stitched SEM contact centres vs stitched design centres (docs/SPEC.md S6, S8).
 
 v1 reports the RAW error: no affine is removed yet (the RANSAC global affine, S7, comes later),
 so a common offset, rotation or scale shows up as a pattern in the error map.
 
-Each tile is matched to its own design contacts (mutual nearest, within a gate). A contact seen
+Both sides are placed with their own stitching corrections: the SEM tiles (stitch_tiles) and the
+per-tile design files (stitch_design), which can be offset against each other. Each tile's
+SEM contacts are matched to its own design contacts (mutual nearest, within a gate). A contact seen
 by two tiles in an overlap therefore has two error entries, one per tile (all observations are
 kept, SPEC S5). Tiles that cannot be measured are listed with the reason and a warning, never
 dropped silently.
@@ -25,7 +27,7 @@ class DesignErrors:
     design_nm: np.ndarray   # (N, 2) design centre, mask nm
     sem_nm: np.ndarray      # (N, 2) stitched SEM centre, mask nm
     error_nm: np.ndarray    # (N, 2) registration_error(sem_nm, design_nm), nm
-    skipped: dict           # tile index -> reason why it has no errors
+    skipped: dict           # tile index -> reason why it was not measured (no error computed)
 
 
 def registration_error(sem: np.ndarray, design: np.ndarray) -> np.ndarray:
@@ -48,36 +50,41 @@ def error_summary(error_nm: np.ndarray) -> dict:
 def design_errors(
     sem_points: list[np.ndarray],
     design_points: list[np.ndarray],
-    corrections: np.ndarray,
+    sem_corrections: np.ndarray,
+    design_corrections: np.ndarray,
     design_ok,
-    max_match_nm: float = 25.0,
+    max_match_nm: float = 40.0,
 ) -> DesignErrors:
     """Raw registration error of every contact found in both the stitched SEM and the design.
 
-    sem_points: per tile, SEM centres in mask nm at the nominal placement.
-    design_points: per tile, design centres in mask nm.
-    corrections: (n_tiles, 2) stitching corrections (NaN = tile not stitched).
+    sem_points, design_points: per tile, SEM / design centres in mask nm at the nominal placement.
+    sem_corrections, design_corrections: (n_tiles, 2) corrections added to each tile's SEM / design
+    points, e.g. one placement of stitching.placement_corrections (NaN = tile not stitched).
     design_ok: per tile, whether its design tone matched the SEM (DesignContacts.ok).
     """
     tiles, designs, sems, skipped = [], [], [], {}
     for k, (sem, design) in enumerate(zip(sem_points, design_points)):
-        if np.isnan(corrections[k]).any():
-            skipped[k] = "not stitched"
-            continue
         if not design_ok[k]:
             skipped[k] = "design tone not matched (flagged)"
             continue
-        stitched = sem + corrections[k]
-        i_design, i_sem = match_points(design, stitched, max_match_nm)
+        if np.isnan(sem_corrections[k]).any():
+            skipped[k] = "SEM tile not stitched"
+            continue
+        if np.isnan(design_corrections[k]).any():
+            skipped[k] = "design tile not stitched"
+            continue
+        stitched_sem = sem + sem_corrections[k]
+        stitched_design = design + design_corrections[k]
+        i_design, i_sem = match_points(stitched_design, stitched_sem, max_match_nm)
         if len(i_design) == 0:
             skipped[k] = "no SEM contact matched the design"
             continue
         tiles.append(np.full(len(i_design), k))
-        designs.append(design[i_design])
-        sems.append(stitched[i_sem])
+        designs.append(stitched_design[i_design])
+        sems.append(stitched_sem[i_sem])
 
     if skipped:
-        warnings.warn(f"No design errors for {len(skipped)} tile(s): {skipped}", stacklevel=2)
+        warnings.warn(f"{len(skipped)} tile(s) not measured (no error computed): {skipped}", stacklevel=2)
     design_nm = np.concatenate(designs) if designs else np.empty((0, 2))
     sem_nm = np.concatenate(sems) if sems else np.empty((0, 2))
     return DesignErrors(

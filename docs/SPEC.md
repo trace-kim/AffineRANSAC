@@ -102,9 +102,11 @@ Rules:
 - **Tone reversal:** some `.oas` files draw the area *around* the holes. For those, use
   `read_contacts_tone_reversed()` (holes = frame − drawn shapes, D17). Which tone a file uses is
   decided per tile by matching against the SEM (D28, `pipeline.choose_design_contacts`): normal
-  tone if ≥ 50 % of the SEM contacts match a design contact (tile-local, 25 nm gate), else tone
-  reversed if that reaches 50 %, else the tile is **flagged** (`DesignContacts.ok = False`).
-  No file property alone identifies reversed files (user). OASIS cannot store holes, so a
+  tone if ≥ 50 % of the SEM contacts match a design contact (tile-local, **40 nm** gate: the
+  SEM-to-design offset of a tile exceeds 25 nm, user), else tone reversed if that reaches 50 %,
+  else the tile is **flagged** (`DesignContacts.ok = False`). No file property alone identifies
+  reversed files (user). Normal-tone contacts whose bounding box touches the FOV frame are dropped
+  (`inside_frame`): they may be cut by the frame, like border contacts in the SEM. OASIS cannot store holes, so a
   polygon with holes arrives as one outline with zero-width cut lines.
   We do *not* read one large full-mask layout. The workload is therefore **many small files**
   (about 1,000 tiles × a few hundred contacts). Per-file overhead matters, not large-file
@@ -337,6 +339,13 @@ gauge stays mean-zero over the stitched group (D6); `stitching.fix_tile()` re-ex
 solution with one tile fixed (viewer: "first tile fixed"), e.g. for later comparison with design
 centres.
 
+**Design stitching (D30).** The per-tile `.oas` files can be offset against each other (the same
+contact drawn at different mask positions in neighbouring files; user, real data). They are
+stitched exactly like the SEM: `pipeline.stitch_design()` runs `stitch_tiles` on the design
+centres (translation per tile, no rotation; flagged tiles left out → NaN, reported).
+`stitching.placement_corrections()` gives, per placement ("nominal", "mean", "first"), the
+(SEM, design) corrections; "first" fixes the first tile stitched in both.
+
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
 
@@ -415,13 +424,15 @@ RANSAC is used **only here** (SEM↔design), not in stitching (D8).
 
 ### S8 — Registration error and reporting
 **Implemented first (v1, D29): raw error, no affine removed.** `registration.design_errors()`
-matches each tile's stitched SEM centres (nominal + correction) to that tile's design centres
-(`match_points`, 25 nm gate) and returns `DesignErrors` (tile, design, SEM, error per contact).
-Tiles that are not stitched, have a flagged design tone or match nothing are listed in `skipped`
-with the reason, plus a warning. `error_summary()` gives count, mean, 3σ and max. Overlap
+matches each tile's SEM centres to that tile's design centres, each placed with its own
+corrections (one placement of `placement_corrections`; `match_points`, 40 nm gate), and returns
+`DesignErrors` (tile, design, SEM, error per contact). Tiles that are not measured (SEM or design
+not stitched, design tone flagged, nothing matched) are listed in `skipped` with the reason, plus
+a warning; no error is computed for them. `error_summary()` gives count, mean, 3σ and max. Overlap
 contacts get one entry per tile (all observations kept, S5). The sign is set only in
 `registration_error()`: SEM − design, tentative (§13-8). The viewer shows it as an error map
-beside the SEM view with shared zoom. The RANSAC affine (S7) and residuals after `G` follow.
+beside the SEM view with shared zoom, one error set per placement (switching the placement
+switches the arrows). The RANSAC affine (S7) and residuals after `G` follow.
 
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
@@ -606,6 +617,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D27 | 2026-10-02 | Overlap match gate default 10 → **25 nm**. Pairs that do not match are kept and classified (failed / skipped); tiles not connected to the largest stitched group get **NaN** corrections plus a warning, instead of the previous silent correction of 0. Gauge stays mean-zero; a "first tile fixed" view (`fix_tile`) is offered in the viewer. | User: SEM stage offsets between neighbours reach 25 nm, so the 10 nm gate rejected real pairs; those tiles then silently kept a 0 correction and misaligned in the stitched view. A stitching failure contaminates every later error and must be visible for diagnosis. User chose mean-zero gauge with an optional first-tile-fixed view (for a later global rotation/scale check against the design). |
 | D28 | 2026-10-02 | Design tone chosen per tile by matching: normal first, tone reversed if fewer than 50 % of the SEM contacts match, flag the tile if neither reaches 50 %. Replaces the single `TONE_REVERSED` setting. | User: no simple file property identifies reversed files; compare with the SEM contacts using the existing matching. |
 | D29 | 2026-10-02 | First design comparison = **raw** error per contact (stitched SEM − design, no affine removed), per tile against its own design, in `registration.py` (`design_errors`, `error_summary`). Tiles without errors are listed with a reason and warned. Sign SEM − design is tentative and lives in one function. The viewer shows an error map beside the SEM view; zoom/pan are linked by copying the visible rectangle, because pyqtgraph's setXLink aligns views by screen position (shifts side-by-side plots). | User: apply the tone choice, compute the error of the stitched centres vs the design, show it side by side with shared zoom, using library functions reusable in other pipelines; sign convention to be checked later. RANSAC (S7) next. |
+| D30 | 2026-10-02 | The per-tile design files are **stitched** like the SEM (`stitch_design`, translation per tile). Design errors are computed per placement (nominal / stitched mean-0 / stitched first tile fixed) with each side's own corrections (`placement_corrections`). Design–SEM gate 25 → 40 nm. Normal-tone design contacts touching the FOV frame are dropped. Error-map arrows default ×10; tiles without a computed error are labelled "not measured". | User: `.oas` contours do not coincide in overlaps (file offsets, files cannot be fixed), so the design must be stitched too, translation only; the SEM-to-design offset exceeds 25 nm (40 nm works); arrows must differ between placements; "Tiles without errors" read as zero error. |
 
 ---
 

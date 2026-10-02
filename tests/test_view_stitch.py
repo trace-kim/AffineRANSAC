@@ -13,10 +13,13 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.overlap_fit import OverlapFit
 from affine_ransac.pipeline import DesignContacts, PairResult, RejectedPair, StitchResult, TileResult
 from affine_ransac.registration import DesignErrors
-from affine_ransac.view_stitch import (DESIGN, ERRORS, FAILED, IMAGES, NO_ERRORS, OUTLIERS, REFINED, UNSTITCHED,
-                                       StitchViewer, outlier_indices)
+from affine_ransac.view_stitch import (DESIGN, DESIGN_FAILED, ERRORS, FAILED, IMAGES, NOT_MEASURED, OUTLIERS,
+                                       REFINED, UNSTITCHED, StitchViewer, outlier_indices)
 
 PIXEL = 2.0  # nm
+CENTERS = [(5_000_000.0, 2_000_000.0), (5_000_100.0, 2_000_000.0), (5_000_000.0, 2_000_070.0)]
+SEM_CORRECTIONS = np.array([[1.5, -0.5], [-1.5, 0.5], [np.nan, np.nan]])  # tile C: SEM not stitched
+DESIGN_CORRECTIONS = np.array([[0.5, 0.0], [-0.5, 0.0], [0.0, 0.0]])
 
 
 def make_tile(center):
@@ -28,18 +31,32 @@ def make_tile(center):
                       design=DesignContacts(np.array([[0.0, 0.0]]), False, 1.0, ok=True))
 
 
+def errors_at(error, skipped):
+    """Tile A: one contact at its centre with this error; the listed tiles not measured."""
+    design = np.array([CENTERS[0]])
+    return DesignErrors(tile=np.array([0]), design_nm=design, sem_nm=design + error,
+                        error_nm=np.array([error], float), skipped=skipped)
+
+
+ERRORS_BY_PLACEMENT = {
+    "nominal": errors_at((5.0, 0.0), {1: "design tone not matched (flagged)"}),
+    "mean": errors_at((2.0, -1.0), {2: "SEM tile not stitched"}),
+    "first": errors_at((1.0, 1.0), {2: "SEM tile not stitched"}),
+}
+
+
 def make_viewer(errors=None):
-    # Mask-scale centres: the viewer must draw relative to its local origin. Tile C failed to stitch.
-    tiles = [make_tile((5_000_000.0, 2_000_000.0)), make_tile((5_000_100.0, 2_000_000.0)),
-             make_tile((5_000_000.0, 2_000_070.0))]
+    # Mask-scale centres: the viewer must draw relative to its local origin.
+    tiles = [make_tile(c) for c in CENTERS]
     fit = OverlapFit(shift=np.zeros(2), rotation=0.0, center=np.zeros(2),
                      inliers=np.array([False]), residuals=np.zeros((1, 2)))
     pair = PairResult(0, 1, (5_000_040.0, 5_000_060.0, 1_999_960.0, 2_000_040.0), np.array([0]), np.array([0]), fit)
     failed = RejectedPair(0, 2, (4_999_940.0, 5_000_060.0, 2_000_030.0, 2_000_040.0), in_box=6, matched=0, failed=True)
-    stitch = StitchResult([pair], [failed], corrections=np.array([[1.5, -0.5], [-1.5, 0.5], [np.nan, np.nan]]))
+    stitch = StitchResult([pair], [failed], corrections=SEM_CORRECTIONS)
+    design_stitch = StitchResult([pair], [failed], corrections=DESIGN_CORRECTIONS)
     square = [np.array([[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]])]
     pg.mkQApp()
-    return tiles, StitchViewer(tiles, ["A", "B", "C"], [square] * 3, stitch, errors=errors, arrow_scale=10)
+    return tiles, StitchViewer(tiles, ["A", "B", "C"], [square] * 3, stitch, design_stitch, errors=errors)
 
 
 def item(viewer, layer, k):
@@ -59,38 +76,71 @@ def test_image_pixel_centres_land_on_their_mask_positions():
     viewer.close()
 
 
-def test_stitched_placement_moves_sem_items_not_the_design():
+def test_placements_move_sem_and_design_by_their_own_corrections():
     tiles, viewer = make_viewer()
     nominal = tiles[0].center_nm - viewer.origin
-
-    viewer.placement_buttons["mean"].setChecked(True)
-    np.testing.assert_allclose(view_xy(item(viewer, REFINED, 0), 0, 0), nominal + [1.5, -0.5])
+    np.testing.assert_allclose(view_xy(item(viewer, REFINED, 0), 0, 0), nominal)
     np.testing.assert_allclose(view_xy(item(viewer, DESIGN, 0), 0, 0), nominal)
 
-    viewer.placement_buttons["nominal"].setChecked(True)
+    viewer.placement_buttons["mean"].setChecked(True)
+    np.testing.assert_allclose(view_xy(item(viewer, REFINED, 0), 0, 0), nominal + SEM_CORRECTIONS[0])
+    np.testing.assert_allclose(view_xy(item(viewer, DESIGN, 0), 0, 0), nominal + DESIGN_CORRECTIONS[0])
+
+    viewer.placement_buttons["first"].setChecked(True)  # tile A stitched in both: it stays nominal
     np.testing.assert_allclose(view_xy(item(viewer, REFINED, 0), 0, 0), nominal)
-    viewer.close()
-
-
-def test_first_tile_fixed_placement():
-    tiles, viewer = make_viewer()
-    viewer.placement_buttons["first"].setChecked(True)
-    # Tile A's SEM items sit at its nominal centre, like its design.
-    np.testing.assert_allclose(view_xy(item(viewer, REFINED, 0), 0, 0), view_xy(item(viewer, DESIGN, 0), 0, 0))
-    # Tile B keeps its position relative to A: correction B - correction A = -3, +1.
+    np.testing.assert_allclose(view_xy(item(viewer, DESIGN, 0), 0, 0), nominal)
     b_nominal = tiles[1].center_nm - viewer.origin
     np.testing.assert_allclose(view_xy(item(viewer, REFINED, 1), 0, 0), b_nominal + [-3.0, 1.0])
+    np.testing.assert_allclose(view_xy(item(viewer, DESIGN, 1), 0, 0), b_nominal + [-1.0, 0.0])
     viewer.close()
 
 
 def test_unstitched_tile_is_marked_and_stays_nominal():
     tiles, viewer = make_viewer()
     assert "Stitching incomplete" in viewer.status_label.text()
-    assert "not stitched" in viewer.tile_list.item(2).text()
-    assert item(viewer, UNSTITCHED, 2) is not None and item(viewer, FAILED, None) is not None
+    assert "SEM not stitched" in viewer.tile_list.item(2).text()
+    assert item(viewer, UNSTITCHED, 2) is not None
+    assert item(viewer, FAILED, None) is not None and item(viewer, DESIGN_FAILED, None) is not None
     for mode in ("mean", "first"):
         viewer.placement_buttons[mode].setChecked(True)
         np.testing.assert_allclose(view_xy(item(viewer, REFINED, 2), 0, 0), tiles[2].center_nm - viewer.origin)
+    viewer.close()
+
+
+def test_error_lines_follow_the_selected_placement():
+    tiles, viewer = make_viewer(ERRORS_BY_PLACEMENT)
+    lines = item(viewer, ERRORS, 0)
+    start = tiles[0].center_nm - viewer.origin
+
+    def end():
+        x, y = lines.getData()
+        return view_xy(lines, x[1], y[1])
+
+    np.testing.assert_allclose(end(), start + 10 * np.array([5.0, 0.0]))  # nominal, default scale x10
+    viewer.placement_buttons["mean"].setChecked(True)
+    np.testing.assert_allclose(end(), start + 10 * np.array([2.0, -1.0]))
+    viewer.placement_buttons["first"].setChecked(True)
+    np.testing.assert_allclose(end(), start + 10 * np.array([1.0, 1.0]))
+    viewer.scale_box.setValue(100)
+    np.testing.assert_allclose(end(), start + 100 * np.array([1.0, 1.0]))
+    assert "×100" in viewer.error_label.text() and "first tile fixed" in viewer.error_label.text()
+    viewer.close()
+
+
+def test_not_measured_frames_follow_the_placement():
+    _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
+    assert item(viewer, NOT_MEASURED, 1).isVisible() and not item(viewer, NOT_MEASURED, 2).isVisible()
+    viewer.placement_buttons["mean"].setChecked(True)
+    assert not item(viewer, NOT_MEASURED, 1).isVisible() and item(viewer, NOT_MEASURED, 2).isVisible()
+    assert "not measured" in viewer.error_label.text()
+    viewer.close()
+
+
+def test_error_map_shares_zoom():
+    _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
+    viewer.show()
+    viewer.plot.setXRange(0, 50, padding=0)
+    assert np.allclose(viewer.error_plot.getPlotItem().vb.viewRect().left(), viewer.plot.getPlotItem().vb.viewRect().left())
     viewer.close()
 
 
@@ -117,39 +167,3 @@ def test_outlier_indices():
     stitch = StitchResult([PairResult(0, 2, (0, 1, 0, 1), np.array([4, 7, 9]), np.array([1, 2, 3]), fit)], [], np.zeros((3, 2)))
     found = outlier_indices(stitch, 3)
     assert [list(f) for f in found] == [[7], [], [2]]
-
-
-def make_errors():
-    # Tile A: one contact at its centre, error (+2, -1) nm. Tile C is not stitched.
-    return DesignErrors(tile=np.array([0]), design_nm=np.array([[5_000_000.0, 2_000_000.0]]),
-                        sem_nm=np.array([[5_000_002.0, 1_999_999.0]]), error_nm=np.array([[2.0, -1.0]]),
-                        skipped={2: "not stitched"})
-
-
-def test_error_map_arrows_shared_zoom_and_scale():
-    tiles, viewer = make_viewer(make_errors())
-    arrows = next(i for name, k, i in viewer.items if name == ERRORS and k == 0 and hasattr(i, "getData"))
-    start = tiles[0].center_nm - viewer.origin
-
-    def ends():
-        x, y = arrows.getData()
-        return [view_xy(arrows, x[m], y[m]) for m in (0, 1)]
-
-    np.testing.assert_allclose(ends(), [start, start + 10 * np.array([2.0, -1.0])])
-    viewer.scale_box.setValue(100)
-    np.testing.assert_allclose(ends()[1], start + 100 * np.array([2.0, -1.0]))
-    assert "×100" in viewer.error_label.text()
-
-    viewer.plot.setXRange(0, 50, padding=0)
-    assert np.allclose(viewer.error_plot.getPlotItem().vb.viewRange()[0], [0, 50])
-    assert item(viewer, NO_ERRORS, 2) is not None
-    viewer.close()
-
-
-def test_error_arrows_stay_at_the_design_in_every_placement():
-    tiles, viewer = make_viewer(make_errors())
-    arrows = item(viewer, ERRORS, 0)
-    for mode in ("nominal", "mean", "first"):
-        viewer.placement_buttons[mode].setChecked(True)
-        np.testing.assert_allclose(view_xy(arrows, 0, 0), tiles[0].center_nm - viewer.origin)
-    viewer.close()

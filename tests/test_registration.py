@@ -11,7 +11,7 @@ def test_raw_error_is_stitched_sem_minus_design():
     sem = [DESIGN + (3.0, 0.0), DESIGN + (0.0, -2.0)]
     corrections = np.array([[-1.0, 0.0], [0.0, 0.0]])
 
-    errors = design_errors(sem, [DESIGN, DESIGN], corrections, design_ok=[True, True])
+    errors = design_errors(sem, [DESIGN, DESIGN], corrections, np.zeros((2, 2)), design_ok=[True, True])
 
     assert errors.skipped == {}
     assert len(errors.tile) == 2 * len(DESIGN)
@@ -20,15 +20,24 @@ def test_raw_error_is_stitched_sem_minus_design():
     np.testing.assert_allclose(errors.sem_nm - errors.design_nm, errors.error_nm)
 
 
-def test_tiles_without_errors_are_listed_and_warned():
-    sem = [DESIGN, DESIGN, DESIGN, DESIGN + 1000.0]
-    corrections = np.array([[0.0, 0.0], [np.nan, np.nan], [0.0, 0.0], [0.0, 0.0]])
+def test_design_corrections_move_the_design():
+    # The design file of tile 0 is drawn 2 nm too far left; its design correction fixes that.
+    errors = design_errors([DESIGN], [DESIGN - (2.0, 0.0)], np.zeros((1, 2)), np.array([[2.0, 0.0]]), [True])
+    np.testing.assert_allclose(errors.error_nm, 0, atol=1e-12)
+    np.testing.assert_allclose(errors.design_nm, errors.sem_nm)
 
-    with pytest.warns(UserWarning, match="No design errors for 3 tile"):
-        errors = design_errors(sem, [DESIGN] * 4, corrections, design_ok=[True, True, False, True])
 
-    assert set(errors.skipped) == {1, 2, 3}
-    assert "not stitched" in errors.skipped[1] and "flagged" in errors.skipped[2] and "matched" in errors.skipped[3]
+def test_tiles_not_measured_are_listed_with_the_reason_and_warned():
+    sem = [DESIGN] * 4 + [DESIGN + 1000.0]
+    sem_corrections = np.array([[0.0, 0.0], [np.nan, np.nan], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]])
+    design_corrections = np.array([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [np.nan, np.nan], [0.0, 0.0]])
+
+    with pytest.warns(UserWarning, match="4 tile.s. not measured"):
+        errors = design_errors(sem, [DESIGN] * 5, sem_corrections, design_corrections,
+                               design_ok=[True, True, False, True, True])
+
+    assert errors.skipped == {1: "SEM tile not stitched", 2: "design tone not matched (flagged)",
+                              3: "design tile not stitched", 4: "no SEM contact matched the design"}
     assert set(errors.tile) == {0}
 
 

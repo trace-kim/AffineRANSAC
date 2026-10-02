@@ -80,3 +80,25 @@ def fix_tile(corrections: np.ndarray, k: int) -> np.ndarray:
     an equally valid solution, convenient to compare against one tile's own placement.
     """
     return corrections - corrections[k]
+
+
+def first_stitched_tile(*corrections: np.ndarray) -> int | None:
+    """Index of the first tile with a correction (not NaN) in every given set, or None."""
+    placed = np.all([~np.isnan(c[:, 0]) for c in corrections], axis=0)
+    return int(np.argmax(placed)) if placed.any() else None
+
+
+def placement_corrections(sem_corrections: np.ndarray, design_corrections: np.ndarray) -> dict:
+    """Per placement, the (SEM, design) corrections added to the nominal tile centres:
+
+    - "nominal": none (metadata centres),
+    - "mean": the stitching solutions (each averages zero),
+    - "first": both solutions shifted so that the first tile stitched in both stays nominal.
+    NaN marks a tile that could not be stitched. Both sets are (n_tiles, 2), nm.
+    """
+    zero = np.zeros_like(sem_corrections)
+    placements = {"nominal": (zero, zero), "mean": (sem_corrections, design_corrections)}
+    k = first_stitched_tile(sem_corrections, design_corrections)
+    if k is not None:
+        placements["first"] = (fix_tile(sem_corrections, k), fix_tile(design_corrections, k))
+    return placements

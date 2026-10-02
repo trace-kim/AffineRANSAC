@@ -3,17 +3,18 @@
 Shows, in mask coordinates: every tile's SEM image, the design (.oas) contours and centres,
 the SEM contours and centres from Otsu and from edge refinement, the nominal overlap boxes, and
 the contacts flagged as outliers by the pairwise overlap fits. Stitching failures are marked in
-magenta: overlaps whose contacts did not match, and tiles that could not be stitched (these stay
-at their nominal position in every placement).
+magenta: overlaps whose contacts did not match (SEM or design), and tiles that could not be
+stitched (these stay at their nominal position in every placement).
 
-- Placement: "Nominal" puts each tile at its metadata centre; "Stitched" adds the tile's
-  stitching correction (corrections average zero); "Stitched, first tile fixed" shifts all
-  corrections so the first stitched tile stays at its nominal position. SEM items move, the
-  design stays. Switch back and forth to compare.
-- Error map (if design errors are given): a second plot beside the SEM view, sharing its zoom
-  and pan, with one arrow per contact from the design position along the raw error
-  (registration.design_errors; sign as in registration_error), magnified by the arrow scale.
-  Tiles without errors (not stitched, design tone flagged) are framed in magenta.
+- Placement (stitching.placement_corrections): "Nominal" puts each tile at its metadata centre;
+  "Stitched" adds each tile's corrections, the SEM ones to the SEM items and the design ones
+  (stitch_design) to the design items; "Stitched, first tile fixed" shifts both so the first tile
+  stitched in both stays at its nominal position. Switch back and forth to compare.
+- Error map (if design errors are given, one set per placement): a second plot beside the SEM
+  view, sharing its zoom and pan, with one line per contact from its design position along its
+  raw error (registration.design_errors; sign as in registration_error), magnified by the arrow
+  scale. It shows the errors of the selected placement. Tiles that were not measured (no error
+  computed: not stitched, or design tone flagged) are framed in magenta.
 - Layers and tiles can be hidden with the check boxes on the right (hide a tile to see the
   tile beneath it in an overlap).
 - Mouse: drag to pan, wheel to zoom, right-click for more options.
@@ -22,8 +23,8 @@ Everything is drawn relative to a local origin (the middle of the tiles, in whol
 OpenGL viewport works in float32, which would round mask coordinates (~10⁷ nm) to several nm.
 The axes show x − x0, y − y0 in µm; the cursor label shows absolute mask µm.
 
-Data comes from affine_ransac.pipeline (process_tile, stitch_tiles); see
-notebooks/stitch_viewer.ipynb.
+Data comes from affine_ransac.pipeline (process_tile, stitch_tiles, stitch_design) and
+affine_ransac.registration (design_errors); see notebooks/stitch_viewer.ipynb.
 """
 
 import numpy as np
@@ -33,7 +34,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.pipeline import StitchResult, TileResult
 from affine_ransac.registration import DesignErrors, error_summary
-from affine_ransac.stitching import fix_tile
+from affine_ransac.stitching import first_stitched_tile, placement_corrections
 from affine_ransac.view_design import polygons_to_path
 
 IMAGES = "SEM images"
@@ -45,21 +46,26 @@ REFINED = "Refined contours"
 REFINED_CENTRES = "Refined centres"
 OUTLIERS = "Overlap outliers"
 BOXES = "Overlaps used (nominal)"
-FAILED = "Overlaps not matched"
+FAILED = "SEM overlaps not matched"
+DESIGN_FAILED = "Design overlaps not matched"
 SKIPPED = "Overlaps skipped (few contacts)"
 UNSTITCHED = "Tiles not stitched"
 ERRORS = "Error arrows (error map)"
 TILE_FRAMES = "Tile outlines (error map)"
-NO_ERRORS = "Tiles without errors (error map)"
+NOT_MEASURED = "Tiles not measured, no error computed (error map)"
 
 FAILURE_COLOR = "#ff00ff"
 COLORS = {
     IMAGES: "#c0c0c0", DESIGN: "#3c8cff", DESIGN_CENTRES: "#3c8cff", OTSU: "#33cc33",
     OTSU_CENTRES: "#33cc33", REFINED: "#ff4040", REFINED_CENTRES: "#ff4040",
-    OUTLIERS: "#ffa500", BOXES: "#ffff00", FAILED: FAILURE_COLOR, SKIPPED: "#909090",
-    UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060", NO_ERRORS: FAILURE_COLOR,
+    OUTLIERS: "#ffa500", BOXES: "#ffff00", FAILED: FAILURE_COLOR, DESIGN_FAILED: FAILURE_COLOR,
+    SKIPPED: "#909090", UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060",
+    NOT_MEASURED: FAILURE_COLOR,
 }
-SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by placement
+SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by SEM corrections
+DESIGN_LAYERS = {DESIGN, DESIGN_CENTRES}                                      # moved by design corrections
+PLACEMENTS = {"nominal": "Nominal (metadata centres)", "mean": "Stitched (corrections average 0)",
+              "first": "Stitched, first tile fixed"}
 
 
 def image_item(tile: TileResult) -> pg.ImageItem:
@@ -138,32 +144,33 @@ class StitchViewer(QtWidgets.QWidget):
         tile_ids: list[str],
         design_polygons: list[list[np.ndarray]],
         stitch: StitchResult,
+        design_stitch: StitchResult,
         refined: bool = True,
         use_opengl: bool = True,
-        errors: DesignErrors | None = None,
-        arrow_scale: float = 100.0,
+        errors: dict[str, DesignErrors] | None = None,
+        arrow_scale: float = 10.0,
     ):
         """tiles: from process_tile; design_polygons: per tile, read_polygons() of its .oas
-        (tile-local nm, [] if none); stitch: from stitch_tiles; refined: whether stitch_tiles was
-        given the refined (True) or the Otsu centres, for the outlier markers; errors: from
-        registration.design_errors, shown as an error map beside the SEM view (None: no map);
-        arrow_scale: error arrows are drawn this many times longer than the error."""
+        (tile-local nm, [] if none); stitch: SEM stitching (stitch_tiles); design_stitch: design
+        stitching (stitch_design); refined: whether the SEM was stitched with the refined (True) or
+        the Otsu centres, for the outlier markers; errors: per placement ("nominal", "mean",
+        "first"), registration.design_errors with that placement's corrections, shown as an
+        error map beside the SEM view (None: no map); arrow_scale: error lines are drawn this
+        many times longer than the error."""
         super().__init__()
         self.setWindowTitle(f"Stitch viewer - {len(tiles)} tiles")
         self.tiles = tiles
-        self.unplaced = set(stitch.unplaced.tolist())
-        placed = [k for k in range(len(tiles)) if k not in self.unplaced]
-        self.reference = placed[0] if placed else None  # first stitched tile, for "first tile fixed"
-        no_move = np.zeros((len(tiles), 2))
-        # Per placement mode, the shift added to each tile. Unstitched tiles (NaN) never move.
-        self.corrections = {
-            "nominal": no_move,
-            "mean": np.nan_to_num(stitch.corrections),
-            "first": np.nan_to_num(fix_tile(stitch.corrections, self.reference)) if placed else no_move,
-        }
+        self.sem_unplaced = set(stitch.unplaced.tolist())
+        self.design_unplaced = set(design_stitch.unplaced.tolist())
+        self.reference = first_stitched_tile(stitch.corrections, design_stitch.corrections)
+        # Per placement, the (SEM, design) shift added to each tile. Unstitched tiles (NaN) never move.
+        self.shifts = {mode: (np.nan_to_num(sem), np.nan_to_num(design))
+                       for mode, (sem, design) in placement_corrections(stitch.corrections,
+                                                                        design_stitch.corrections).items()}
         centers = np.array([t.center_nm for t in tiles])
         self.origin = np.round(centers.mean(axis=0), -3)  # whole µm, see module docstring
         self.items = []  # (layer, tile index or None, graphics item)
+        self.mode = "nominal"
 
         self.plot = make_plot(use_opengl)
         x0, y0 = self.origin / 1000
@@ -172,19 +179,20 @@ class StitchViewer(QtWidgets.QWidget):
         outliers = outlier_indices(stitch, len(tiles))
         for k, tile in enumerate(tiles):
             self._add_tile(k, tile, design_polygons[k], outliers[k], refined)
-        dash, dot = QtCore.Qt.PenStyle.DashLine, QtCore.Qt.PenStyle.DotLine
+        dash, dot, dash_dot = QtCore.Qt.PenStyle.DashLine, QtCore.Qt.PenStyle.DotLine, QtCore.Qt.PenStyle.DashDotLine
         for layer, boxes, style in ((BOXES, [p.box for p in stitch.pairs], dash),
                                     (FAILED, [r.box for r in stitch.rejected if r.failed], dash),
+                                    (DESIGN_FAILED, [r.box for r in design_stitch.rejected if r.failed], dash_dot),
                                     (SKIPPED, [r.box for r in stitch.rejected if not r.failed], dot)):
             if boxes:
-                width = 2 if layer == FAILED else 1
+                width = 1 if layer in (BOXES, SKIPPED) else 2
                 self._add(layer, None, path_item([rectangle(*b) - self.origin for b in boxes], COLORS[layer], style, width))
 
         self.error_plot, self.errors, self.arrow_scale = None, errors, arrow_scale
         if errors is not None:
-            self._add_error_map(errors, use_opengl)
+            self._add_error_map(use_opengl)
 
-        self.status_label = QtWidgets.QLabel(self._status_text(stitch))
+        self.status_label = QtWidgets.QLabel(self._status_text(stitch, design_stitch))
         self.cursor_label = QtWidgets.QLabel("x = -, y = - (mask µm)")
         plots = QtWidgets.QSplitter()
         for plot in (self.plot, self.error_plot):
@@ -203,55 +211,18 @@ class StitchViewer(QtWidgets.QWidget):
         layout.addWidget(self._side_panel(tile_ids))
 
         self.set_placement("nominal")
-        self.update_visibility()
         self.plot.autoRange()
         self.resize(1900 if errors is not None else 1400, 950)
 
-    def _add_error_map(self, errors: DesignErrors, use_opengl: bool):
-        """The error plot: per tile, arrows from its design positions; it shares the SEM view's zoom."""
-        self.error_plot = make_plot(use_opengl)
-        self.error_plot.setTitle("Raw error map (SEM - design)")  # short: a long title widens the plot
-        self.error_label = QtWidgets.QLabel()
-        link_views(self.plot, self.error_plot)
-        self.error_arrows = {}  # tile -> (arrow curve, start relative to the tile centre, error)
-        for k, tile in enumerate(self.tiles):
-            half_w, half_h = tile.fov_nm / 2
-            frame = [rectangle(-half_w, half_w, -half_h, half_h)]
-            self._add(TILE_FRAMES, k, path_item(frame, COLORS[TILE_FRAMES]), self.error_plot)
-            if k in errors.skipped:
-                self._add(NO_ERRORS, k, path_item(frame, COLORS[NO_ERRORS], width=3), self.error_plot)
-            mine = errors.tile == k
-            if not mine.any():
-                continue
-            start = errors.design_nm[mine] - tile.center_nm  # relative to the tile, like the design
-            arrows = pg.PlotCurveItem(*arrow_segments(start, errors.error_nm[mine], self.arrow_scale),
-                                      connect="pairs", pen=pg.mkPen(COLORS[ERRORS]))
-            self._add(ERRORS, k, arrows, self.error_plot)
-            self._add(ERRORS, k, centres_item(start, COLORS[ERRORS], "o", 3), self.error_plot)
-            self.error_arrows[k] = (arrows, start, errors.error_nm[mine])
-        self._update_error_label()
-
-    def set_arrow_scale(self, scale: float):
-        self.arrow_scale = scale
-        for arrows, start, error in self.error_arrows.values():
-            arrows.setData(*arrow_segments(start, error, scale))
-        self._update_error_label()
-
-    def _update_error_label(self):
-        summary = error_summary(self.errors.error_nm)
-        text = (f"Raw error (SEM − design), dot = design position, line = error ×{self.arrow_scale:g}: "
-                f"{summary['count']} contacts")
-        if summary["count"]:
-            text += (f", mean ({summary['mean_x_nm']:+.2f}, {summary['mean_y_nm']:+.2f}) nm, "
-                     f"3σ ({summary['3sigma_x_nm']:.2f}, {summary['3sigma_y_nm']:.2f}) nm")
-        self.error_label.setText(text)
-
-    def _status_text(self, stitch: StitchResult) -> str:
-        failed = sum(r.failed for r in stitch.rejected)
-        if self.unplaced or failed:
-            return (f"<b style='color:{FAILURE_COLOR}'>Stitching incomplete: {len(self.unplaced)} tile(s) not "
-                    f"stitched, {failed} overlap(s) not matched (magenta)</b>")
-        return f"All {len(self.tiles)} tiles stitched ({len(stitch.pairs)} overlaps used)"
+    def _status_text(self, stitch: StitchResult, design_stitch: StitchResult) -> str:
+        parts = []
+        for name, result, unplaced in (("SEM", stitch, self.sem_unplaced), ("design", design_stitch, self.design_unplaced)):
+            failed = sum(r.failed for r in result.rejected)
+            if unplaced or failed:
+                parts.append(f"{name}: {len(unplaced)} tile(s) not stitched, {failed} overlap(s) not matched")
+        if parts:
+            return f"<b style='color:{FAILURE_COLOR}'>Stitching incomplete (magenta) - {'; '.join(parts)}</b>"
+        return f"All {len(self.tiles)} tiles stitched, SEM and design"
 
     def _add(self, layer, k, item, plot=None):
         item.setZValue(0 if layer == IMAGES else 1)
@@ -274,30 +245,72 @@ class StitchViewer(QtWidgets.QWidget):
         if len(outliers):
             found = tile.refined if refined else tile.otsu
             self._add(OUTLIERS, k, centres_item(local(found.centers[outliers]), COLORS[OUTLIERS], "o", 16))
-        if k in self.unplaced:  # a thick frame around the whole tile, at its nominal position
+        if k in self.sem_unplaced or k in self.design_unplaced:  # a thick frame at the nominal position
             half_w, half_h = tile.fov_nm / 2
             self._add(UNSTITCHED, k, path_item([rectangle(-half_w, half_w, -half_h, half_h)], COLORS[UNSTITCHED], width=3))
 
+    def _add_error_map(self, use_opengl: bool):
+        """The error plot: per tile, a frame, its error lines and a not-measured frame; the lines
+        and frames show the selected placement's errors (set_placement)."""
+        self.error_plot = make_plot(use_opengl)
+        self.error_plot.setTitle("Raw error map (SEM - design)")  # short: a long title widens the plot
+        self.error_label = QtWidgets.QLabel()
+        link_views(self.plot, self.error_plot)
+        self.error_items = {}  # tile -> (lines, dots)
+        for k, tile in enumerate(self.tiles):
+            half_w, half_h = tile.fov_nm / 2
+            frame = [rectangle(-half_w, half_w, -half_h, half_h)]
+            self._add(TILE_FRAMES, k, path_item(frame, COLORS[TILE_FRAMES]), self.error_plot)
+            self._add(NOT_MEASURED, k, path_item(frame, COLORS[NOT_MEASURED], width=3), self.error_plot)
+            lines = pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(COLORS[ERRORS]))
+            dots = pg.ScatterPlotItem(symbol="o", size=3, pen=pg.mkPen(COLORS[ERRORS]), brush=None)
+            self._add(ERRORS, k, lines, self.error_plot)
+            self._add(ERRORS, k, dots, self.error_plot)
+            self.error_items[k] = (lines, dots)
+
+    def _show_errors(self):
+        """Error lines of the selected placement: from the (stitched) design position along the error."""
+        errors = self.errors[self.mode]
+        for k, (lines, dots) in self.error_items.items():
+            mine = errors.tile == k
+            start = errors.design_nm[mine] - self.tiles[k].center_nm  # items sit at the tile centre
+            lines.setData(*arrow_segments(start, errors.error_nm[mine], self.arrow_scale))
+            dots.setData(start[:, 0], start[:, 1])
+        summary = error_summary(errors.error_nm)
+        text = (f"Raw error (SEM − design), {PLACEMENTS[self.mode]}: dot = design position, "
+                f"line = error ×{self.arrow_scale:g}; {summary['count']} contacts")
+        if summary["count"]:
+            text += (f", mean ({summary['mean_x_nm']:+.2f}, {summary['mean_y_nm']:+.2f}) nm, "
+                     f"3σ ({summary['3sigma_x_nm']:.2f}, {summary['3sigma_y_nm']:.2f}) nm")
+        if errors.skipped:
+            text += f"; {len(errors.skipped)} tile(s) not measured (magenta)"
+        self.error_label.setText(text)
+
+    def set_arrow_scale(self, scale: float):
+        self.arrow_scale = scale
+        self._show_errors()
+
     def _side_panel(self, tile_ids):
         panel = QtWidgets.QWidget()
-        panel.setFixedWidth(280)
+        panel.setFixedWidth(300)
         column = QtWidgets.QVBoxLayout(panel)
 
         column.addWidget(QtWidgets.QLabel("Placement"))
-        reference = tile_ids[self.reference] if self.reference is not None else "-"
         self.placement_buttons = {}
-        for mode, text in (("nominal", "Nominal (metadata centres)"),
-                           ("mean", "Stitched (corrections average 0)"),
-                           ("first", f"Stitched, first tile fixed ({reference})")):
+        for mode, text in PLACEMENTS.items():
+            if mode == "first":
+                text += f" ({tile_ids[self.reference] if self.reference is not None else 'no tile stitched'})"
             button = QtWidgets.QRadioButton(text)
-            button.toggled.connect(lambda on, mode=mode: on and self.set_placement(mode))
+            button.setEnabled(mode in self.shifts)
             column.addWidget(button)
             self.placement_buttons[mode] = button
-        self.placement_buttons["nominal"].setChecked(True)
+        self.placement_buttons["nominal"].setChecked(True)  # before connecting: the panel is not complete yet
+        for mode, button in self.placement_buttons.items():
+            button.toggled.connect(lambda on, mode=mode: on and self.set_placement(mode))
 
         if self.error_plot is not None:
             row = QtWidgets.QHBoxLayout()
-            row.addWidget(QtWidgets.QLabel("Error arrows ×"))
+            row.addWidget(QtWidgets.QLabel("Error lines ×"))
             self.scale_box = QtWidgets.QDoubleSpinBox()
             self.scale_box.setRange(1, 1e6)
             self.scale_box.setDecimals(0)
@@ -320,8 +333,10 @@ class StitchViewer(QtWidgets.QWidget):
         self.tile_list = QtWidgets.QListWidget()
         for k, tile_id in enumerate(tile_ids):
             entry = QtWidgets.QListWidgetItem(tile_id)
-            if k in self.unplaced:
-                entry.setText(f"{tile_id}  (not stitched)")
+            failures = [name for name, unplaced in (("SEM", self.sem_unplaced), ("design", self.design_unplaced))
+                        if k in unplaced]
+            if failures:
+                entry.setText(f"{tile_id}  ({' and '.join(failures)} not stitched)")
                 entry.setForeground(pg.mkColor(FAILURE_COLOR))
             entry.setCheckState(QtCore.Qt.CheckState.Checked)
             self.tile_list.addItem(entry)
@@ -333,19 +348,31 @@ class StitchViewer(QtWidgets.QWidget):
         return self.tile_list.item(k).checkState() == QtCore.Qt.CheckState.Checked
 
     def update_visibility(self, *_):
+        not_measured = self.errors[self.mode].skipped if self.errors is not None else {}
         for layer, k, item in self.items:
-            item.setVisible(self.layer_boxes[layer].isChecked() and (k is None or self.tile_shown(k)))
+            shown = self.layer_boxes[layer].isChecked() and (k is None or self.tile_shown(k))
+            if layer == NOT_MEASURED:
+                shown = shown and k in not_measured
+            item.setVisible(shown)
 
     def set_placement(self, mode: str):
-        """Move every tile's SEM items: mode "nominal", "mean" (stitched, corrections average 0)
-        or "first" (stitched, first stitched tile fixed). Design items stay at the nominal centre."""
+        """Move every tile's SEM and design items by the placement's corrections (mode "nominal",
+        "mean" or "first") and show that placement's errors. Error-map items do not move: their
+        data already holds the stitched design positions."""
+        self.mode = mode
+        sem_shift, design_shift = self.shifts[mode]
         for layer, k, item in self.items:
             if k is None:
                 continue
             position = self.tiles[k].center_nm - self.origin
             if layer in SEM_LAYERS:
-                position = position + self.corrections[mode][k]
+                position = position + sem_shift[k]
+            elif layer in DESIGN_LAYERS:
+                position = position + design_shift[k]
             item.setPos(*position)
+        if self.errors is not None:
+            self._show_errors()
+        self.update_visibility()
 
     def _show_cursor(self, plot, scene_pos):
         pos = plot.getPlotItem().vb.mapSceneToView(scene_pos)

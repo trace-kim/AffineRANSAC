@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from affine_ransac.io.design import load_layout
-from affine_ransac.pipeline import choose_design_contacts, process_tile, stitch_tiles
+from affine_ransac.features.contact import DetectedContacts
+from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, inside_frame,
+                                    process_tile, stitch_design, stitch_tiles)
 from sample_sem import render_tile
 
 FOV, SIZE = 720.0, 512
@@ -126,10 +128,42 @@ def test_default_gate_pairs_offsets_beyond_10_nm():
 def test_unmatched_tile_is_reported_never_silently_zero():
     errors = np.array([[0.0, 0.0], [3.0, -2.0], [-2.0, 1.0], [40.0, 0.0]])  # tile 3: 40 nm off, beyond the gate
 
-    with pytest.warns(UserWarning, match="Stitching incomplete"):
+    with pytest.warns(UserWarning, match="SEM stitching incomplete"):
         result = stitch_tiles(seen_points(errors), NOMINAL, np.full((4, 2), FOV))
 
     assert sorted((r.i, r.j) for r in result.rejected if r.failed) == [(1, 3), (2, 3)]
     assert result.unplaced.tolist() == [3]
     assert np.isnan(result.corrections[3]).all()
     np.testing.assert_allclose(result.corrections[:3], errors[:3] - errors[:3].mean(axis=0), atol=0.3)
+
+
+def test_inside_frame_drops_contacts_touching_the_fov():
+    centers = np.array([[0.0, 0.0], [340.0, 0.0], [0.0, -330.0]])
+    sizes = np.full((3, 2), 40.0)  # half size 20: 340 + 20 reaches the 360 frame edge
+    np.testing.assert_array_equal(inside_frame(centers, sizes, (FOV, FOV)), [True, False, True])
+
+
+def design_tile(nominal, offset, ok=True):
+    """A tile whose .oas is drawn `offset` nm away from where it should be (no SEM data needed)."""
+    local = LATTICE - nominal
+    local = local[np.all(np.abs(local) < FOV / 2 - 10, axis=1)] - offset
+    empty = DetectedContacts(np.empty((0, 2)), np.empty(0), [], 0.0)
+    return TileResult(image=np.zeros((SIZE, SIZE), np.uint8), center_nm=np.asarray(nominal, float),
+                      fov_nm=np.array([FOV, FOV]), pixel_size_nm=FOV / SIZE, otsu=empty, refined=empty,
+                      design=DesignContacts(local, False, 1.0, ok))
+
+
+def test_stitch_design_recovers_offsets_between_oas_files():
+    offsets = np.array([[0.0, 0.0], [6.0, -4.0], [-5.0, 3.0], [2.0, 7.0]])
+
+    result = stitch_design([design_tile(n, o) for n, o in zip(NOMINAL, offsets)])
+
+    # A file drawn `offset` too far left needs +offset to line up with its neighbours.
+    np.testing.assert_allclose(result.corrections, offsets - offsets.mean(axis=0), atol=1e-9)
+
+
+def test_stitch_design_leaves_out_flagged_tiles():
+    tiles = [design_tile(n, (0.0, 0.0), ok=(k != 3)) for k, n in enumerate(NOMINAL)]
+    with pytest.warns(UserWarning, match="design stitching incomplete"):
+        result = stitch_design(tiles)
+    assert result.unplaced.tolist() == [3]

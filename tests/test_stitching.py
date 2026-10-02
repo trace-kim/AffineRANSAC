@@ -1,6 +1,7 @@
 import numpy as np
 
-from affine_ransac.stitching import connected_groups, fix_tile, solve_tile_shifts
+from affine_ransac.stitching import (connected_groups, first_stitched_tile, fix_tile, placement_corrections,
+                                    solve_tile_shifts)
 
 
 def test_recovers_tile_errors_up_to_their_mean():
@@ -45,3 +46,18 @@ def test_fix_tile_keeps_that_tile_and_the_differences():
     fixed = fix_tile(c, 0)
     np.testing.assert_allclose(fixed[0], 0)
     np.testing.assert_allclose(fixed[1] - fixed[2], c[1] - c[2])
+
+
+def test_placement_corrections():
+    sem = np.array([[np.nan, np.nan], [1.0, 2.0], [3.0, -2.0]])
+    design = np.array([[0.5, 0.0], [-1.0, 1.0], [1.0, -1.0]])
+
+    placements = placement_corrections(sem, design)
+
+    np.testing.assert_allclose(placements["nominal"][0], 0)
+    np.testing.assert_allclose(placements["mean"][1], design)
+    assert first_stitched_tile(sem, design) == 1  # tile 0 has no SEM correction
+    first_sem, first_design = placements["first"]
+    np.testing.assert_allclose(first_sem[1], 0) and np.testing.assert_allclose(first_design[1], 0)
+    np.testing.assert_allclose(first_sem[2] - first_sem[1], sem[2] - sem[1])
+    assert "first" not in placement_corrections(np.full((2, 2), np.nan), np.zeros((2, 2)))
