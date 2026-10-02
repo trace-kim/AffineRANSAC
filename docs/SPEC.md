@@ -313,7 +313,10 @@ or affine tile models are added only if the pairwise analysis shows they are nee
 `process_tile()` (S2: load, Otsu, edge refinement; design contacts from the tile's `.oas`) and
 `stitch_tiles()` (S4 + S5: `overlapping_pairs` → `match_overlap` → `fit_overlap` per pair →
 `solve_tile_shifts`, weighted by inlier count). Tile data comes in as plain arguments, so it
-does not depend on the remote-only metadata reader.
+does not depend on the remote-only metadata reader. `view_stitch.StitchViewer` (pyqtgraph, OpenGL
+viewport) shows the result for any tile selection: SEM images, design contours/centres, Otsu and
+refined contours/centres, overlap boxes and overlap outliers, at nominal or stitched placement,
+with layers and single tiles hideable (`notebooks/stitch_viewer.ipynb`).
 
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
@@ -571,6 +574,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D23 | 2026-10-01 | Refinement searches along each Otsu contour point's **outward normal** within a **fixed pixel distance** (`search_px`), replacing radial rays from the centre with a window of ±50 % of the circle-equivalent radius. | User: radius-based search misbehaves; contacts are elliptical and other shapes will follow; the pixel size is known, so a fixed pixel window is better. Synthetic 24×10 px ellipse: centre error 0.014 px, mean edge distance 0.2 px. |
 | D24 | 2026-10-02 | Pairwise overlap analysis in four steps: (1) robust translation, (2) image cross-correlation check, (3) robust translation + rotation (no scale), (4) residual map across pairs. Outliers come from a median-residual threshold, not RANSAC. Image registration uses scikit-image `phase_cross_correlation` (normalization=None, Hann window, upsample 100); `cv2.phaseCorrelate` and the "phase" normalisation were rejected (sub-pixel errors up to 0.38 / 0.6 px). | User: overlap arrows mostly agree but some differ (noise vs outliers); compare translation-only, robust rigid and image-based registration before choosing the stitching model. |
 | D25 | 2026-10-02 | First global stitching solve is **translation per tile** (gauge: mean correction 0), plus a mosaic builder for before/after views. `overlap_flow.ipynb` shows every step as diagnostic plots: before/after arrows at separate raw/residual magnifications with 1 nm key arrows, difference scatter with the outlier threshold, an image overlay before/after registration, a rotation trend plot, all-pairs comparison plots, stitched residual maps, and a mosaic with zoom. | User: results must be checkable visually, not just as numbers; a stitched result before/after correction is needed. Translation first, because the rotation model is not yet justified by data. |
+| D26 | 2026-10-02 | `pipeline.py` (S2, S4+S5 composed only from library functions) and one interactive stitch viewer for all chosen tiles. Placement is a Nominal/Stitched switch (SEM items move, design stays) rather than two copies of every layer. Each tile is its own image item (no single mosaic image), so ~1,000 tiles fit in memory. Drawing is relative to a local origin in whole µm, because the OpenGL viewport works in float32 (mask coordinates ~10⁷ nm would round to several nm). Opaque tiles: the later tile covers the earlier one in an overlap; hide a tile to see the other. | User: one viewer showing design, SEM before/after stitching, all contour methods, centres and overlaps, with zoom/pan and hideable layers; pipeline must use production functions; OpenGL for speed. |
 
 ---
 
