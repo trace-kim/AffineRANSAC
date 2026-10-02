@@ -665,3 +665,27 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
     region appear in **both** neighbouring tiles' files, so the design IDs of the same physical
     contact must be matched across tiles, e.g. by identical global design coordinates.
 12. **Pairing:** *Answered:* by a **file-naming convention** (exact convention TBD).
+13. **How are the per-tile `.oas` clips generated? Is the design an independent reference?**
+    *Hypothesis (2026-10-02), to check and discuss with the vendors; not yet confirmed.*
+    Each tile's `.oas` was most likely cut **in the SEM image's own frame**: a design-clip tool
+    may align each clip to its image (shift, possibly rotation/scale), or clip it using the
+    image's FOV and scan geometry.
+    - *Evidence (real data, user):* (1) the `.oas` contours of neighbouring tiles do not
+      coincide in their overlaps (D30); (2) after translation-only stitching of the SEM and,
+      independently, of the design, the overlap contacts flagged for a large SEM spread show a
+      **similar spread with a similar trend** in the design copies. The two stitchings share no
+      data except the CSV tile centre, which is a pure translation and is removed by stitching,
+      so a common residual points to a per-tile geometry (shift, rotation, scale) shared by each
+      image and its clip.
+    - *Why it matters:* if the clips follow each image, the design is **not an independent
+      reference** within a tile. Part of the real per-tile error (offset, rotation, scale)
+      would cancel in SEM − design, and stitching the design (D30) would undo the same per-tile
+      offsets as stitching the SEM. This affects what the reported registration error measures.
+    - *Checks:* (a) per tile, SEM vs design stitching corrections (`stitch_viewer.ipynb` step 2):
+      similar if the clip follows the image placement; (b) at a flagged overlap contact,
+      SEM(B) − SEM(A) ≈ design(B) − design(A) in direction and size?; (c) along a strip, does
+      the spread grow toward the ends with opposite signs (rotation) or toward the tile edges
+      (scale), the same way in SEM and design?
+    - *Questions for the vendor:* how is each clip's origin chosen (planned site, stage
+      reading, or alignment to the image)? Is the clip aligned to the image (pattern matching)?
+      Is it rotated/scaled with the image (scan rotation, pixel-size calibration)?
