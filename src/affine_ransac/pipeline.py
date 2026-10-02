@@ -114,17 +114,19 @@ def process_tile(
     search_px: float = 5.0,
     design_match_nm: float = 40.0,
     min_match_fraction: float = 0.5,
+    otsu_classes: int = 2,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
     center_nm: (x, y) mask position of the image centre; fov_nm: (width, height), nm.
     layer: (layer, datatype) of the contacts in the .oas. The design tone is chosen by matching
-    against the refined SEM centres (choose_design_contacts).
+    against the refined SEM centres (choose_design_contacts). otsu_classes: 2 (plain Otsu) or 3
+    (for wide bright bands), see features.contact.
     """
     image = load_sem_image(image_path)
     fov_nm = np.asarray(fov_nm, dtype=float)
     pixel_size_nm = fov_nm[0] / image.shape[1]
-    otsu = detect_contacts(image)
+    otsu = detect_contacts(image, classes=otsu_classes)
     refined = refine_edges(image, otsu, search_px=search_px)
 
     if oas_path is None:

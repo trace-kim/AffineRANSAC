@@ -208,6 +208,11 @@ blur → Otsu threshold → connected regions → drops border-touching and too-
 centre = pixel centroid of the region, plus its outer contour. On synthetic images it gives
 ≈0.03 px RMS centre error. Steps 3–4 below (better sub-pixel methods, quality metrics) are
 future refinements.
+`classes=3` (D39; pipeline `otsu_classes`, notebook `OTSU_CLASSES`) uses a three-class Otsu
+(`skimage.filters.threshold_multiotsu`: hole interior | background | bright band) and the
+threshold between the hole and the background classes (the top one for bright contacts). Needed
+when the bright bands are wide: plain Otsu then separates background from band, and background
+pinched off between nearly touching bands becomes "contacts". On narrow bands both agree.
 
 **Edge refinement (D22, D23):** `features/edges.py::refine_edges()`. Every Otsu contour point
 is moved along its own **outward normal** (tangent from neighbours ±3 points) within a **fixed
@@ -693,6 +698,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D36 | 2026-10-02 | Second correction, **moving-window affine** along y (`moving_window_affine`): window 40 µm, step 5 µm (notebook settings), plain least squares per window, each contact corrected by the window with the nearest centre. Shown side by side with the global RANSAC affine; does not replace it (D3/D4 unchanged). | User: the RANSAC result does not match the known values; the known-value algorithm fits an affine to the points within a window along y and slides it up. The nearest-centre rule and the 5 µm step are my defaults ("shift up a bit"), to be confirmed against the reference algorithm. |
 | D37 | 2026-10-02 | Interactive **moving-window tuner** (`MovingWindowTuner`, pyqtgraph): sliders for window and step (0.5 µm resolution), recompute 150 ms after a change, invalid settings reported and the last result kept. `RegistrationView` gains `set_errors` (and a `correction` name for its summary). Per-window terms are compared with the RANSAC affine recentred on each window's reference point, not with its Tx, Ty at the global centroid. | User: wants to change the moving-window parameters with sliders and watch the results in real time. Recentring: a global rotation or scale makes the shift depend on position, so only the shift at the same point is comparable. |
 | D38 | 2026-10-02 | **Row-to-row pitch** along y (`row_pitch`, `PitchView`) for the design, the stitched SEM without affine and the SEM after the RANSAC affine; SEM − design pitch below; tile edges marked. Row position = plain mean y of the row's contacts. | User: the moving-window affine did not find the cause; the relative position of each row (pitch) should be compared along y for design and SEM, including the bare stitched SEM. Tile edges added to tell stitching seams from mask errors. |
+| D39 | 2026-10-02 | Contact detection option **three-class Otsu** (`detect_contacts(classes=3)`), threshold hole | background; plain Otsu stays the library default, the notebooks use 3. A band-enclosure method (bright band threshold, holes = regions enclosed by bands) was rejected. | User: on a second dataset with wider white bands Otsu detected regions inside and outside the bands; the hole interior is clearly darker than the background; bands come close but never touch. Synthetic test: 16 px bands, plain Otsu 85 regions for 49 holes, three-class 49 (< 0.1 px). Band enclosure fails the same way as plain Otsu, because the blurred gaps between nearly touching bands rise above a band threshold and close the rings. |
 
 ---
 

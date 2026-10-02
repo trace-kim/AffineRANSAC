@@ -3,6 +3,10 @@
 Steps:
   1. Blur slightly to suppress pixel noise.
   2. Otsu threshold -> binary mask of contact pixels (dark contacts by default).
+     classes=2: plain Otsu (two grey-level classes). classes=3: three classes (hole interior,
+     background, bright band at the hole edge; multi-Otsu) and the threshold between the hole
+     and the background. Use 3 when the bright bands are wide: plain Otsu then splits
+     background from band instead and picks up background regions pinched off between bands.
   3. Split the mask into connected regions; each region is one candidate contact.
   4. Drop regions that touch the image border (cut-off contacts, the data bar)
      or whose area is outside [min_area_px, max_area_px].
@@ -16,6 +20,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from skimage.filters import threshold_multiotsu
 
 
 @dataclass
@@ -26,12 +31,21 @@ class DetectedContacts:
     threshold: float  # Otsu threshold that was used (grey level)
 
 
-def otsu_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5):
-    """Blur, then Otsu threshold. Returns (mask, threshold); mask is 1 on contact pixels."""
+def otsu_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5, classes: int = 2):
+    """Blur, then Otsu threshold. Returns (mask, threshold); mask is 1 on contact pixels.
+    classes: 2 (plain Otsu) or 3 (threshold between the hole class and the background class)."""
     blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=blur_sigma) if blur_sigma > 0 else image
-    mode = cv2.THRESH_BINARY_INV if dark_contacts else cv2.THRESH_BINARY
-    threshold, mask = cv2.threshold(blurred, 0, 1, mode + cv2.THRESH_OTSU)
-    return mask, threshold
+    if classes == 2:
+        mode = cv2.THRESH_BINARY_INV if dark_contacts else cv2.THRESH_BINARY
+        threshold, mask = cv2.threshold(blurred, 0, 1, mode + cv2.THRESH_OTSU)
+        return mask, threshold
+    if classes != 3:
+        raise ValueError(f"classes must be 2 or 3, not {classes}")
+    low, high = threshold_multiotsu(blurred, classes=3)
+    # Same comparison as cv2: dark contacts <= threshold, bright contacts > threshold.
+    threshold = low if dark_contacts else high
+    mask = blurred <= threshold if dark_contacts else blurred > threshold
+    return mask.astype(np.uint8), float(threshold)
 
 
 def detect_contacts(
@@ -40,9 +54,10 @@ def detect_contacts(
     blur_sigma: float = 1.5,
     min_area_px: int = 20,
     max_area_px: int | None = None,
+    classes: int = 2,
 ) -> DetectedContacts:
     """Find contacts in a grayscale uint8 image. See the module docstring for the steps."""
-    mask, threshold = otsu_mask(image, dark_contacts, blur_sigma)
+    mask, threshold = otsu_mask(image, dark_contacts, blur_sigma, classes)
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
     rows, cols = image.shape
 
