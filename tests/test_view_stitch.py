@@ -188,3 +188,17 @@ def test_merged_overlap_contacts_are_ringed_and_large_spread_flagged():
     assert len(viewer.merged_rings.data) == 1 and len(viewer.spread_rings.data) == 1  # spread 3 nm > 2 nm
     assert "1 merged" in viewer.error_label.text() and "spread > 2 nm" in viewer.error_label.text()
     viewer.close()
+
+
+def test_opens_when_no_tile_was_measured():
+    # Every tile failed (e.g. "no SEM contact matched the design"): the viewer must still open
+    # for diagnosis, with every tile framed as not measured.
+    from affine_ransac.registration import DesignErrors, merge_observations
+    reasons = {k: "no SEM contact matched the design" for k in range(3)}
+    empty = DesignErrors(tile=np.empty(0, int), design_nm=np.empty((0, 2)), sem_nm=np.empty((0, 2)),
+                         error_nm=np.empty((0, 2)), design_nominal_nm=np.empty((0, 2)), skipped=reasons)
+    merged = merge_observations(empty, DESIGN_CORRECTIONS)
+    _, viewer = make_viewer({"nominal": merged, "mean": merged, "first": merged})
+    assert "0 contacts" in viewer.error_label.text() and "3 tile(s) not measured" in viewer.error_label.text()
+    assert all(item(viewer, NOT_MEASURED, k).isVisible() for k in range(3))
+    viewer.close()
