@@ -60,11 +60,12 @@ class AnalysisWindow(QtWidgets.QTabWidget):
                                      use_opengl=use_opengl)
         self.addTab(self.monitor, "RANSAC monitor")
         self.ransac_view = RegistrationView(design_nm, ransac.residuals, reference, row_gap_nm, use_opengl,
-                                            correction="the RANSAC affine", raw_error_nm=raw)
+                                            correction="the RANSAC affine", raw_error_nm=raw, name="uncorrected")
         self.addTab(self.ransac_view, "Registration, RANSAC")
         self.moving_view = RegistrationView(
             design_nm, moving.residuals, reference, row_gap_nm, use_opengl,
-            correction=f"the moving-window affine ({window_um:g} µm, step {step_um:g} µm)", raw_error_nm=raw)
+            correction=f"the moving-window affine ({window_um:g} µm, step {step_um:g} µm)", raw_error_nm=raw,
+            name="uncorrected")
         self.addTab(self.moving_view, "Registration, moving window")
         self.tuner = MovingWindowTuner(sem_nm, design_nm, ransac, window_um, step_um, row_gap_nm, use_opengl,
                                        raw_error_nm=raw)
@@ -82,7 +83,8 @@ class AnalysisWindow(QtWidgets.QTabWidget):
         self.extra_views = {}
         for name, (extra_sem, extra_design, extra_ransac, _) in extra.items():
             view = RegistrationView(extra_design, extra_ransac.residuals, reference, row_gap_nm, use_opengl,
-                                    correction=f"the RANSAC affine ({name})", raw_error_nm=extra_sem - extra_design)
+                                    correction=f"the RANSAC affine ({name})", raw_error_nm=extra_sem - extra_design,
+                                    name=name)
             view.color_bar.setLevels(self.ransac_view.color_bar.levels())  # maps compare with the RANSAC tab
             self.extra_views[name] = view
             self.addTab(view, name[0].upper() + name[1:])

@@ -600,7 +600,12 @@ fits one straight line through all rows. `DriftCurve.correction(design_y)` is th
 minus line, per contact; it is subtracted from the SEM positions and RANSAC is fitted again. The
 straight part stays for the global affine, so G's terms compare with the uncorrected fit. Real mask
 errors that vary smoothly along y on the scale of the window are removed too: they cannot be told
-apart from drift.
+apart from drift. **Both components** are corrected, dx and dy, each as a function of the row's y
+only (user's "curve fit of the dX/dY results"). The curve is a local fit, so it has no single set of
+coefficients; the notebooks report what was applied (D56): the window, the straight line left for
+the global affine (`DriftCurve.line_centre_y_nm`, `line_intercept_nm`, `line_slope`, per component),
+and per row the row mean, the curve and the subtracted bend; the *Drift corrected* tab shows the
+bend as lines (*drift correction applied*).
 
 **Corrected sets in the analysis window (D52, D55).** Both notebooks compute the in-image corrected
 contacts (stitched and, for the images, matched to the design again; RANSAC and moving window) and
@@ -612,7 +617,11 @@ the RANSAC tab, in the moving-window tab if the set has a moving-window result, 
 its RANSAC affine in the row pitch (`PitchView` also takes a set with its own contacts, `(design_nm,
 sem_nm)`). Each set also gets one tab (*In-image corrected*, *Drift corrected*): the registration
 view of its RANSAC residuals, on the colour scale of *Registration, RANSAC*. The RANSAC monitor, the
-moving-window tuner and the stitch viewers show the uncorrected translation stitching.
+moving-window tuner and the stitch viewers show the uncorrected translation stitching. The row plots
+of `RegistrationView` have no legends (D56): a **Show** bar above the plots lists each set of lines
+(the view's own contacts under `name`, e.g. "uncorrected", then every `add_rows` set and lines
+registered with `add_line`, e.g. the tuner's dashed RANSAC means) with a dx and a dy check box and the
+line colour; a box shows or hides that component of the set in both row plots, which rescale in y.
 
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
@@ -838,6 +847,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D53 | 2026-10-06 | **In-image distortion map** shared by all images (`intrafield.py`), from the design (per-image affine removed; node grid from edge to edge; plane per node with MAD rejection), subtracted from the SEM points before stitching; checked with the overlap slopes (design-free) and the lower/upper half maps. The contour CSV reader adds the image centre from `DesignX`/`DesignY`. The per-tile affine stitching (D51) leaves the notebooks and the UI (library kept). | Diagnosis (user asked): the per-tile affine stitching gave unrealistic results because every overlap shows the same apparent relative scale (a shared non-affine distortion of the images, sub-nm), which a per-tile scale integrates along each column; each tile fitted alone to its design has the same scale; a synthetic shared bow reproduces the failure. User: the overlaps cannot see the image centre (right: they only measure differences between the edge bands, and an overlap-only parabola underestimated the centre about 2×), so the map is measured from the design. User concern that real, periodic mask errors (writer fields of the image size) would be absorbed: a documented limit, with the design-free overlap check. On the real data the overlap slopes drop to near 0 after the correction. Node grid and plane fit instead of bin medians: bin centres left the overlap bands to extrapolation, and medians sat at the few contact positions of a bin (synthetic tests). |
 | D54 | 2026-10-06 | **Drift curve** (`fitting/drift.py`): local straight-line fit through the row means of SEM − design (window 40 µm); its bend (curve minus the straight line through all rows) is subtracted from the SEM positions before RANSAC. | User's method: the row means follow a linear trend that the global affine removes, but drift bends it; fit a curve to the translation-stitched dX/dY, subtract it from the pattern positions, then the global affine. Only the bend is subtracted, so G keeps its (physical) linear terms. Local line fit: follows local bends, no edge bias for a straight trend. Smoothly varying real mask errors are removed with it (documented). Observed on the real data: the largest remaining structure after RANSAC is a sawtooth in dy with a period that is not a whole number of tiles, created by the translation stitching (absent in the unstitched positions); cause not yet known. |
 | D55 | 2026-10-06 | `AnalysisWindow(extra={name: (sem, design, ransac, moving or None)})` replaces `affine_stitching=`: any number of corrected sets as extra lines (a colour pair per set) plus one tab each; `PitchView` shows each set after its RANSAC affine. | User: make the method available in the analysis UI; keep the original design (D52). |
+| D56 | 2026-10-06 | `RegistrationView` row plots: a **Show** bar of check boxes (per set: name, dx and dy with the line colour) replaces the pyqtgraph legends; a box hides or shows that set's component in both row plots and the y axis rescales. Drift report: `DriftCurve` keeps the window and the straight line's centre, intercept and slope; the notebooks print them and a per-row table (row mean, curve, bend), and the *Drift corrected* tab shows the subtracted bend. | User: with all corrections in one graph the legend overflowed and the lines could not be chosen interactively (pyqtgraph toggles a curve only by clicking its small legend sample). User asked whether the drift correction also acts in x (yes: dx and dy, both as functions of y, as described in the request) and how to see which correction was applied (it is a local fit: shown as its parts and per-row values, not polynomial coefficients). |
 
 ---
 

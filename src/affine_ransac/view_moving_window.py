@@ -89,12 +89,13 @@ class MovingWindowTuner(QtWidgets.QWidget):
 
         # Left: the registration view, with the RANSAC row means added as dashed lines.
         self.view = RegistrationView(design_nm, ransac.residuals, ransac.reference, row_gap_nm, use_opengl,
-                                     correction="the RANSAC affine", raw_error_nm=raw_error_nm)
+                                     correction="the RANSAC affine", raw_error_nm=raw_error_nm, name="moving window")
         row_y, ransac_rows, _ = row_means(design_nm[:, 1], ransac.residuals, row_gap_nm)
         row_um = row_y / 1000 - self.reference_um[1]
-        for component, (name, color) in enumerate((("dx RANSAC", "#ff6040"), ("dy RANSAC", "#40a0ff"))):
-            self.view.row_plot.plot(row_um, ransac_rows[:, component], name=name,
-                                    pen=pg.mkPen(color, width=1, style=QtCore.Qt.PenStyle.DashLine))
+        for component, (axis, color) in enumerate(zip(("dx", "dy"), ("#ff6040", "#40a0ff"))):
+            line = self.view.row_plot.plot(row_um, ransac_rows[:, component],
+                                           pen=pg.mkPen(color, width=1, style=QtCore.Qt.PenStyle.DashLine))
+            self.view.add_line("RANSAC (dashed)", axis, line, color)
 
         # Right: one term per window against the window's centre y.
         self.term = QtWidgets.QComboBox()

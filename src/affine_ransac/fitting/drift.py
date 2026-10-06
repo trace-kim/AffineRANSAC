@@ -24,6 +24,11 @@ class DriftCurve:
     row_mean_nm: np.ndarray  # (R, 2) mean error (dx, dy) of each row, nm
     curve_nm: np.ndarray     # (R, 2) the smooth curve through the row means, nm
     line_nm: np.ndarray      # (R, 2) the straight line through the row means (left for the global affine), nm
+    window_nm: float         # height of the local straight-line fits, nm
+    # The straight line: line = intercept + slope · (y − centre), for dx and dy.
+    line_centre_y_nm: float
+    line_intercept_nm: np.ndarray  # (2,) nm
+    line_slope: np.ndarray         # (2,) nm per nm of y (× 1e6 = ppm)
 
     def correction(self, design_y: np.ndarray) -> np.ndarray:
         """(N, 2) curve − line at the contacts' design y (the value of their row), nm."""
@@ -40,9 +45,10 @@ def drift_curve(design_y: np.ndarray, error_nm: np.ndarray, window_nm: float, ga
     for i, y in enumerate(row_y):
         near = np.abs(row_y - y) <= window_nm / 2
         curve[i] = _line_value(row_y[near] - y, row_mean[near], count[near])
-    centre = np.average(row_y, weights=count)
+    centre = float(np.average(row_y, weights=count))
     slope, intercept = np.polyfit(row_y - centre, row_mean, 1, w=np.sqrt(count))  # each (2,): dx, dy
-    return DriftCurve(row_y, row_mean, curve, np.outer(row_y - centre, slope) + intercept)
+    line = np.outer(row_y - centre, slope) + intercept
+    return DriftCurve(row_y, row_mean, curve, line, float(window_nm), centre, intercept, slope)
 
 
 def _line_value(offsets: np.ndarray, values: np.ndarray, weights: np.ndarray) -> np.ndarray:

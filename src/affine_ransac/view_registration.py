@@ -17,11 +17,14 @@ reference point (design centroid), in µm; errors in nm.
 - Extra lines (add_rows): the row means of other sets of contacts, e.g. corrected ones, in both row
   plots (first set yellow dx, green dy; second magenta dx, cyan dy), each with its summary on a
   line of its own.
+- Show bar above the plots (instead of legends, which overflow the short row plots): per set of
+  lines its name and a dx and a dy check box with the line colour; a box shows or hides that
+  component of the set in both row plots, which then rescale in y.
 """
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
 from affine_ransac.registration import error_summary, row_means
@@ -31,6 +34,7 @@ from affine_ransac.registration import error_summary, row_means
 JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
                   color=[(0, 0, 128), (0, 0, 255), (0, 255, 255), (255, 255, 0), (255, 0, 0), (128, 0, 0)])
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
+MAIN_COLORS = ("#ff6040", "#40a0ff")  # dx, dy of the view's own contacts
 EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0")]  # (dx, dy) of the 1st, 2nd... add_rows set
 
 
@@ -84,12 +88,19 @@ class RegistrationView(QtWidgets.QWidget):
         use_opengl: bool = True,
         correction: str = "the RANSAC affine",
         raw_error_nm: np.ndarray | None = None,
+        name: str = "contacts",
     ):
         """design_nm: (N, 2) contact design positions (mask nm); error_nm: (N, 2) registration error
         G(SEM) − design; reference_nm: (2,) RANSAC reference point; row_gap_nm: see group_rows;
         correction: what G is, for the summary line; raw_error_nm: optional (N, 2) stitched
-        SEM − design of the same contacts without any affine, shown as a reference row profile."""
+        SEM − design of the same contacts without any affine, shown as a reference row profile;
+        name: these contacts' name in the Show bar."""
         super().__init__()
+        self.name = name
+        self.line_items, self.line_boxes = {}, {}  # (set name, "dx" / "dy") -> its plot lines / its check box
+        self.show_bar = QtWidgets.QHBoxLayout()
+        self.show_bar.addWidget(QtWidgets.QLabel("Show:"))
+        self.show_bar.addStretch(1)
         self.setWindowTitle(f"Registration error - {len(error_nm)} contacts")
         self.design_nm, self.reference_nm, self.row_gap_nm = design_nm, reference_nm, row_gap_nm
         self.position_um = (design_nm - reference_nm) / 1000
@@ -122,9 +133,9 @@ class RegistrationView(QtWidgets.QWidget):
         self.row_plot = self.graphics.addPlot(row=1, col=0, colspan=3, title="Mean error per row (averaged over x)")
         self.row_plot.setLabel("bottom", "row y − y_ref (µm)")
         self.row_plot.setLabel("left", "mean error (nm)")
-        self.row_plot.addLegend(offset=(5, 5))
-        self.row_curves = [self.row_plot.plot(pen=pg.mkPen("#ff6040", width=2), name="dx"),
-                           self.row_plot.plot(pen=pg.mkPen("#40a0ff", width=2), name="dy")]
+        self.row_curves = [self.row_plot.plot(pen=pg.mkPen(color, width=2)) for color in MAIN_COLORS]
+        for curve, axis, color in zip(self.row_curves, ("dx", "dy"), MAIN_COLORS):
+            self.add_line(self.name, axis, curve, color)
         self.row_plot.addLine(y=0, pen=pg.mkPen("#808080", style=QtCore.Qt.PenStyle.DashLine))
         self.graphics.ci.layout.setRowStretchFactor(0, 2)
         self.graphics.ci.layout.setRowStretchFactor(1, 1)
@@ -149,6 +160,7 @@ class RegistrationView(QtWidgets.QWidget):
         self.summary, self.extra_summaries = "", []  # label lines: this view's errors, then add_rows sets
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.label)
+        layout.addLayout(self.show_bar)
         layout.addWidget(self.graphics, stretch=1)
         self.resize(1500, 1000)
         # Start on all contacts (autoRange cannot be used: the images are still empty here).
@@ -162,14 +174,14 @@ class RegistrationView(QtWidgets.QWidget):
                                               title="Reference: mean error per row, stitched without affine (averaged over x)")
         self.raw_plot.setLabel("bottom", "row y − y_ref (µm)")
         self.raw_plot.setLabel("left", "mean error (nm)")
-        self.raw_plot.addLegend(offset=(5, 5))
         self.raw_plot.setXLink(self.row_plot)
         self.raw_plot.addLine(y=0, pen=pg.mkPen("#808080", style=QtCore.Qt.PenStyle.DashLine))
         row_y, self.raw_row_mean, _ = row_means(self.design_nm[:, 1], raw_error_nm, self.row_gap_nm)
         row_um = (row_y - self.reference_nm[1]) / 1000
-        for component, (name, color) in enumerate((("dx, no affine", "#ff6040"), ("dy, no affine", "#40a0ff"))):
-            self.raw_plot.plot(row_um, self.raw_row_mean[:, component], name=name,
-                               pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
+        for component, (axis, color) in enumerate(zip(("dx", "dy"), MAIN_COLORS)):
+            line = self.raw_plot.plot(row_um, self.raw_row_mean[:, component],
+                                      pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
+            self.add_line(self.name, axis, line, color)
         self.graphics.ci.layout.setRowStretchFactor(2, 1)
 
     def set_errors(self, error_nm: np.ndarray, correction: str):
@@ -187,21 +199,49 @@ class RegistrationView(QtWidgets.QWidget):
 
     def add_rows(self, design_nm: np.ndarray, error_nm: np.ndarray, name: str, raw_error_nm: np.ndarray | None = None):
         """Mean dx and dy per row of another set of contacts (e.g. corrected; it may hold other
-        contacts than this view) as extra lines named "dx, <name>" and "dy, <name>":
-        error_nm in the row profile and raw_error_nm (if given, and the reference plot exists) in
-        the reference plot. Its summary is added below the summary line; the maps do not change."""
+        contacts than this view) as extra lines under `name` in the Show bar: error_nm in the row
+        profile and raw_error_nm (if given, and the reference plot exists) in the reference plot.
+        Its summary is added below the summary line; the maps do not change."""
         colors = EXTRA_COLORS[len(self.extra_summaries) % len(EXTRA_COLORS)]
         row_y, mean, _ = row_means(design_nm[:, 1], error_nm, self.row_gap_nm)
         row_um = (row_y - self.reference_nm[1]) / 1000
         for component, (axis, color) in enumerate(zip(("dx", "dy"), colors)):
-            self.row_plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=2), name=f"{axis}, {name}")
+            line = self.row_plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=2))
+            self.add_line(name, axis, line, color)
         if raw_error_nm is not None and self.raw_plot is not None:
             _, raw_mean, _ = row_means(design_nm[:, 1], raw_error_nm, self.row_gap_nm)
             for component, (axis, color) in enumerate(zip(("dx", "dy"), colors)):
-                self.raw_plot.plot(row_um, raw_mean[:, component], name=f"{axis}, no affine, {name}",
-                                   pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
+                line = self.raw_plot.plot(row_um, raw_mean[:, component],
+                                          pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
+                self.add_line(name, axis, line, color)
         self.extra_summaries.append(f"{name}: {summary_text(error_nm)}")
         self.label.setText("\n".join([self.summary] + self.extra_summaries))
+
+    def add_line(self, name: str, axis: str, line, color: str):
+        """Put line (a curve of row_plot or raw_plot) under the check box of set `name`, component
+        axis ("dx" / "dy"), in the Show bar; the set's name and box are added with its first line."""
+        key = (name, axis)
+        if key not in self.line_boxes:
+            if all(set_name != name for set_name, _ in self.line_boxes):
+                self.show_bar.insertWidget(self.show_bar.count() - 1, QtWidgets.QLabel(f"   {name}:"))
+            swatch = QtGui.QPixmap(18, 6)
+            swatch.fill(QtGui.QColor(color))
+            box = QtWidgets.QCheckBox(axis)
+            box.setIcon(QtGui.QIcon(swatch))
+            box.setChecked(True)
+            box.toggled.connect(lambda shown, key=key: self.show_lines(key, shown))
+            self.show_bar.insertWidget(self.show_bar.count() - 1, box)
+            self.line_boxes[key], self.line_items[key] = box, []
+        self.line_items[key].append(line)
+        line.setVisible(self.line_boxes[key].isChecked())
+
+    def show_lines(self, key, shown: bool):
+        """Show or hide the lines of key = (set name, "dx" / "dy"); the row plots rescale in y."""
+        for line in self.line_items[key]:
+            line.setVisible(shown)
+        for plot in (self.row_plot, self.raw_plot):
+            if plot is not None:
+                plot.getViewBox().enableAutoRange(axis=pg.ViewBox.YAxis)
 
     def _link_maps(self):
         """Keep both maps on the same area (as link_views does for two plot widgets)."""

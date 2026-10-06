@@ -55,10 +55,10 @@ def test_stitch_view_is_the_first_tab_when_given():
     window.close()
 
 
-def line_data(plot, name):
-    """(x, y) of the curve called name in plot's legend."""
-    item = next(sample.item for sample, label in plot.legend.items if label.text == name)
-    return item.getData()
+def line_data(view, plot, name, axis):
+    """(x, y) of set name's line of component axis ("dx" / "dy") in one of the view's row plots."""
+    (line,) = [line for line in view.line_items[name, axis] if line in plot.listDataItems()]
+    return line.getData()
 
 
 def test_extra_sets_add_lines_and_one_tab_each():
@@ -74,14 +74,13 @@ def test_extra_sets_add_lines_and_one_tab_each():
     # The original lines stay; each set's rows are added beside them.
     np.testing.assert_allclose(window.ransac_view.error_nm, ransac.residuals)
     expected = row_means(c_design[:, 1], c_ransac.residuals, 10.0)[1]
-    np.testing.assert_allclose(line_data(window.ransac_view.row_plot, "dy, in-image corrected")[1], expected[:, 1])
+    np.testing.assert_allclose(line_data(window.ransac_view, window.ransac_view.row_plot, "in-image corrected", "dy")[1], expected[:, 1])
     expected = row_means(d_design[:, 1], d_sem - d_design, 10.0)[1]
-    np.testing.assert_allclose(line_data(window.ransac_view.raw_plot, "dx, no affine, drift corrected")[1],
+    np.testing.assert_allclose(line_data(window.ransac_view, window.ransac_view.raw_plot, "drift corrected", "dx")[1],
                                expected[:, 0])
     expected = row_means(c_design[:, 1], c_moving.residuals, 10.0)[1]
-    np.testing.assert_allclose(line_data(window.moving_view.row_plot, "dx, in-image corrected")[1], expected[:, 0])
-    moving_names = [label.text for _, label in window.moving_view.row_plot.legend.items]
-    assert not any("drift corrected" in name for name in moving_names)  # no moving-window result given
+    np.testing.assert_allclose(line_data(window.moving_view, window.moving_view.row_plot, "in-image corrected", "dx")[1], expected[:, 0])
+    assert {name for name, _ in window.moving_view.line_boxes} == {"uncorrected", "in-image corrected"}  # no drift moving window
     assert "in-image corrected: 500 contacts" in window.ransac_view.label.text()
     assert "drift corrected: 400 contacts" in window.ransac_view.label.text()
     assert list(window.pitch_view.pitch) == ["stitched, no affine", "after RANSAC affine",

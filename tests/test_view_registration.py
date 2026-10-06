@@ -104,13 +104,33 @@ def test_add_rows_draws_another_set_beside_the_original_lines():
     other = design[::2]
     error = np.zeros_like(other)
     error[:, 0] = 1.5
-    view.add_rows(other, error, "affine stitching")
+    view.add_rows(other, error, "corrected")
 
-    names = [label.text for _, label in view.row_plot.legend.items]
-    assert names[:2] == ["dx", "dy"] and names[-2:] == ["dx, affine stitching", "dy, affine stitching"]
-    item = next(sample.item for sample, label in view.row_plot.legend.items if label.text == "dx, affine stitching")
-    np.testing.assert_allclose(item.getData()[1], 1.5)
+    assert list(view.line_boxes) == [("contacts", "dx"), ("contacts", "dy"), ("corrected", "dx"), ("corrected", "dy")]
+    (line,) = view.line_items["corrected", "dx"]  # no reference plot in this view: the row profile only
+    np.testing.assert_allclose(line.getData()[1], 1.5)
     np.testing.assert_allclose(view.error_nm, result.residuals)  # the view's own errors are unchanged
     first, second = view.label.text().splitlines()
-    assert first.startswith("Registration error after") and second.startswith(f"affine stitching: {len(other)} contacts")
+    assert first.startswith("Registration error after") and second.startswith(f"corrected: {len(other)} contacts")
+    view.close()
+
+
+def test_a_check_box_hides_its_lines_in_both_row_plots_and_the_y_axis_follows():
+    sem, design, *_ = synthetic(n=600)
+    pg.mkQApp()
+    view = RegistrationView(design, np.zeros_like(design), design.mean(axis=0), use_opengl=False,
+                            raw_error_nm=np.zeros_like(design), name="uncorrected")
+    big = np.zeros_like(design)
+    big[:, 1] = 50.0
+    view.add_rows(design, big, "corrected", raw_error_nm=big)
+
+    row_line, raw_line = view.line_items["corrected", "dy"]  # one line in each row plot
+    assert row_line in view.row_plot.listDataItems() and raw_line in view.raw_plot.listDataItems()
+    view.line_boxes["corrected", "dy"].setChecked(False)
+    assert not row_line.isVisible() and not raw_line.isVisible()
+    assert all(line.isVisible() for line in view.line_items["uncorrected", "dy"])
+    view.row_plot.getViewBox().updateAutoRange()
+    assert view.row_plot.getViewBox().viewRange()[1][1] < 50  # rescaled to the visible lines
+    view.line_boxes["corrected", "dy"].setChecked(True)
+    assert row_line.isVisible() and raw_line.isVisible()
     view.close()

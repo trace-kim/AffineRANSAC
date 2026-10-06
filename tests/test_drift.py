@@ -28,6 +28,10 @@ def test_a_straight_trend_is_left_for_the_global_affine():
     drift = drift_curve(y, error, window_nm=20_000)
     np.testing.assert_allclose(drift.curve_nm, drift.line_nm, atol=1e-9)
     np.testing.assert_allclose(drift.correction(y), 0, atol=1e-9)
+    # The straight line's terms: 20 / -40 ppm, and its value at the centre.
+    np.testing.assert_allclose(drift.line_slope * 1e6, [20.0, -40.0])
+    np.testing.assert_allclose(drift.line_intercept_nm, line(np.array([drift.line_centre_y_nm]))[0])
+    assert drift.window_nm == 20_000
 
 
 def test_the_correction_is_the_bend_alone():
