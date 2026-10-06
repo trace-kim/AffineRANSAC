@@ -1,4 +1,5 @@
-"""Global stitching solve (docs/SPEC.md S5): translation per tile, or a full affine per tile.
+"""Global stitching solve (docs/SPEC.md S5): translation per tile, translation + rotation per tile, or
+a full affine per tile.
 
 Translation (solve_tile_shifts): each tile k gets a correction t_k (nm) that is added to its nominal placement. For a pair (i, j)
 the measured shift d_ij is B − A for the same contacts at nominal placement (overlap_fit). After
@@ -18,6 +19,10 @@ Affine (solve_tile_affines, D51): each tile k gets T_k(p) = p + D_k (p − c_k) 
 part D_k about its centre c_k plus a shift t_k. Every tie contact (a in tile i, b in tile j)
 gives T_i(a) = T_j(b). Gauge: an affine common to all tiles is not seen in the overlaps, so the
 D_k and the t_k average zero over the stitched group (mean tile affine = identity, SPEC D6).
+
+Translation + rotation (solve_tile_rigid, D58): T_k(p) = R(θ_k)(p − c_k) + c_k + t_k, solved with
+R(θ) ≈ I + θ·[[0, −1], [1, 0]] (θ ~ 1e-3 rad); gauge: the θ_k and the t_k average zero. The result
+is written as affines (3, 3) with the exact rotation.
 
 A tile's correction is either a shift (2,) or an affine (3, 3) in mask nm (apply_correction).
 """
@@ -158,6 +163,68 @@ def solve_tile_affines(
         affines[k] = np.eye(3)
         affines[k, :2, :2] = linear
         affines[k, :2, 2] = centers[k] + theta[2] - linear @ centers[k]  # T(c) = c + t
+    return affines
+
+
+def solve_tile_rigid(
+    n_tiles: int,
+    pairs: list[tuple[int, int]],
+    ties: list[tuple[np.ndarray, np.ndarray]],
+    centers: np.ndarray,
+) -> np.ndarray:
+    """Per-tile translation + rotation (n_tiles, 3, 3), nominal mask nm -> stitched mask nm.
+
+    pairs, ties, centers as for solve_tile_affines. Least squares over all ties of T_i(a) − T_j(b)
+    (each tie weighted 1) with T_k(p) = R(θ_k)(p − c_k) + c_k + t_k; gauge: θ and t average zero over
+    the largest connected group, other tiles NaN. A tiny pull of θ towards 0 keeps a tile solvable if
+    its ties sit at one point (negligible otherwise). The rotation is solved to first order: the error
+    is about θ²/2 · r (r = distance from the tile centre), 0.0005 nm for θ = 1 mrad at 1 µm.
+    """
+    centers = np.asarray(centers, dtype=float)
+    placed = connected_groups(n_tiles, pairs)[0] if n_tiles else []
+    index = np.full(n_tiles, -1)
+    index[placed] = np.arange(len(placed))
+    m = len(placed)
+
+    # Unknowns per tile: [θ (nm per µm = mrad), t_x, t_y (nm)]. Per tie contact one row for x and one for y.
+    def design(points, k):
+        u = (points - centers[k]) / 1000  # µm
+        rows = np.zeros((len(points), 2, 3))
+        rows[:, 0, 0], rows[:, 0, 1] = -u[:, 1], 1.0  # x' = x − θ·u_y + t_x
+        rows[:, 1, 0], rows[:, 1, 2] = u[:, 0], 1.0   # y' = y + θ·u_x + t_y
+        return rows
+
+    rows, cols, values = [], [], []
+    right = np.zeros(3 * m)
+    for (i, j), (a, b) in zip(pairs, ties):
+        if index[i] < 0:
+            continue  # a pair is inside or outside the group
+        u, v, d = design(a, i), -design(b, j), b - a
+        for (p, q), block in (((i, i), np.einsum("kca,kcb->ab", u, u)), ((j, j), np.einsum("kca,kcb->ab", v, v)),
+                              ((i, j), np.einsum("kca,kcb->ab", u, v)), ((j, i), np.einsum("kca,kcb->ab", v, u))):
+            r, c = np.meshgrid(3 * index[p] + np.arange(3), 3 * index[q] + np.arange(3), indexing="ij")
+            rows.append(r.ravel())
+            cols.append(c.ravel())
+            values.append(block.ravel())
+        right[3 * index[i]:3 * index[i] + 3] += np.einsum("kca,kc->a", u, d)
+        right[3 * index[j]:3 * index[j] + 3] += np.einsum("kca,kc->a", v, d)
+
+    ridge = np.where(np.arange(3 * m) % 3 == 0, 1e-6, 0.0)  # tiny pull of θ (not t) towards 0, µm²
+    rows.append(np.arange(3 * m))
+    cols.append(np.arange(3 * m))
+    values.append(ridge)
+    normal = coo_matrix((np.concatenate(values), (np.concatenate(rows), np.concatenate(cols))), shape=(3 * m, 3 * m))
+    gauge = csc_matrix(np.tile(np.eye(3), m))  # sum of each unknown over the group = 0
+    kkt = bmat([[normal, gauge.T], [gauge, None]], format="csc")
+    solution = spsolve(kkt, np.concatenate([right, np.zeros(3)]))[:3 * m].reshape(m, 3)
+
+    affines = np.full((n_tiles, 3, 3), np.nan)
+    for k in placed:
+        theta, shift = solution[index[k], 0] / 1000, solution[index[k], 1:]  # rad, nm
+        rotation = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+        affines[k] = np.eye(3)
+        affines[k, :2, :2] = rotation
+        affines[k, :2, 2] = centers[k] + shift - rotation @ centers[k]  # T(c) = c + t
     return affines
 
 

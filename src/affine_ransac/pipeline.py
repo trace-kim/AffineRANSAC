@@ -34,7 +34,7 @@ from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.matching import match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
-from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_shifts
+from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
 
 
 @dataclass
@@ -265,12 +265,53 @@ def stitch_tiles_affine(points: list[np.ndarray], centers: np.ndarray, stitch: S
     return solve_tile_affines(len(points), [(p.i, p.j) for p in stitch.pairs], stitch_ties(points, stitch), centers)
 
 
+def stitch_tiles_rigid(points: list[np.ndarray], centers: np.ndarray, stitch: StitchResult) -> np.ndarray:
+    """Per-tile translation + rotation (n_tiles, 3, 3), nominal mask nm -> stitched
+    (stitching.solve_tile_rigid), from the pairs and tie contacts of the translation stitching
+    `stitch` of the same points, like stitch_tiles_affine. The same tiles are left out (NaN)."""
+    return solve_tile_rigid(len(points), [(p.i, p.j) for p in stitch.pairs], stitch_ties(points, stitch), centers)
+
+
+def pair_residuals(points: list[np.ndarray], stitch: StitchResult, corrections: np.ndarray) -> list[np.ndarray]:
+    """Per used pair of stitch, (K, 2) T_i(a) − T_j(b), nm, of its tie contacts (stitch_ties) after
+    the corrections: shifts (n_tiles, 2) or affines (n_tiles, 3, 3). ~0 = the tiles agree."""
+    return [apply_correction(a, corrections[p.i]) - apply_correction(b, corrections[p.j])
+            for p, (a, b) in zip(stitch.pairs, stitch_ties(points, stitch))]
+
+
 def tie_residuals(points: list[np.ndarray], stitch: StitchResult, corrections: np.ndarray) -> np.ndarray:
-    """(K, 2) T_i(a) − T_j(b), nm, for every tie contact of stitch (stitch_ties) after the
-    corrections: shifts (n_tiles, 2) or affines (n_tiles, 3, 3). ~0 = the tiles agree."""
-    parts = [apply_correction(a, corrections[p.i]) - apply_correction(b, corrections[p.j])
-             for p, (a, b) in zip(stitch.pairs, stitch_ties(points, stitch))]
+    """(K, 2) the residuals of all pairs together (pair_residuals)."""
+    parts = pair_residuals(points, stitch, corrections)
     return np.concatenate(parts) if parts else np.empty((0, 2))
+
+
+def residual_summary(points: list[np.ndarray], stitch: StitchResult, corrections: np.ndarray,
+                     centers: np.ndarray) -> dict:
+    """How well the tiles agree after a stitching: the RMS length (nm) of the tie residuals
+    (pair_residuals) of the overlaps within stripes ("vertical" pairs), between stripes ("horizontal")
+    and of all overlaps, the largest residual, and the number of overlaps of each kind."""
+    residuals = pair_residuals(points, stitch, corrections)
+    kinds = np.array([pair_kind(centers, p.i, p.j) for p in stitch.pairs])
+
+    def rms(selected):
+        parts = [r for r, chosen in zip(residuals, selected) if chosen]
+        return float(np.sqrt((np.concatenate(parts) ** 2).sum(axis=1).mean())) if parts else np.nan
+
+    every = np.ones(len(kinds), bool)
+    return {"within stripes RMS (nm)": rms(kinds == "vertical"), "between stripes RMS (nm)": rms(kinds == "horizontal"),
+            "all overlaps RMS (nm)": rms(every),
+            "largest (nm)": float(max((np.linalg.norm(r, axis=1).max() for r in residuals if len(r)), default=np.nan)),
+            "overlaps within stripes": int((kinds == "vertical").sum()),
+            "overlaps between stripes": int((kinds == "horizontal").sum())}
+
+
+def pair_kind(centers: np.ndarray, i: int, j: int) -> str:
+    """"vertical" (one image above the other, e.g. within a stripe), "horizontal" (side by side,
+    between stripes) or "corner", from the tile centres."""
+    step = np.abs(centers[j] - centers[i])
+    if step[1] > 2 * step[0]:
+        return "vertical"
+    return "horizontal" if step[0] > 2 * step[1] else "corner"
 
 
 def tile_stripes(centers: np.ndarray, fovs: np.ndarray) -> np.ndarray:

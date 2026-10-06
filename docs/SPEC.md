@@ -411,6 +411,24 @@ per-tile scale integrates any such bias; a synthetic mosaic with one shared bow 
 differences reproduces it. The functions stay in the library (tested); a per-tile model needs a
 constraint before it is used on long stripes.
 
+**Translation + rotation and the stitching residuals (D58).** `stitching.solve_tile_rigid(n_tiles,
+pairs, ties, centers)`: per tile T_k(p) = R(θ_k)(p − c_k) + c_k + t_k, least squares over all tie
+contacts (weight 1 each), rotation solved to first order (error ≈ θ²/2 · r, 0.0005 nm for 1 mrad at
+1 µm), gauge θ and t average zero (exact, KKT), written as (n, 3, 3) affines with the exact rotation;
+with no rotation in the data it gives exactly the translation solution. `pipeline.stitch_tiles_rigid()`
+uses the pairs and inlier tie contacts of the translation stitching, so the two differ only in the
+tile model. **How well the tiles agree:** `pipeline.pair_residuals(points, stitch, corrections)` (per
+used pair, T_i(a) − T_j(b) of its tie contacts, for shifts or affines), `pair_kind(centers, i, j)`
+("vertical" = one image above the other, within a stripe; "horizontal" = side by side, between
+stripes; "corner") and `residual_summary(...)` (RMS over the tie contacts within stripes, between
+stripes and all, largest, number of overlaps). Both notebooks compute every input (raw, in-image
+corrected, stripe drift corrected) × tile model (translation, translation + rotation) and show them in
+the *Stitching residuals* tab (`view_stitch_residuals.StitchResidualView`: RMS per overlap against
+its y, within / between stripes, a check box per stitching). A correction that acts inside the
+images (in-image map) shows up there; a slowly varying one (drift curves, tens of µm) hardly does: over
+one overlap it is nearly a shift, which the per-tile translations take up anyway. The registration
+results use translation stitching.
+
 **In-image (intrafield) distortion map (D53).** `intrafield.py`: one distortion shared by all
 images, measured against the design and removed from every SEM point **before** stitching.
 `estimate_map(design_local, sem_local, nodes=9)`: per image, SEM − design (positions relative to
@@ -626,6 +644,12 @@ pattern errors; the global affine is RANSAC (τ = 0.5 nm, fixed) at the end.
    stripe's coordinates (stitched in measurement order). A tile not stitched in step 1 stays nominal.
 3. Stitch everything (all overlaps) on the drift-corrected coordinates; observations, merging.
 4. RANSAC and the moving window on the merged contacts.
+Neighbouring stripes' curves do not meet at their tied ends, and are not expected to: the tie makes
+the two end images agree on their shared contacts (to 0.02 nm on the test data), but each curve is
+the mean over its own stripe's contacts, about 2 µm apart in x, so any x-dependence of the error
+(field-wide x-scale, rotation, skew) separates them by slope × distance (on the test data ~+1.9 nm in
+dx, ~−1.4 nm in dy at every joint). The per-stripe correction removes that offset too, and the final
+stitch over all overlaps puts it back (the x-slope of the error is the same before and after the flow).
 `view_drift.StripeDriftView` (tab *Stripe drift curves*) shows per stripe the mean dx and dy per row
 after step 1 (thin) and the subtracted curve (bold), both minus the common line, with a check box per
 stripe and the common line's terms; the result is the set *stripe drift corrected* (extra lines and
@@ -873,6 +897,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D55 | 2026-10-06 | `AnalysisWindow(extra={name: (sem, design, ransac, moving or None)})` replaces `affine_stitching=`: any number of corrected sets as extra lines (a colour pair per set) plus one tab each; `PitchView` shows each set after its RANSAC affine. | User: make the method available in the analysis UI; keep the original design (D52). |
 | D56 | 2026-10-06 | `RegistrationView` row plots: a **Show** bar of check boxes (per set: name, dx and dy with the line colour) replaces the pyqtgraph legends; a box hides or shows that set's component in both row plots and the y axis rescales. Drift report: `DriftCurve` keeps the window and the straight line's centre, intercept and slope; the notebooks print them and a per-row table (row mean, curve, bend), and the *Drift corrected* tab shows the subtracted bend. | User: with all corrections in one graph the legend overflowed and the lines could not be chosen interactively (pyqtgraph toggles a curve only by clicking its small legend sample). User asked whether the drift correction also acts in x (yes: dx and dy, both as functions of y, as described in the request) and how to see which correction was applied (it is a local fit: shown as its parts and per-row values, not polynomial coefficients). |
 | D57 | 2026-10-07 | **Drift per stripe in measurement order:** stitch only images measured one after the other (`measurement_pairs`: within each stripe along y, plus the end/start images between consecutive stripes of a serpentine; `stitch_tiles(only_pairs=...)`), a drift curve per stripe for dx and dy from those coordinates (`stripe_drift`: the stripe's curve minus one straight line through all stripes' rows, which is left for the global affine), stitch everything on the drift-corrected coordinates, then RANSAC and the moving window. **No affine of any kind before the drift correction.** UI: *Stripe drift curves* tab (`StripeDriftView`) and the result as the extra set *stripe drift corrected*. | User's specification: the stripes are measured at very different times, so their drifts differ; tie only consecutively measured images first, so each stripe's drift is seen on its own; remove it, then use all overlaps; the intermediate curves must be visible for diagnosis. User rule: drift correction comes before any affine, because an affine applied to the initial data can remove real pattern errors (a proposal to measure per-stripe curves from the residuals of a least-squares affine was rejected for this reason). The serpentine start (first stripe from the bottom) is an assumption (setting); on the test data the derived end/start pairs are exactly the consecutive files. |
+| D58 | 2026-10-07 | **Translation + rotation stitching** (`solve_tile_rigid`, `stitch_tiles_rigid`, first-order rotation, same ties as the translation stitching) and the **stitching residuals** of every input × tile model (`pair_residuals`, `pair_kind`, `residual_summary`; tab *Stitching residuals*, `StitchResidualView`). `intrafield.overlap_slopes` uses `pair_kind`. Registration results stay on translation stitching. | User: with corrections applied before stitching, a tab showing the stitching residual should tell whether they are valid (lower residual than the raw input); translation + rotation added to diagnose all combinations of stitching. User asked why the stripe drift curves do not meet at the joints: verified that the tied images agree on their shared contacts and that the gap equals the error's x-slope times the stripe distance. |
 
 ---
 

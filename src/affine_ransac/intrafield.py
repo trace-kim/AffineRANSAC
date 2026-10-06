@@ -23,7 +23,7 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
 from affine_ransac.geometry.affine import apply_affine, fit_affine
-from affine_ransac.pipeline import StitchResult, stitch_ties
+from affine_ransac.pipeline import StitchResult, pair_kind, stitch_ties
 
 
 @dataclass
@@ -112,14 +112,11 @@ def overlap_slopes(points: list[np.ndarray], stitch: StitchResult, centers: np.n
     """
     slopes = {"vertical": [], "horizontal": []}
     for p, (a, b) in zip(stitch.pairs, stitch_ties(points, stitch)):
-        step = centers[p.j] - centers[p.i]
-        if abs(step[1]) > 2 * abs(step[0]):
-            kind, swap = "vertical", step[1] < 0
-        elif abs(step[0]) > 2 * abs(step[1]):
-            kind, swap = "horizontal", step[0] < 0
-        else:
+        kind = pair_kind(centers, p.i, p.j)
+        if kind == "corner":
             continue
-        if swap:
+        step = centers[p.j] - centers[p.i]
+        if step[1 if kind == "vertical" else 0] < 0:  # A = the lower / left image
             a, b = b, a
         if len(a) >= 3:
             design = np.column_stack([a - a.mean(axis=0), np.ones(len(a))])

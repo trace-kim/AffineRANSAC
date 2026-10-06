@@ -7,11 +7,12 @@ from affine_ransac.io.design import load_layout
 from affine_ransac.features.contact import DetectedContacts
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, inside_frame,
-                                    measurement_pairs, process_tile, stitch_design, stitch_tiles, stitch_tiles_affine,
-                                    tie_residuals, tile_stripes)
+                                    measurement_pairs, pair_kind, pair_residuals, process_tile, stitch_design,
+                                    stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid, tie_residuals,
+                                    tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
-from test_stitching import about
+from test_stitching import about, rotation
 
 FOV, SIZE = 720.0, 512
 LATTICE = np.array([(x, y) for x in np.arange(-1530, 1530, 90.0) for y in np.arange(-1530, 1530, 90.0)])
@@ -237,3 +238,27 @@ def test_measurement_pairs_follow_the_serpentine():
     # at its bottom (4), where stripe 2 starts (8).
     assert measurement_pairs(centers, stripe) == within | {(3, 7), (4, 8)}
     assert measurement_pairs(centers, stripe, first_upward=False) == within | {(0, 4), (7, 11)}
+
+
+def test_rigid_stitching_removes_tile_rotations_that_shifts_cannot():
+    # Each tile measures with its own small rotation (~1 nm at the tile edge) and stage error.
+    rng = np.random.default_rng(5)
+    truth = [about(rotation(rng.normal(0, 3000e-6), e), c) for e, c in zip(ERRORS, NOMINAL)]
+    points = []
+    for t, c in zip(truth, NOMINAL):
+        inside = np.all(np.abs(apply_affine(np.linalg.inv(t), LATTICE) - c) < FOV / 2 - 10, axis=1)
+        points.append(apply_affine(np.linalg.inv(t), LATTICE[inside]))
+    stitch = stitch_tiles(points, NOMINAL, np.full((4, 2), FOV))
+
+    rigid = stitch_tiles_rigid(points, NOMINAL, stitch)
+
+    rms = {name: np.sqrt((tie_residuals(points, stitch, c) ** 2).sum(axis=1).mean())
+           for name, c in (("shift", stitch.corrections), ("rigid", rigid))}
+    assert rms["shift"] > 0.2 and rms["rigid"] < 0.005  # first-order rotation: ~θ²/2 · r ~ 0.002 nm at 3 mrad
+    per_pair = pair_residuals(points, stitch, rigid)
+    assert len(per_pair) == len(stitch.pairs) and sum(len(r) for r in per_pair) == len(tie_residuals(points, stitch, rigid))
+
+
+def test_pair_kind_from_the_tile_centres():
+    centers = np.array([[0.0, 0.0], [10.0, 600.0], [600.0, -5.0], [600.0, 600.0]])
+    assert [pair_kind(centers, 0, k) for k in (1, 2, 3)] == ["vertical", "horizontal", "corner"]

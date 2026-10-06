@@ -3,7 +3,7 @@ import pytest
 
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.stitching import (apply_correction, connected_groups, first_stitched_tile, fix_tile,
-                                    placement_corrections, solve_tile_affines, solve_tile_shifts)
+                                    placement_corrections, solve_tile_affines, solve_tile_rigid, solve_tile_shifts)
 from test_affine import known_affine
 
 ORIGIN = np.array([5_000_000.0, -2_000_000.0])  # mask-scale coordinates
@@ -75,6 +75,14 @@ def about(matrix, center):
     to_center = np.eye(3)
     to_center[:2, 2] = center
     return to_center @ matrix @ np.linalg.inv(to_center)
+
+
+def rotation(theta_rad, t=(0.0, 0.0)):
+    """An exact rotation by theta about the origin, then the shift t (3, 3)."""
+    m = np.eye(3)
+    m[:2, :2] = [[np.cos(theta_rad), -np.sin(theta_rad)], [np.sin(theta_rad), np.cos(theta_rad)]]
+    m[:2, 2] = t
+    return m
 
 
 def grid_ties(truth, centers):
@@ -158,3 +166,44 @@ def test_apply_correction_takes_a_shift_or_an_affine():
     np.testing.assert_allclose(apply_correction(points, np.array([0.5, -1.0])), points + [0.5, -1.0])
     affine = known_affine(theta_urad=1000, t=(2.0, 0.0))
     np.testing.assert_allclose(apply_correction(points, affine), apply_affine(affine, points))
+
+
+def test_tile_rotations_are_recovered_up_to_one_common_rotation_and_shift():
+    centers = grid()
+    rng = np.random.default_rng(2)
+    truth = np.array([about(rotation(rng.normal(0, 300e-6), rng.normal(0, 5, 2)), c) for c in centers])
+    pairs, ties = grid_ties(truth, centers)
+
+    rigid = solve_tile_rigid(len(centers), pairs, ties, centers)
+
+    common = [r @ np.linalg.inv(t) for r, t in zip(rigid, truth)]  # the same for every tile (gauge)
+    for h in common[1:]:  # first-order rotation: differences of order θ² ~ 1e-7
+        np.testing.assert_allclose(h[:2, :2], common[0][:2, :2], atol=3e-7)
+        np.testing.assert_allclose(apply_affine(h, centers[:1]), apply_affine(common[0], centers[:1]), atol=1e-3)
+    angles = np.arctan2(rigid[:, 1, 0], rigid[:, 0, 0])
+    np.testing.assert_allclose(angles.mean(), 0, atol=1e-12)  # gauge: mean rotation 0 ...
+    shifts = np.array([apply_affine(r, c[None])[0] - c for r, c in zip(rigid, centers)])
+    np.testing.assert_allclose(shifts.mean(axis=0), 0, atol=1e-6)  # ... and mean shift 0
+    np.testing.assert_allclose(np.linalg.det(rigid[:, :2, :2]), 1.0, atol=1e-12)  # pure rotations
+
+
+def test_rigid_with_pure_shifts_gives_the_translation_solution():
+    centers = grid()
+    true_shifts = np.random.default_rng(3).normal(0, 5, (len(centers), 2))
+    truth = np.array([about(known_affine(t=t), c) for t, c in zip(true_shifts, centers)])
+    pairs, ties = grid_ties(truth, centers)
+
+    rigid = solve_tile_rigid(len(centers), pairs, ties, centers)
+    shifts = solve_tile_shifts(len(centers), pairs, [(b - a).mean(axis=0) for a, b in ties],
+                               weights=[len(a) for a, _ in ties])
+
+    np.testing.assert_allclose(rigid[:, :2, :2], np.tile(np.eye(2), (len(centers), 1, 1)), atol=1e-9)
+    np.testing.assert_allclose(rigid[:, :2, 2], shifts, atol=1e-6)
+
+
+def test_rigid_tiles_outside_the_largest_group_get_nan():
+    centers = np.vstack([grid(2), ORIGIN + [50_000.0, 0.0]])
+    truth = np.array([about(known_affine(), c) for c in centers])
+    pairs, ties = grid_ties(truth, centers)
+    rigid = solve_tile_rigid(len(centers), pairs, ties, centers)
+    assert np.isnan(rigid[4]).all() and not np.isnan(rigid[:4]).any()
