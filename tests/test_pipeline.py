@@ -83,11 +83,22 @@ def test_design_tone_is_chosen_by_matching_the_sem(tmp_path, reversed):
 
 def test_design_tone_flagged_when_neither_tone_matches(tmp_path):
     layout = write_design(tmp_path / "d.oas", visible(LATTICE, margin=0))
-    sem = visible(LATTICE) + (45.0, 45.0)  # half a pitch off: nothing within the gate
+    sem = np.random.default_rng(3).uniform(-300, 300, (60, 2))  # no lattice: no shift lines it up
 
     found = choose_design_contacts(layout, (1, 0), (FOV, FOV), sem)
 
     assert not found.ok and found.match_fraction < 0.5
+
+
+def test_design_tone_check_finds_offsets_beyond_the_old_gate(tmp_path):
+    # 47 nm offset (beyond the former 40 nm gate; pitch 90 nm, 40 nm < P / 2 along x): found by the shift search.
+    layout = write_design(tmp_path / "d.oas", visible(LATTICE, margin=0))
+    sem = visible(LATTICE, margin=60) + (40.0, -25.0)
+
+    found = choose_design_contacts(layout, (1, 0), (FOV, FOV), sem)
+
+    assert found.ok and found.match_fraction == 1.0
+    np.testing.assert_allclose(found.shift_nm, (40.0, -25.0), atol=1e-6)
 
 
 def test_stitch_tiles_recovers_stage_errors(tmp_path):

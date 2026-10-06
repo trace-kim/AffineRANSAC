@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.matching import match_points
+from affine_ransac.matching import match_with_shift
 from affine_ransac.stitching import connected_groups
 
 
@@ -34,6 +34,10 @@ class DesignErrors:
     error_nm: np.ndarray           # (N, 2) registration_error(sem_nm, design_nm), nm
     design_nominal_nm: np.ndarray  # (N, 2) design centre at the nominal placement (for grouping)
     skipped: dict                  # tile index -> reason why it was not measured (no error computed)
+    # Per tile, from the matching (design_errors only; None for paired_errors): the SEM − design
+    # shift used to choose the pairs (NaN if not matched), and whether the tie-break decided it.
+    match_shift_nm: np.ndarray | None = None   # (n_tiles, 2) nm
+    ambiguous: np.ndarray | None = None        # (n_tiles,) bool
 
 
 @dataclass
@@ -70,7 +74,8 @@ def design_errors(
     sem_corrections: np.ndarray,
     design_corrections: np.ndarray,
     design_ok,
-    max_match_nm: float = 40.0,
+    search_nm: float = 100.0,
+    tolerance_nm: float = 10.0,
 ) -> DesignErrors:
     """Raw registration error of every contact found in both the stitched SEM and the design.
 
@@ -78,8 +83,13 @@ def design_errors(
     sem_corrections, design_corrections: (n_tiles, 2) corrections added to each tile's SEM / design
     points, e.g. one placement of stitching.placement_corrections (NaN = tile not stitched).
     design_ok: per tile, whether its design tone matched the SEM (DesignContacts.ok).
+    Matching per tile (matching.match_with_shift): the shift at which most contacts line up (up to
+    search_nm; near-ties: the smallest), then pairs within tolerance_nm after it. The shift only
+    chooses the pairs: each error is the full stitched SEM − design (D48, option a).
     """
     tiles, designs, nominals, sems, skipped = [], [], [], [], {}
+    match_shift = np.full((len(sem_points), 2), np.nan)
+    ambiguous = np.zeros(len(sem_points), bool)
     for k, (sem, design) in enumerate(zip(sem_points, design_points)):
         if not design_ok[k]:
             skipped[k] = "design tone not matched (flagged)"
@@ -92,16 +102,20 @@ def design_errors(
             continue
         stitched_sem = sem + sem_corrections[k]
         stitched_design = design + design_corrections[k]
-        i_design, i_sem = match_points(stitched_design, stitched_sem, max_match_nm)
+        match = match_with_shift(stitched_design, stitched_sem, search_nm, tolerance_nm)
+        i_design, i_sem = match.ia, match.ib
         if len(i_design) == 0:
             skipped[k] = "no SEM contact matched the design"
             continue
+        match_shift[k], ambiguous[k] = match.shift, match.ambiguous
         tiles.append(np.full(len(i_design), k))
         designs.append(stitched_design[i_design])
         nominals.append(design[i_design])
         sems.append(stitched_sem[i_sem])
 
-    return _collect(tiles, designs, nominals, sems, skipped)
+    errors = _collect(tiles, designs, nominals, sems, skipped)
+    errors.match_shift_nm, errors.ambiguous = match_shift, ambiguous
+    return errors
 
 
 def paired_errors(

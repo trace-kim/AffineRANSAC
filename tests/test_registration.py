@@ -21,6 +21,18 @@ def test_raw_error_is_stitched_sem_minus_design():
     np.testing.assert_allclose(errors.sem_nm - errors.design_nm, errors.error_nm)
 
 
+def test_large_tile_offset_is_matched_and_kept_in_the_error():
+    # Tile 1 is 45 nm off (beyond the former 40 nm gate, below half the 100 nm pitch along x):
+    # the shift search pairs it correctly and the error keeps the full 45 nm (option a).
+    sem = [DESIGN + (0.5, 0.0), DESIGN + (45.0, 3.0)]
+    errors = design_errors(sem, [DESIGN, DESIGN], np.zeros((2, 2)), np.zeros((2, 2)), [True, True])
+
+    assert errors.skipped == {}
+    np.testing.assert_allclose(errors.error_nm[errors.tile == 1], np.tile([45.0, 3.0], (len(DESIGN), 1)))
+    np.testing.assert_allclose(errors.match_shift_nm, [[0.5, 0.0], [45.0, 3.0]])
+    assert errors.ambiguous.dtype == bool and len(errors.ambiguous) == 2
+
+
 def test_design_corrections_move_the_design():
     # The design file of tile 0 is drawn 2 nm too far left; its design correction fixes that.
     errors = design_errors([DESIGN], [DESIGN - (2.0, 0.0)], np.zeros((1, 2)), np.array([[2.0, 0.0]]), [True])
@@ -108,7 +120,7 @@ def test_merge_groups_by_stitched_design_in_every_placement():
 
 def test_merge_never_joins_two_contacts_of_one_tile():
     design = np.array([[0.0, 0.0], [3.0, 0.0]])  # 3 nm apart in the same tile: not the same contact
-    errors = design_errors([design], [design], np.zeros((1, 2)), np.zeros((1, 2)), [True], max_match_nm=1.0)
+    errors = design_errors([design], [design], np.zeros((1, 2)), np.zeros((1, 2)), [True], tolerance_nm=1.0)
     assert len(merge_observations(errors, np.zeros((1, 2))).count) == 2
 
 

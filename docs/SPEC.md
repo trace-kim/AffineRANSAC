@@ -104,8 +104,9 @@ Rules:
 - **Tone reversal:** some `.oas` files draw the area *around* the holes. For those, use
   `read_contacts_tone_reversed()` (holes = frame − drawn shapes, D17). Which tone a file uses is
   decided per tile by matching against the SEM (D28, `pipeline.choose_design_contacts`): normal
-  tone if ≥ 50 % of the SEM contacts match a design contact (tile-local, **40 nm** gate: the
-  SEM-to-design offset of a tile exceeds 25 nm, user), else tone reversed if that reaches 50 %,
+  tone if ≥ 50 % of the SEM contacts match a design contact (tile-local, shift-search matching
+  `match_with_shift`, D48: the SEM-to-design offset of a tile can exceed 40 nm), else tone reversed
+  if that reaches 50 %,
   else the tile is **flagged** (`DesignContacts.ok = False`). No file property alone identifies
   reversed files (user). Normal-tone contacts whose bounding box touches the FOV frame are dropped
   (`inside_frame`): they may be cut by the frame, like border contacts in the SEM. OASIS cannot store holes, so a
@@ -417,7 +418,16 @@ the spread as a stitching-quality metric.
 
 ### S6 — SEM↔design matching
 **Implemented (v1, D20):** `matching.py::match_points(a, b, max_distance)` gives one-to-one
-pairs of mutual nearest neighbours closer than `max_distance`. Only contacts found in **both**
+pairs of mutual nearest neighbours closer than `max_distance`. It is right only while the offset
+between the sets is well below half the pitch P (the gate rejects pairs, it never chooses them).
+**Design↔SEM matching uses `match_with_shift` (D48):** per tile, (1) every SEM−design difference
+within `search_nm` votes for a shift and the strongest peaks are candidates; (2) each candidate is
+refined and scored by the number of mutual nearest pairs within `tolerance_nm` after the shift;
+(3) `choose_shift` takes the best score, but if other shifts score within 10 % of it (normal on a
+periodic array: one pitch off loses only an edge row) the **smallest** shift is taken and the tile
+is marked *ambiguous* (user's rule; correct while the true offset < P/2; may be replaced later,
+e.g. by consistency with the neighbour tiles). The shift only chooses the pairs: each reported
+error is the full SEM − design (option a, user). Only contacts found in **both**
 the design and the SEM are used. Edge contacts that SEM detection drops (cut off by the image
 border) are left out. v1 works per tile, by brute-force distances (fine for hundreds of points);
 use a KD-tree once whole masks are matched at once.
@@ -484,7 +494,7 @@ next to the raw error (dots).
 
 **Implemented first (v1, D29): raw error, no affine removed.** `registration.design_errors()`
 matches each tile's SEM centres to that tile's design centres, each placed with its own
-corrections (one placement of `placement_corrections`; `match_points`, 40 nm gate), and returns
+corrections (one placement of `placement_corrections`; `match_with_shift`, D48), and returns
 `DesignErrors` (tile, design, SEM, error per contact). Tiles that are not measured (SEM or design
 not stitched, design tone flagged, nothing matched) are listed in `skipped` with the reason, plus
 a warning; no error is computed for them. `error_summary()` gives count, mean, 3σ and max. Overlap
@@ -740,6 +750,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D45 | 2026-10-06 | **Contour CSV input** (§4.5): `io/contour_csv.py` reads the four `_Add` columns per file; tiles without contacts are left out (listed); tile boxes from the bounding box of the design centres; SEM and design stitched with `stitch_tiles` as for the images; errors from the CSV pairing (`paired_errors`, no re-matching), then `merge_observations`, RANSAC, moving window, pitch and `AnalysisWindow` without a stitching tab (no images). `notebooks/csv_stitch.ipynb`. Synthetic check (2 × 2 tiles, known stage errors and file offsets) recovers both to < 0.1 nm. | User: folders of pre-analysed CSVs (contour centres only, no raw data) should be stitched and analysed like the image pipeline. User answers: global mask nm, rows already paired, no metadata CSV. The bounding-box tile box replaces a centre estimate with a fixed FOV, which could be off by up to half a pitch. |
 | D46 | 2026-10-06 | Contour CSV tile boxes are the bounding box of the design centres **grown by a margin** (`tile_boxes_from_points(margin_nm)`, notebook default 25 nm, about the match gate). Points-only stitching viewer `view_points.PointsStitchView` in `csv_stitch.ipynb` section 2 and as its Stitching tab. | User: on real data section 2 gave NaN corrections for (nearly) every tile although 1014 overlaps were used and none failed. Reproduced on a synthetic 23 × 23 mosaic: neighbours sharing only one row/column of contacts get boxes that just touch or, with a few nm of file offset, miss each other, so pairs drop out at random, the mosaic splits into many groups and only the largest is solved (49 of 529 tiles). With the margin all 529 are stitched. Extra contacts inside a grown box find no partner. User asked for a viewer of the design and SEM coordinates in section 2. |
 | D47 | 2026-10-06 | `stitch_viewer.ipynb` section 3b: the stitch viewer opens **in the middle**, right after the design errors, when a stitching pair did not match, a tile was not stitched or a tile was not measured in some placement (`DIAGNOSTIC_VIEWER = "auto"`; True / False to force). RANSAC (section 5) stops with a clear message if fewer than 3 contacts were measured. `StitchViewer` is tested with no measured contact at all. | User: on new data every tile reported "no SEM contact matched the design"; with all viewers merged into one window at the end (D44) the failure could not be inspected, because the later steps fail first. |
+| D48 | 2026-10-06 | Design↔SEM matching (tone check and `design_errors`) by **shift search** (`matching.match_with_shift`): find the per-tile shift at which most contacts line up within `tolerance_nm` (default 10 nm, notebook `DESIGN_TOLERANCE_NM`), searched up to `search_nm` (default 100 nm, `DESIGN_SEARCH_NM`, replaces `DESIGN_MATCH_NM`); near-ties (within 10 % of the best score) → the smallest shift (`choose_shift`, tile marked ambiguous). Pairs are chosen after removing the shift; the error keeps it (option a). The shift and the ambiguous flag are kept per tile (`DesignContacts.shift_nm/ambiguous`, `DesignErrors.match_shift_nm/ambiguous`) and listed in `stitch_viewer.ipynb`. Tile↔tile overlap matching (`match_overlap`) and `tile_index.ipynb` still use plain `match_points`. | User: on new data the 40 nm gate rejected every pair; at 100 nm contacts were paired with the wrong design contact. Nearest-neighbour pairing only works for offsets below P/2, and a gate cannot choose, only reject. User's method (overlay the patterns, find the matching shift, correct it, the minimum-distance match among several) and the proposed vote are the same idea; combined: votes find the candidates, the score decides, the user's minimum-distance rule breaks near-ties. Contour shapes were not used: identical contacts add no position information over their centres. The user may later replace the tie-break with the smallest change against the adjacent tiles' shifts. Synthetic: offsets of 55 nm (P = 130 nm) paired correctly where a 100 nm gate picked wrong neighbours; a 0.6 P offset is taken as −0.4 P and flagged (documented limit). |
 
 ---
 

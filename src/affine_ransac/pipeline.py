@@ -17,7 +17,7 @@ module works with any metadata reader.
 """
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +27,7 @@ from affine_ransac.features.edges import refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.io.design import load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.matching import match_points
+from affine_ransac.matching import match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import solve_tile_shifts
@@ -39,13 +39,18 @@ class DesignContacts:
     reversed: bool          # True if read as tone reversed (holes = space between drawn shapes)
     match_fraction: float   # fraction of the SEM contacts that matched a design contact
     ok: bool                # False: neither tone matched well enough (flagged), or no .oas
+    # SEM − design shift found by the tone check (tile-local, nm; NaN if nothing matched), and
+    # whether the tie-break chose it among near-equal shifts (matching.match_with_shift).
+    shift_nm: np.ndarray = field(default_factory=lambda: np.full(2, np.nan))
+    ambiguous: bool = False
 
 
-def matched_fraction(design: np.ndarray, sem: np.ndarray, max_match_nm: float) -> float:
-    """Fraction of the SEM points that pair one-to-one with a design point within the gate."""
+def matched_fraction(design: np.ndarray, sem: np.ndarray, search_nm: float, tolerance_nm: float):
+    """(fraction of the SEM points paired with a design point, ShiftMatch) after the shift search."""
     if len(sem) == 0:
-        return 0.0
-    return len(match_points(design, sem, max_match_nm)[0]) / len(sem)
+        return 0.0, match_with_shift(design, sem, search_nm, tolerance_nm)
+    match = match_with_shift(design, sem, search_nm, tolerance_nm)
+    return match.score / len(sem), match
 
 
 def inside_frame(centers: np.ndarray, sizes: np.ndarray, fov_nm, margin_nm: float = 1.0) -> np.ndarray:
@@ -63,29 +68,35 @@ def choose_design_contacts(
     layer: tuple[int, int],
     fov_nm,
     sem_local: np.ndarray,
-    max_match_nm: float = 40.0,
+    search_nm: float = 100.0,
     min_fraction: float = 0.5,
+    tolerance_nm: float = 10.0,
 ) -> DesignContacts:
     """Read the design contacts with whichever tone matches the SEM contacts.
 
-    Normal tone first (holes = drawn shapes; contacts touching the FOV frame dropped). If fewer
-    than min_fraction of the SEM contacts (sem_local, tile-local nm) match a design contact
-    within max_match_nm, try tone reversed (frame-touching holes are dropped by its reader).
-    If that does not reach min_fraction either, the better of the two is returned with ok=False.
+    Normal tone first (holes = drawn shapes; contacts touching the FOV frame dropped). Matching
+    allows an unknown tile shift up to search_nm and pairs within tolerance_nm after it
+    (matching.match_with_shift). If fewer than min_fraction of the SEM contacts (sem_local,
+    tile-local nm) match a design contact, try tone reversed (frame-touching holes are dropped by
+    its reader). If that does not reach min_fraction either, the better of the two is returned
+    with ok=False.
     """
+    def result(centers, reversed_tone, fraction, match, ok):
+        return DesignContacts(centers, reversed_tone, fraction, ok, match.shift, match.ambiguous)
+
     normal, sizes = read_contacts(layout, *layer)
     normal = normal[inside_frame(normal, sizes, fov_nm)]
-    normal_fraction = matched_fraction(normal, sem_local, max_match_nm)
+    normal_fraction, normal_match = matched_fraction(normal, sem_local, search_nm, tolerance_nm)
     if normal_fraction >= min_fraction:
-        return DesignContacts(normal, False, normal_fraction, ok=True)
+        return result(normal, False, normal_fraction, normal_match, ok=True)
 
     reversed_, _ = read_contacts_tone_reversed(layout, *layer, frame_nm=tuple(fov_nm))
-    reversed_fraction = matched_fraction(reversed_, sem_local, max_match_nm)
+    reversed_fraction, reversed_match = matched_fraction(reversed_, sem_local, search_nm, tolerance_nm)
     if reversed_fraction >= min_fraction:
-        return DesignContacts(reversed_, True, reversed_fraction, ok=True)
+        return result(reversed_, True, reversed_fraction, reversed_match, ok=True)
     if reversed_fraction > normal_fraction:
-        return DesignContacts(reversed_, True, reversed_fraction, ok=False)
-    return DesignContacts(normal, False, normal_fraction, ok=False)
+        return result(reversed_, True, reversed_fraction, reversed_match, ok=False)
+    return result(normal, False, normal_fraction, normal_match, ok=False)
 
 
 @dataclass
@@ -115,16 +126,18 @@ def process_tile(
     fov_nm,
     layer: tuple[int, int],
     search_px: float = 5.0,
-    design_match_nm: float = 40.0,
+    design_search_nm: float = 100.0,
     min_match_fraction: float = 0.5,
     detection: str = "otsu",
+    design_tolerance_nm: float = 10.0,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
     center_nm: (x, y) mask position of the image centre; fov_nm: (width, height), nm.
     layer: (layer, datatype) of the contacts in the .oas. The design tone is chosen by matching
-    against the refined SEM centres (choose_design_contacts). detection: "otsu", "otsu3" or
-    "band" (method of features.contact.detect_contacts).
+    against the refined SEM centres (choose_design_contacts: shift search up to design_search_nm,
+    pairs within design_tolerance_nm). detection: "otsu", "otsu3" or "band" (method of
+    features.contact.detect_contacts).
     """
     image = load_sem_image(image_path)
     fov_nm = np.asarray(fov_nm, dtype=float)
@@ -137,7 +150,7 @@ def process_tile(
     else:
         sem_local = pixel_to_tile_nm(refined.centers, image.shape, pixel_size_nm)
         design = choose_design_contacts(load_layout(oas_path), layer, fov_nm, sem_local,
-                                        design_match_nm, min_match_fraction)
+                                        design_search_nm, min_match_fraction, design_tolerance_nm)
 
     return TileResult(
         image=image,
