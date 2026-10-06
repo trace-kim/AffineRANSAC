@@ -239,6 +239,12 @@ def stitch_tiles(
     return result
 
 
+def tile_neighbours(centers: np.ndarray, fovs: np.ndarray) -> list[tuple[int, int]]:
+    """(i, j) pairs of tiles whose fields of view overlap (corners included), for
+    design_errors(neighbours=...)."""
+    return [(i, j) for i, j, _ in overlapping_pairs(centers, fovs)]
+
+
 def tile_boxes_from_points(points: list[np.ndarray], margin_nm: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
     """Per tile, the centre and size (n_tiles, 2 each, mask nm) of the bounding box of its points,
     grown by margin_nm on every side.

@@ -178,3 +178,9 @@ def test_stitch_design_leaves_out_flagged_tiles():
     with pytest.warns(UserWarning, match="design stitching incomplete"):
         result = stitch_design(tiles)
     assert result.unplaced.tolist() == [3]
+
+
+def test_tile_neighbours_are_the_overlapping_pairs():
+    from affine_ransac.pipeline import tile_neighbours
+    assert sorted(tile_neighbours(NOMINAL, np.full((4, 2), FOV))) == [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+    assert tile_neighbours(np.array([[0.0, 0.0], [5000.0, 0.0]]), np.full((2, 2), FOV)) == []

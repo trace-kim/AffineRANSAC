@@ -120,3 +120,66 @@ def test_choose_shift_best_score_unless_near_tie_then_smallest():
     assert choose_shift(shifts, np.array([100, 50, 20])) == (0, False)
     assert choose_shift(shifts, np.array([100, 95, 20])) == (0, True)   # 60 < 70
     assert choose_shift(shifts, np.array([100, 95, 92])) == (2, True)   # within 10 %: smallest wins
+
+
+# --- consistent_choice -----------------------------------------------------------------------
+from affine_ransac.matching import consistent_choice, scored_shifts  # noqa: E402
+
+
+def mosaic(shift_x, shift_y=-20.0, n=4, seed=0):
+    """n x n tiles of 12 x 12 contacts (pitch 130 nm), neighbours along x and y. Tile k's SEM
+    contacts are its design contacts + (shift_x[k], shift_y) + 1 nm noise, rows shuffled."""
+    rng = np.random.default_rng(seed)
+    designs, sems, truths, neighbours = [], [], [], []
+    for k in range(n * n):
+        row, col = divmod(k, n)
+        design = lattice() + (col * 1300.0, row * 1300.0)
+        sem = design + (shift_x[k], shift_y) + rng.normal(0, 1.0, design.shape)
+        order = rng.permutation(len(sem))
+        designs.append(design)
+        sems.append(sem[order])
+        truths.append(order)  # SEM row r is design contact order[r]
+        if col + 1 < n:
+            neighbours.append((k, k + 1))
+        if row + 1 < n:
+            neighbours.append((k, k + n))
+    return designs, sems, truths, neighbours
+
+
+def chosen_shifts(designs, sems, neighbours):
+    candidates = [scored_shifts(d, s, search_nm=200, tolerance_nm=10) for d, s in zip(designs, sems)]
+    choice = consistent_choice(candidates, neighbours)
+    return candidates, choice, np.array([c[k].shift for c, k in zip(candidates, choice)])
+
+
+def test_shift_drifting_across_half_pitch_stays_on_one_row():
+    shift_x = np.linspace(45.0, 85.0, 16)  # crosses P / 2 = 65 nm halfway through the mosaic
+    designs, sems, truths, neighbours = mosaic(shift_x)
+
+    # The per-tile smallest-shift rule jumps one row where the shift passes P / 2 (the reported failure).
+    per_tile = np.array([match_with_shift(d, s, 200, 10).shift[0] for d, s in zip(designs, sems)])
+    assert (np.abs(per_tile - shift_x) > 100).any()
+
+    candidates, choice, shifts = chosen_shifts(designs, sems, neighbours)
+    np.testing.assert_allclose(shifts[:, 0], shift_x, atol=0.5)
+    for c, k, truth in zip(candidates, choice, truths):
+        assert_pairs_correct(c[k], truth)
+
+
+def test_whole_field_beyond_half_pitch_is_decided_by_the_total_score():
+    # Every tile 80 nm off (> P / 2): each tile alone takes -50 nm; summed over the field, the true
+    # offset matches one more column per tile and wins.
+    shift_x = np.full(16, 80.0)
+    designs, sems, _, neighbours = mosaic(shift_x, seed=1)
+    _, _, shifts = chosen_shifts(designs, sems, neighbours)
+    np.testing.assert_allclose(shifts[:, 0], 80.0, atol=0.5)
+
+
+def test_tiles_without_candidates_or_neighbours():
+    designs, sems, _, _ = mosaic(np.full(16, 30.0))
+    candidates = [scored_shifts(d, s, 200, 10) for d, s in zip(designs[:2], sems[:2])] + [[]]
+    choice = consistent_choice(candidates, neighbours=[(0, 2)])  # tile 2 has nothing to match
+    assert choice[2] == -1
+    for t in (0, 1):  # no usable neighbours: each keeps its best-scoring candidate
+        assert choice[t] == 0
+        np.testing.assert_allclose(candidates[t][0].shift, (30.0, -20.0), atol=0.5)
