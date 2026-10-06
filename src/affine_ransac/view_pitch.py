@@ -19,7 +19,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.registration import row_pitch
 
-COLORS = ["#ff6040", "#40d040", "#40a0ff", "#e0c040"]
+COLORS = ["#ff6040", "#40d040", "#40a0ff", "#e0c040", "#c080ff"]
 
 
 class PitchView(QtWidgets.QWidget):

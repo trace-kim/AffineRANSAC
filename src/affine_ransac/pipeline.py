@@ -13,6 +13,8 @@
 
 - tile_boxes_from_points(): tile centres and sizes for data without a metadata CSV (e.g. the
   pre-analysed contour CSVs): the bounding box of the contacts each tile reports.
+- tile_stripes(), measurement_pairs(): the stripes of a serpentine scan and the pairs of images
+  measured one after the other (stitch_tiles(only_pairs=...) stitches only those).
 
 Tile data is passed as plain arguments (paths, nm values), not as metadata records, so this
 module works with any metadata reader.
@@ -210,6 +212,7 @@ def stitch_tiles(
     outlier_factor: float = 3.0,
     min_matched: int = 5,
     label: str = "SEM",
+    only_pairs: set | None = None,
 ) -> StitchResult:
     """Pairwise overlap fits and the per-tile translation corrections.
 
@@ -219,10 +222,14 @@ def stitch_tiles(
     max_match_nm: largest expected B − A offset (stage error); must stay below half the pitch.
     Pairs with fewer than min_matched matched contacts are not used; they are kept in
     `rejected`. Each used pair is weighted by its number of inlier contacts.
+    only_pairs: if given, only these overlapping pairs (i, j), i < j, are stitched (e.g.
+    measurement_pairs); the other overlaps are ignored.
     Warns if a pair failed to match or a tile could not be stitched (see StitchResult).
     """
     pairs, rejected = [], []
     for i, j, box in overlapping_pairs(centers, fovs):
+        if only_pairs is not None and (i, j) not in only_pairs:
+            continue
         ia, ib = match_overlap(points[i], points[j], box, max_match_nm)
         if len(ia) >= min_matched:
             fit = fit_overlap(points[i][ia], points[j][ib], outlier_factor=outlier_factor)
@@ -264,6 +271,35 @@ def tie_residuals(points: list[np.ndarray], stitch: StitchResult, corrections: n
     parts = [apply_correction(a, corrections[p.i]) - apply_correction(b, corrections[p.j])
              for p, (a, b) in zip(stitch.pairs, stitch_ties(points, stitch))]
     return np.concatenate(parts) if parts else np.empty((0, 2))
+
+
+def tile_stripes(centers: np.ndarray, fovs: np.ndarray) -> np.ndarray:
+    """(n_tiles,) stripe of each tile, 0 for the smallest x: tiles of one stripe share their centre x
+    (a new stripe starts where the sorted centre x jumps by more than half the median tile width)."""
+    order = np.argsort(centers[:, 0])
+    new_stripe = np.diff(centers[order, 0]) > np.median(fovs[:, 0]) / 2
+    stripe = np.empty(len(centers), int)
+    stripe[order] = np.concatenate([[0], np.cumsum(new_stripe)])
+    return stripe
+
+
+def measurement_pairs(centers: np.ndarray, stripe: np.ndarray, first_upward: bool = True) -> set:
+    """Tile pairs (i, j), i < j, measured one after the other in a serpentine scan: the stripes are
+    measured in order of x, alternately upward and downward (the first from its bottom if
+    first_upward), so the consecutive images are the neighbours within a stripe and, between stripe
+    s and s + 1, the image where s ends and the one where s + 1 starts (both at the top after an
+    upward stripe, both at the bottom after a downward one)."""
+    pairs, ends = set(), []
+    for s in range(stripe.max() + 1):
+        tiles = np.flatnonzero(stripe == s)
+        tiles = tiles[np.argsort(centers[tiles, 1])]  # bottom to top
+        pairs |= {(min(a, b), max(a, b)) for a, b in zip(tiles[:-1], tiles[1:])}
+        ends.append((tiles[0], tiles[-1]))
+    for s in range(len(ends) - 1):
+        upward = (s % 2 == 0) == first_upward
+        a, b = (ends[s][1], ends[s + 1][1]) if upward else (ends[s][0], ends[s + 1][0])
+        pairs.add((min(a, b), max(a, b)))
+    return {(int(i), int(j)) for i, j in pairs}
 
 
 def tile_neighbours(centers: np.ndarray, fovs: np.ndarray) -> list[tuple[int, int]]:

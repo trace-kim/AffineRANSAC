@@ -607,6 +607,30 @@ the global affine (`DriftCurve.line_centre_y_nm`, `line_intercept_nm`, `line_slo
 and per row the row mean, the curve and the subtracted bend; the *Drift corrected* tab shows the
 bend as lines (*drift correction applied*).
 
+**Drift per stripe in measurement order (D57),** the user's flow. The images are measured stripe by
+stripe along y in a serpentine (the first stripe, at the smallest x, from its bottom up if
+`first_upward` / notebook `FIRST_STRIPE_UPWARD`, then alternately), so neighbouring stripes are
+measured at very different times and drift differently. **No affine is fitted before the drift
+correction** (user rule): an affine fitted to the initial data, in any role, could absorb real
+pattern errors; the global affine is RANSAC (τ = 0.5 nm, fixed) at the end.
+1. Stitch in measurement order: `pipeline.tile_stripes(centers, fovs)` (stripe per tile: a new stripe
+   where the sorted centre x jumps by more than half the median tile width) and
+   `pipeline.measurement_pairs(centers, stripe, first_upward)` (the neighbours within each stripe and,
+   between stripe s and s + 1, the image where s ends and the one where s + 1 starts: the top images
+   after an upward stripe, the bottom images after a downward one); `stitch_tiles(..., only_pairs=...)`
+   stitches only these.
+2. `fitting.drift.stripe_drift(design_y, error, stripe, window_nm)` on the observations of that
+   stitching (SEM − design, no affine): a drift curve per stripe from its own contacts (dx and dy, as
+   `drift_curve`), and one straight line through the rows of all stripes, left for the global affine;
+   `StripeDrift.correction(stripe, y)` = the stripe's curve minus that common line, subtracted from the
+   stripe's coordinates (stitched in measurement order). A tile not stitched in step 1 stays nominal.
+3. Stitch everything (all overlaps) on the drift-corrected coordinates; observations, merging.
+4. RANSAC and the moving window on the merged contacts.
+`view_drift.StripeDriftView` (tab *Stripe drift curves*) shows per stripe the mean dx and dy per row
+after step 1 (thin) and the subtracted curve (bold), both minus the common line, with a check box per
+stripe and the common line's terms; the result is the set *stripe drift corrected* (extra lines and
+its own colormap tab).
+
 **Corrected sets in the analysis window (D52, D55).** Both notebooks compute the in-image corrected
 contacts (stitched and, for the images, matched to the design again; RANSAC and moving window) and
 the drift-corrected contacts (RANSAC), with `error_summary` tables. `AnalysisWindow(..., extra={name:
@@ -848,6 +872,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D54 | 2026-10-06 | **Drift curve** (`fitting/drift.py`): local straight-line fit through the row means of SEM − design (window 40 µm); its bend (curve minus the straight line through all rows) is subtracted from the SEM positions before RANSAC. | User's method: the row means follow a linear trend that the global affine removes, but drift bends it; fit a curve to the translation-stitched dX/dY, subtract it from the pattern positions, then the global affine. Only the bend is subtracted, so G keeps its (physical) linear terms. Local line fit: follows local bends, no edge bias for a straight trend. Smoothly varying real mask errors are removed with it (documented). Observed on the real data: the largest remaining structure after RANSAC is a sawtooth in dy with a period that is not a whole number of tiles, created by the translation stitching (absent in the unstitched positions); cause not yet known. |
 | D55 | 2026-10-06 | `AnalysisWindow(extra={name: (sem, design, ransac, moving or None)})` replaces `affine_stitching=`: any number of corrected sets as extra lines (a colour pair per set) plus one tab each; `PitchView` shows each set after its RANSAC affine. | User: make the method available in the analysis UI; keep the original design (D52). |
 | D56 | 2026-10-06 | `RegistrationView` row plots: a **Show** bar of check boxes (per set: name, dx and dy with the line colour) replaces the pyqtgraph legends; a box hides or shows that set's component in both row plots and the y axis rescales. Drift report: `DriftCurve` keeps the window and the straight line's centre, intercept and slope; the notebooks print them and a per-row table (row mean, curve, bend), and the *Drift corrected* tab shows the subtracted bend. | User: with all corrections in one graph the legend overflowed and the lines could not be chosen interactively (pyqtgraph toggles a curve only by clicking its small legend sample). User asked whether the drift correction also acts in x (yes: dx and dy, both as functions of y, as described in the request) and how to see which correction was applied (it is a local fit: shown as its parts and per-row values, not polynomial coefficients). |
+| D57 | 2026-10-07 | **Drift per stripe in measurement order:** stitch only images measured one after the other (`measurement_pairs`: within each stripe along y, plus the end/start images between consecutive stripes of a serpentine; `stitch_tiles(only_pairs=...)`), a drift curve per stripe for dx and dy from those coordinates (`stripe_drift`: the stripe's curve minus one straight line through all stripes' rows, which is left for the global affine), stitch everything on the drift-corrected coordinates, then RANSAC and the moving window. **No affine of any kind before the drift correction.** UI: *Stripe drift curves* tab (`StripeDriftView`) and the result as the extra set *stripe drift corrected*. | User's specification: the stripes are measured at very different times, so their drifts differ; tie only consecutively measured images first, so each stripe's drift is seen on its own; remove it, then use all overlaps; the intermediate curves must be visible for diagnosis. User rule: drift correction comes before any affine, because an affine applied to the initial data can remove real pattern errors (a proposal to measure per-stripe curves from the residuals of a least-squares affine was rejected for this reason). The serpentine start (first stripe from the bottom) is an assumption (setting); on the test data the derived end/start pairs are exactly the consecutive files. |
 
 ---
 

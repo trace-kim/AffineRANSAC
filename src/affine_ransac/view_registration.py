@@ -35,7 +35,7 @@ JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
                   color=[(0, 0, 128), (0, 0, 255), (0, 255, 255), (255, 255, 0), (255, 0, 0), (128, 0, 0)])
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
 MAIN_COLORS = ("#ff6040", "#40a0ff")  # dx, dy of the view's own contacts
-EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0")]  # (dx, dy) of the 1st, 2nd... add_rows set
+EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0"), ("#c080ff", "#a0ff60")]  # (dx, dy) of the 1st, 2nd... add_rows set
 
 
 def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: int) -> np.ndarray:

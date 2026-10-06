@@ -1,6 +1,6 @@
 import numpy as np
 
-from affine_ransac.fitting.drift import drift_curve
+from affine_ransac.fitting.drift import drift_curve, stripe_drift
 from affine_ransac.registration import row_means
 
 ROWS_Y = 3_000_000.0 + np.arange(0.0, 200_000.0, 120.0)  # 200 µm of rows, 120 nm apart, mask-scale y
@@ -43,3 +43,24 @@ def test_the_correction_is_the_bend_alone():
     expected = bump(ROWS_Y) - (np.outer(ROWS_Y - ROWS_Y.mean(), straight[0]) + straight[1])
     np.testing.assert_allclose(drift.correction(ROWS_Y), expected, atol=0.1)
     np.testing.assert_allclose(drift.row_mean_nm, row_means(y, error)[1])
+
+
+def test_each_stripe_loses_its_own_drift_and_keeps_the_common_line():
+    # Two stripes measured in opposite directions: a drift growing in time runs up in one and down in
+    # the other (+-30 ppm in dy), on top of the field's straight trend; stripe 1 also has a bend.
+    y = np.concatenate([np.repeat(ROWS_Y, 5), np.repeat(ROWS_Y, 5)])
+    stripe = np.repeat([0, 1], 5 * len(ROWS_Y))
+    offset = y - ROWS_Y.mean()
+    drift = np.column_stack([np.zeros_like(y), np.where(stripe == 0, 3e-5, -3e-5) * offset])
+    drift[stripe == 1] += bump(y[stripe == 1])
+    error = line(y) + drift + np.random.default_rng(1).normal(0, 0.2, (len(y), 2))
+
+    result = stripe_drift(y, error, stripe, window_nm=10_000)
+
+    corrected = error - np.vstack([result.correction(s, y[stripe == s]) for s in (0, 1)])
+    for s in (0, 1):  # every stripe now follows the common straight line
+        rows = row_means(y[stripe == s], corrected[stripe == s])[1]
+        np.testing.assert_allclose(rows, result.line(ROWS_Y), atol=0.35)
+    # The common line is the field's trend (20 / -40 ppm) plus the average of the stripes' drifts.
+    np.testing.assert_allclose(result.common.line_slope[1] * 1e6, -40.0 + np.polyfit(ROWS_Y, bump(ROWS_Y)[:, 1], 1)[0] * 1e6 / 2, atol=2)
+    np.testing.assert_allclose(result.correction(7, ROWS_Y[:3]), 0)  # a stripe without contacts

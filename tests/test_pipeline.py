@@ -7,7 +7,8 @@ from affine_ransac.io.design import load_layout
 from affine_ransac.features.contact import DetectedContacts
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, inside_frame,
-                                    process_tile, stitch_design, stitch_tiles, stitch_tiles_affine, tie_residuals)
+                                    measurement_pairs, process_tile, stitch_design, stitch_tiles, stitch_tiles_affine,
+                                    tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
 from test_stitching import about
@@ -205,3 +206,34 @@ def test_affine_stitching_removes_tile_scale_and_rotation_that_shifts_cannot():
            for name, c in (("shift", stitch.corrections), ("affine", affines))}
     assert rms["shift"] > 0.2 and rms["affine"] < 1e-3
     assert len(tie_residuals(points, stitch, affines)) == sum(p.fit.inliers.sum() for p in stitch.pairs)
+
+
+def test_stitch_tiles_uses_only_the_given_pairs():
+    errors = np.array([[0.0, 0.0], [3.0, -2.0], [-2.0, 1.0], [1.0, 2.0]])
+    with pytest.warns(UserWarning, match="could not be stitched"):
+        result = stitch_tiles(seen_points(errors), NOMINAL, np.full((4, 2), FOV), only_pairs={(0, 1), (0, 2)})
+    assert sorted((p.i, p.j) for p in result.pairs) == [(0, 1), (0, 2)] and result.rejected == []
+    assert result.unplaced.tolist() == [3]  # its overlaps were not allowed
+
+
+def serpentine(stripes=3, per_stripe=4):
+    """Tile centres of `stripes` stripes of `per_stripe` tiles (2 um apart in x, 1.8 um in y), stripe by
+    stripe from the bottom up, with some stage scatter in x."""
+    centers = np.array([(s * 2000.0, k * 1800.0) for s in range(stripes) for k in range(per_stripe)])
+    centers[:, 0] += np.random.default_rng(0).normal(0, 20, len(centers))
+    return centers, np.full((len(centers), 2), 2500.0)
+
+
+def test_tiles_are_grouped_into_stripes_by_their_centre_x():
+    centers, fovs = serpentine()
+    np.testing.assert_array_equal(tile_stripes(centers, fovs), np.repeat([0, 1, 2], 4))
+
+
+def test_measurement_pairs_follow_the_serpentine():
+    centers, fovs = serpentine()  # tiles 0-3: stripe 0 bottom to top, 4-7: stripe 1, 8-11: stripe 2
+    stripe = tile_stripes(centers, fovs)
+    within = {(0, 1), (1, 2), (2, 3), (4, 5), (5, 6), (6, 7), (8, 9), (9, 10), (10, 11)}
+    # Stripe 0 measured upward ends at its top (3) and stripe 1 starts at its top (7); stripe 1 ends
+    # at its bottom (4), where stripe 2 starts (8).
+    assert measurement_pairs(centers, stripe) == within | {(3, 7), (4, 8)}
+    assert measurement_pairs(centers, stripe, first_upward=False) == within | {(0, 4), (7, 11)}
