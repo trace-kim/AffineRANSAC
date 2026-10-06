@@ -10,9 +10,10 @@ moving-window results:
 - Row pitch (view_pitch.PitchView): stitched without affine and after the RANSAC affine.
 Every row profile also shows the stitched error without any affine (SEM − design) as a reference.
 
-Optional affine stitching (D51, D52): the results of the same analysis on the affine-stitched SEM
-are added as extra lines (RegistrationView.add_rows) to both registration tabs and to the row pitch,
-and get one tab of their own, "Affine stitching": the registration view of their RANSAC residuals.
+Optional extra result sets (D52, D55), e.g. the contacts after the in-image correction or after the
+drift curve: each is drawn as extra lines (RegistrationView.add_rows) in both registration tabs (the
+moving-window tab only if it has a moving-window result) and in the row pitch (after its RANSAC
+affine), and gets one tab of its own: the registration view of its RANSAC residuals.
 """
 
 import numpy as np
@@ -40,14 +41,14 @@ class AnalysisWindow(QtWidgets.QTabWidget):
         tile_edges_y_nm=(),
         stitch_view: QtWidgets.QWidget | None = None,
         use_opengl: bool = True,
-        affine_stitching: tuple | None = None,
+        extra: dict | None = None,
     ):
         """sem_nm, design_nm: (N, 2) merged contacts in mask nm (stitched, no affine); ransac: their
         RansacResult (ransac_affine with threshold_nm and seed); moving: their MovingWindowResult for
         window_um and step_um; delay_ms: RANSAC monitor pause per step; row_gap_nm: see group_rows;
         tile_edges_y_nm: y of the tile edges for the pitch plot; stitch_view: optional first tab;
-        affine_stitching: optional (sem_nm, design_nm, ransac, moving) of the affine-stitched
-        contacts, the same analysis with the same settings."""
+        extra: optional {name: (sem_nm, design_nm, ransac, moving or None)}, other sets of contacts
+        analysed with the same settings (e.g. corrected)."""
         super().__init__()
         self.setWindowTitle(f"AffineRANSAC analysis - {len(design_nm)} contacts")
         raw = sem_nm - design_nm  # stitched SEM − design, no affine (registration_error sign)
@@ -68,21 +69,21 @@ class AnalysisWindow(QtWidgets.QTabWidget):
         self.tuner = MovingWindowTuner(sem_nm, design_nm, ransac, window_um, step_um, row_gap_nm, use_opengl,
                                        raw_error_nm=raw)
         self.addTab(self.tuner, "Moving-window tuner")
+        extra = extra or {}
         pitch_sets = {"stitched, no affine": sem_nm, "after RANSAC affine": design_nm + ransac.residuals}
-        if affine_stitching is not None:
-            affine_sem, affine_design, affine_ransac, affine_moving = affine_stitching
-            affine_raw = affine_sem - affine_design
-            self.ransac_view.add_rows(affine_design, affine_ransac.residuals, "affine stitching", affine_raw)
-            self.moving_view.add_rows(affine_design, affine_moving.residuals, "affine stitching", affine_raw)
-            pitch_sets["affine stitching, no affine"] = (affine_design, affine_sem)
-            pitch_sets["affine stitching, after RANSAC affine"] = (affine_design, affine_design + affine_ransac.residuals)
+        for name, (extra_sem, extra_design, extra_ransac, extra_moving) in extra.items():
+            extra_raw = extra_sem - extra_design
+            self.ransac_view.add_rows(extra_design, extra_ransac.residuals, name, extra_raw)
+            if extra_moving is not None:
+                self.moving_view.add_rows(extra_design, extra_moving.residuals, name, extra_raw)
+            pitch_sets[f"{name}, after RANSAC affine"] = (extra_design, extra_design + extra_ransac.residuals)
         self.pitch_view = PitchView(design_nm, pitch_sets, reference, row_gap_nm, tile_edges_y_nm, use_opengl)
         self.addTab(self.pitch_view, "Row pitch")
-        self.affine_view = None
-        if affine_stitching is not None:
-            self.affine_view = RegistrationView(affine_design, affine_ransac.residuals, reference, row_gap_nm,
-                                                use_opengl, correction="the RANSAC affine (affine-stitched SEM)",
-                                                raw_error_nm=affine_raw)
-            self.affine_view.color_bar.setLevels(self.ransac_view.color_bar.levels())  # maps compare
-            self.addTab(self.affine_view, "Affine stitching")
+        self.extra_views = {}
+        for name, (extra_sem, extra_design, extra_ransac, _) in extra.items():
+            view = RegistrationView(extra_design, extra_ransac.residuals, reference, row_gap_nm, use_opengl,
+                                    correction=f"the RANSAC affine ({name})", raw_error_nm=extra_sem - extra_design)
+            view.color_bar.setLevels(self.ransac_view.color_bar.levels())  # maps compare with the RANSAC tab
+            self.extra_views[name] = view
+            self.addTab(view, name[0].upper() + name[1:])
         self.resize(1700, 1050)

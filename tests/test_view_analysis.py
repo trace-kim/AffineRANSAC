@@ -20,11 +20,11 @@ def analysed(seed=0, n=600):
     return sem, design, ransac_affine(sem, design, threshold_nm=0.5, seed=1), moving_window_affine(sem, design, 20_000, 5_000)
 
 
-def make_window(stitch_view=None, affine_stitching=None):
+def make_window(stitch_view=None, extra=None):
     sem, design, ransac, moving = analysed()
     pg.mkQApp()
     window = AnalysisWindow(sem, design, ransac, moving, window_um=20, step_um=5, seed=1,
-                            stitch_view=stitch_view, use_opengl=False, affine_stitching=affine_stitching)
+                            stitch_view=stitch_view, use_opengl=False, extra=extra)
     return window, sem, design, ransac, moving
 
 
@@ -61,27 +61,32 @@ def line_data(plot, name):
     return item.getData()
 
 
-def test_affine_stitching_adds_lines_and_one_tab():
-    affine = analysed(seed=5, n=500)  # other contacts than the translation-stitched set
-    affine_sem, affine_design, affine_ransac, affine_moving = affine
-    window, sem, design, ransac, moving = make_window(affine_stitching=affine)
+def test_extra_sets_add_lines_and_one_tab_each():
+    corrected = analysed(seed=5, n=500)  # other contacts than the main set
+    c_sem, c_design, c_ransac, c_moving = corrected
+    d_sem, d_design, d_ransac, _ = analysed(seed=6, n=400)
+    window, sem, design, ransac, moving = make_window(
+        extra={"in-image corrected": corrected, "drift corrected": (d_sem, d_design, d_ransac, None)})
 
     tabs = [window.tabText(i) for i in range(window.count())]
     assert tabs == ["RANSAC monitor", "Registration, RANSAC", "Registration, moving window",
-                    "Moving-window tuner", "Row pitch", "Affine stitching"]
-    # The original lines stay; the affine-stitched rows are added beside them.
+                    "Moving-window tuner", "Row pitch", "In-image corrected", "Drift corrected"]
+    # The original lines stay; each set's rows are added beside them.
     np.testing.assert_allclose(window.ransac_view.error_nm, ransac.residuals)
-    expected = row_means(affine_design[:, 1], affine_ransac.residuals, 10.0)[1]
-    np.testing.assert_allclose(line_data(window.ransac_view.row_plot, "dy, affine stitching")[1], expected[:, 1])
-    expected = row_means(affine_design[:, 1], affine_moving.residuals, 10.0)[1]
-    np.testing.assert_allclose(line_data(window.moving_view.row_plot, "dx, affine stitching")[1], expected[:, 0])
-    expected = row_means(affine_design[:, 1], affine_sem - affine_design, 10.0)[1]
-    np.testing.assert_allclose(line_data(window.ransac_view.raw_plot, "dx, no affine, affine stitching")[1],
+    expected = row_means(c_design[:, 1], c_ransac.residuals, 10.0)[1]
+    np.testing.assert_allclose(line_data(window.ransac_view.row_plot, "dy, in-image corrected")[1], expected[:, 1])
+    expected = row_means(d_design[:, 1], d_sem - d_design, 10.0)[1]
+    np.testing.assert_allclose(line_data(window.ransac_view.raw_plot, "dx, no affine, drift corrected")[1],
                                expected[:, 0])
-    assert "affine stitching: 500 contacts" in window.ransac_view.label.text()
+    expected = row_means(c_design[:, 1], c_moving.residuals, 10.0)[1]
+    np.testing.assert_allclose(line_data(window.moving_view.row_plot, "dx, in-image corrected")[1], expected[:, 0])
+    moving_names = [label.text for _, label in window.moving_view.row_plot.legend.items]
+    assert not any("drift corrected" in name for name in moving_names)  # no moving-window result given
+    assert "in-image corrected: 500 contacts" in window.ransac_view.label.text()
+    assert "drift corrected: 400 contacts" in window.ransac_view.label.text()
     assert list(window.pitch_view.pitch) == ["stitched, no affine", "after RANSAC affine",
-                                             "affine stitching, no affine", "affine stitching, after RANSAC affine"]
-    # Its own tab: the affine-stitched registration error, on the same colour scale.
-    np.testing.assert_allclose(window.affine_view.error_nm, affine_ransac.residuals)
-    assert window.affine_view.color_bar.levels() == window.ransac_view.color_bar.levels()
+                                             "in-image corrected, after RANSAC affine", "drift corrected, after RANSAC affine"]
+    # Each set's own tab: its registration error, on the colour scale of the RANSAC tab.
+    np.testing.assert_allclose(window.extra_views["drift corrected"].error_nm, d_ransac.residuals)
+    assert window.extra_views["in-image corrected"].color_bar.levels() == window.ransac_view.color_bar.levels()
     window.close()

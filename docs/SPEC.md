@@ -186,6 +186,10 @@ no raw data, one row per contact, read with `io/contour_csv.py::read_contour_fol
 - **Global mask coordinates, nm**, tile centre already added, y up (user, 2026-10-06).
 - **One row = one contact:** design and SEM on a row are already paired, so they are not matched
   again (`registration.paired_errors`).
+- **Image centre (D53):** if the file also has `DesignX`, `DesignY` (the design centre relative to
+  the image centre; present in the real files), the image centre in mask nm is `DesignX_Add − DesignX`,
+  `DesignY_Add − DesignY` (`ContourCsvTile.center_nm`; NaN without these columns). It is exact for
+  partial tiles too, unlike the box centre; the in-image distortion map needs it.
 - **No metadata CSV** in these folders (user): each tile's box (centre and size) is the bounding
   box of its design centres grown by a margin (`pipeline.tile_boxes_from_points`, notebook
   `TILE_MARGIN_NM` = 25 nm), passed to `stitch_tiles` as centres and FOVs, so two tiles overlap
@@ -399,6 +403,34 @@ affine-stitched; the design keeps its translation stitching. Result: (n_tiles, 3
 nominal mask nm → stitched mask nm. A tile correction is a shift (2,) or an affine (3, 3)
 (`stitching.apply_correction`), accepted by `design_errors` and `paired_errors`.
 `pipeline.tie_residuals()` gives `T_i(a) − T_j(b)` of every tie after either stitching.
+**Not used by the notebooks any more (D53):** on real data (long columns of ~250 tiles) the
+per-tile affine turned a consistent apparent relative scale in every overlap, caused by a
+sub-nanometre distortion shared by all images, into a tile-scale ramp along each column (several %)
+and µm-sized parabolic tile shifts. Overlaps only measure scale relative to the neighbours, so a
+per-tile scale integrates any such bias; a synthetic mosaic with one shared bow and no per-tile
+differences reproduces it. The functions stay in the library (tested); a per-tile model needs a
+constraint before it is used on long stripes.
+
+**In-image (intrafield) distortion map (D53).** `intrafield.py`: one distortion shared by all
+images, measured against the design and removed from every SEM point **before** stitching.
+`estimate_map(design_local, sem_local, nodes=9)`: per image, SEM − design (positions relative to
+the image centre) after that image's own affine (fit_affine, SEM → design; the affine part of the
+shared distortion is left to the global affine), on nodes × nodes nodes from edge to edge of the
+image (the overlaps lie at the edges; nothing is extrapolated there). Each node's value is a plane
+fitted to the residuals of all images nearest to it (values beyond 5 median absolute deviations
+left out), taken at the node; not a median, because the contacts can sit at a few positions away
+from the node (e.g. an image step that is a whole number of pitches). Images with fewer contacts
+than 90 % of the median are left out of the estimate (their own affine would take up part of the
+distortion) but corrected like the others. `map_shift` is bilinear between nodes;
+`correct_points(points, centre, map)` subtracts it. Mask errors at fixed places on the mask fall at
+a different place in every image and average out; **mask errors that repeat at the image spacing
+(e.g. a writer field of that size) do not, and would be removed as SEM distortion** (user concern:
+future datasets may have such fields). Checks: `overlap_slopes(points, stitch, centers)`, how
+B − A changes across each vertical / horizontal overlap (ppm; the same contact in two images, so
+mask errors cancel and the design is not used), which a correct map brings to ~0; and the map from
+the lower vs the upper half of the field (notebooks). Synthetic: a shared bow of ~0.2 nm at the
+edge, each image with its own ±300 ppm affine: map within 0.01 nm; overlap slopes −640 / +480 ppm
+→ ~0.
 
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
@@ -559,18 +591,28 @@ rows' mean design y. `view_pitch.PitchView` plots it along y for the design and 
 (notebook: stitched SEM without affine, SEM after the RANSAC affine), plus SEM − design pitch,
 with the tile edges as dotted lines.
 
-**Translation vs affine stitching (D51, D52).** Both notebooks run the affine stitching (S5) beside
-the translation stitching, compute the errors of the affine-stitched contacts (mean gauge), and RANSAC
-and the moving window on them (same settings), with `error_summary` tables side by side.
-`AnalysisWindow(..., affine_stitching=(sem_nm, design_nm, ransac, moving))` keeps its tabs and adds
-the affine-stitched results as **extra lines**: in both registration tabs the mean dx, dy per row
-after the affine and without affine (`RegistrationView.add_rows`: yellow dx, green dy, named
-"affine stitching", its summary on a second line at the top), and in the row pitch two more sets
-(`PitchView` also takes a set with its own contacts, `(design_nm, sem_nm)`, since the image
-pipeline may match a few contacts differently). One extra tab, **Affine stitching**, is the
-registration view of the affine-stitched RANSAC residuals (maps cannot be overlaid as lines), on
-the colour scale of *Registration, RANSAC*. The RANSAC monitor, the moving-window tuner and the
-image stitch viewer show the translation stitching only.
+**Drift curve along y (D54).** `fitting/drift.py`, the user's method. The mean SEM − design per row
+(`row_means`) of the translation-stitched contacts follows a straight line where the error is
+affine; drift bends it, and no affine removes a bend. `drift_curve(design_y, error, window_nm)`
+smooths the row means with a local straight-line fit (at each row, the weighted least-squares line
+through the rows within ±window/2, taken at that row; notebook `DRIFT_WINDOW_UM` = 40 µm) and also
+fits one straight line through all rows. `DriftCurve.correction(design_y)` is the **bend**, curve
+minus line, per contact; it is subtracted from the SEM positions and RANSAC is fitted again. The
+straight part stays for the global affine, so G's terms compare with the uncorrected fit. Real mask
+errors that vary smoothly along y on the scale of the window are removed too: they cannot be told
+apart from drift.
+
+**Corrected sets in the analysis window (D52, D55).** Both notebooks compute the in-image corrected
+contacts (stitched and, for the images, matched to the design again; RANSAC and moving window) and
+the drift-corrected contacts (RANSAC), with `error_summary` tables. `AnalysisWindow(..., extra={name:
+(sem_nm, design_nm, ransac, moving or None)})` keeps its tabs and adds each set as **extra lines**
+(`RegistrationView.add_rows`; 1st set yellow dx / green dy, 2nd magenta / cyan, named after the set,
+each with its summary on a line of its own): the row means after the affine and without affine in
+the RANSAC tab, in the moving-window tab if the set has a moving-window result, and the pitch after
+its RANSAC affine in the row pitch (`PitchView` also takes a set with its own contacts, `(design_nm,
+sem_nm)`). Each set also gets one tab (*In-image corrected*, *Drift corrected*): the registration
+view of its RANSAC residuals, on the colour scale of *Registration, RANSAC*. The RANSAC monitor, the
+moving-window tuner and the stitch viewers show the uncorrected translation stitching.
 
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
@@ -793,6 +835,9 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D50 | 2026-10-06 | Shift candidates are scored by **mismatches** (points of either set without a partner inside the box where both are complete) instead of the number of pairs; a clear winner needs ≥ 2 fewer mismatches than every other candidate (absolute, not 10 %); `consistent_choice` keeps clear winners and lets only tied tiles follow their neighbours; a group of only tied tiles is decided by the fewest total mismatches, then the smallest median shift (the total-score rule of D49 is dropped). `match_with_shift` returns (match, tied); `DesignErrors.match_mismatches` per tile; `min_extra` replaces `tie_fraction`. | User: on the real data (patterns with missing contacts) D49 still matched the next row in places, although the missing contacts should rule that out. Cause: the missing contacts change the pair count by only a few %, far less than the D48 tie margin (10 %) and the D49 allowance (any candidate with ≥ 50 % of the best score), so the evidence was discarded and the smallest-shift / neighbour rules decided; and the neighbours could overrule a tile that clearly knew its shift. Counting pairs also mixes in how much area the sets share at each shift, which does not tell the rows apart; the D49 claim that the total pair score picks the right lattice offset relied on that and is withdrawn. Synthetic: 8 % missing contacts, offset 80 nm (> P/2) inside the same area: one row off keeps ≥ 90 % of the pairs (a former 'tie') but has > 5 mismatches, the true shift 0; independent per-tile shifts ±85 nm all recovered; periodic tiles follow decided neighbours; 7 ms per tile. |
 | D51 | 2026-10-06 | **Affine stitching** per SEM tile (`solve_tile_affines`, `stitch_tiles_affine`) beside the translation stitching, from the same pairs and inlier ties; gauge mean affine = identity as exact KKT constraints; tiny ridge on the linear part (10⁻⁶ µm²) plus a warning for tiles with collinear ties. Corrections may be shifts or affines (`apply_correction`) in `design_errors` / `paired_errors`. Shown in the analysis window (D52). Design stays translation-stitched; the stitch viewer shows translation only; affine side mean gauge only. | User: implement a full affine correction for the SEM stitching and compare it with translation stitching in the final analysis UI of `csv_stitch.ipynb` and `stitch_viewer.ipynb`. Same ties so only the tile model differs. Per-tie least squares instead of pairwise affines: strips are narrow, so pairwise affines are poorly conditioned, while all ties of a tile together (top, bottom, sides) fix its scale and skew. KKT instead of a heavy gauge weight: exact, no weight to tune. Synthetic: per-tile affines recovered up to one common affine (≤ 0.01 ppm), pure shifts reproduce the translation solution, ~1 nm tile scale/rotation errors: tie RMS 0.2 nm (shifts) → < 0.001 nm (affine). |
 | D52 | 2026-10-06 | The comparison window of D51 (`view_compare.StitchingComparison`: a Comparison tab plus one `AnalysisWindow` per stitching; `registration.stitching_summary`) is **removed**. The original `AnalysisWindow` stays as it was; the affine-stitched results are extra lines in its registration and row-pitch plots (`affine_stitching=...`, `RegistrationView.add_rows`, `PitchView` sets with their own contacts) plus one tab, *Affine stitching*. The notebooks compare the numbers with `error_summary` tables. | User: did not ask for a new tab and could not understand it; keep the original UI design, add the affine-stitched results as new lines, and maybe one tab for just the affine stitching. The tab holds what cannot be a line: the affine-stitched error maps (with their row profiles), on the RANSAC tab's colour scale so the maps compare. |
+| D53 | 2026-10-06 | **In-image distortion map** shared by all images (`intrafield.py`), from the design (per-image affine removed; node grid from edge to edge; plane per node with MAD rejection), subtracted from the SEM points before stitching; checked with the overlap slopes (design-free) and the lower/upper half maps. The contour CSV reader adds the image centre from `DesignX`/`DesignY`. The per-tile affine stitching (D51) leaves the notebooks and the UI (library kept). | Diagnosis (user asked): the per-tile affine stitching gave unrealistic results because every overlap shows the same apparent relative scale (a shared non-affine distortion of the images, sub-nm), which a per-tile scale integrates along each column; each tile fitted alone to its design has the same scale; a synthetic shared bow reproduces the failure. User: the overlaps cannot see the image centre (right: they only measure differences between the edge bands, and an overlap-only parabola underestimated the centre about 2×), so the map is measured from the design. User concern that real, periodic mask errors (writer fields of the image size) would be absorbed: a documented limit, with the design-free overlap check. On the real data the overlap slopes drop to near 0 after the correction. Node grid and plane fit instead of bin medians: bin centres left the overlap bands to extrapolation, and medians sat at the few contact positions of a bin (synthetic tests). |
+| D54 | 2026-10-06 | **Drift curve** (`fitting/drift.py`): local straight-line fit through the row means of SEM − design (window 40 µm); its bend (curve minus the straight line through all rows) is subtracted from the SEM positions before RANSAC. | User's method: the row means follow a linear trend that the global affine removes, but drift bends it; fit a curve to the translation-stitched dX/dY, subtract it from the pattern positions, then the global affine. Only the bend is subtracted, so G keeps its (physical) linear terms. Local line fit: follows local bends, no edge bias for a straight trend. Smoothly varying real mask errors are removed with it (documented). Observed on the real data: the largest remaining structure after RANSAC is a sawtooth in dy with a period that is not a whole number of tiles, created by the translation stitching (absent in the unstitched positions); cause not yet known. |
+| D55 | 2026-10-06 | `AnalysisWindow(extra={name: (sem, design, ransac, moving or None)})` replaces `affine_stitching=`: any number of corrected sets as extra lines (a colour pair per set) plus one tab each; `PitchView` shows each set after its RANSAC affine. | User: make the method available in the analysis UI; keep the original design (D52). |
 
 ---
 
@@ -816,8 +861,10 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
    synthetic data? *Partly answered (2026-10-06):* the user asked for a full per-tile affine
    stitching to compare with translation stitching on real data (D51). Synthetic note: on tiles
    without their own distortion the per-tile affine fits tie noise from the edge strips and raises
-   the 3σ (2 × 2 CSV tiles, 0.1 nm noise: 0.30 → 0.42 nm after RANSAC). Which model to keep is
-   decided from the real-data comparison.
+   the 3σ (2 × 2 CSV tiles, 0.1 nm noise: 0.30 → 0.42 nm after RANSAC). On real data it failed
+   (D53: a shared in-image distortion integrated into a tile-scale ramp); the user chose to try a
+   shared intrafield map + per-tile translation (D53), with the robustness concern that mask errors
+   repeating at the image spacing would be absorbed.
 8. **Output format** preferred by downstream tools (CSV columns, units, sign convention
    `SEM − design` vs `design − SEM`). *Tentative (user, 2026-10-02):* SEM − design, to be
    checked; set only in `registration.registration_error()` so it can be changed in one place.

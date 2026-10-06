@@ -31,6 +31,23 @@ def test_reads_the_four_columns_in_mask_nm(tmp_path):
     assert tile.dropped == 0
 
 
+def test_image_centre_from_the_local_design_columns(tmp_path):
+    center = np.array([-36003538.0, -19248000.0])
+    local = np.array([[1301.95, 1246.99], [-1301.95, 7.0]])
+    lines = ["DesignX,DesignY,SEMX,SEMY,DesignX_Add,DesignY_Add,SEMX_Add,SEMY_Add"]
+    for x, y in local:
+        gx, gy = (float(v) for v in center + [x, y])
+        lines.append(f"{x},{y},{x},{y},{gx!r},{gy!r},{gx + 0.5!r},{gy!r}")
+    (tmp_path / "c.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    tile = read_contour_csv(tmp_path / "c.csv")
+
+    np.testing.assert_allclose(tile.center_nm, center, atol=1e-6)
+    np.testing.assert_allclose(tile.sem_nm - tile.design_nm, [[0.5, 0.0]] * 2, atol=1e-6)
+    write_csv(tmp_path / "no_local.csv", [[0.0, 0.0]], [[0.0, 0.0]])  # only the global columns
+    assert np.isnan(read_contour_csv(tmp_path / "no_local.csv").center_nm).all()
+
+
 def test_rows_with_a_missing_or_text_value_are_left_out_and_counted(tmp_path):
     design = np.array([[0.0, 0.0]])
     write_csv(tmp_path / "a.csv", design, design, extra_rows=["9,5.0,6.0,x,,7.0,1", "10,5.0,abc,x,1.0,7.0,1"])

@@ -14,8 +14,9 @@ reference point (design centroid), in µm; errors in nm.
 - Reference row profile (optional, raw_error_nm): the same for the stitched SEM − design with no
   affine removed, in its own plot below (the raw error is often far larger than the residual),
   sharing the row axis.
-- Extra lines (add_rows): the row means of another set of contacts, e.g. the affine-stitched SEM,
-  in both row plots (yellow dx, green dy), with its summary on the next line.
+- Extra lines (add_rows): the row means of other sets of contacts, e.g. corrected ones, in both row
+  plots (first set yellow dx, green dy; second magenta dx, cyan dy), each with its summary on a
+  line of its own.
 """
 
 import numpy as np
@@ -30,7 +31,7 @@ from affine_ransac.registration import error_summary, row_means
 JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
                   color=[(0, 0, 128), (0, 0, 255), (0, 255, 255), (255, 255, 0), (255, 0, 0), (128, 0, 0)])
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
-EXTRA_COLORS = ("#e0c040", "#40d040")  # dx, dy of the extra lines (add_rows)
+EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0")]  # (dx, dy) of the 1st, 2nd... add_rows set
 
 
 def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: int) -> np.ndarray:
@@ -185,17 +186,18 @@ class RegistrationView(QtWidgets.QWidget):
         self.rasterize_maps()
 
     def add_rows(self, design_nm: np.ndarray, error_nm: np.ndarray, name: str, raw_error_nm: np.ndarray | None = None):
-        """Mean dx and dy per row of another set of contacts (e.g. the affine-stitched SEM; it may
-        hold other contacts than this view) as extra lines named "dx, <name>" and "dy, <name>":
+        """Mean dx and dy per row of another set of contacts (e.g. corrected; it may hold other
+        contacts than this view) as extra lines named "dx, <name>" and "dy, <name>":
         error_nm in the row profile and raw_error_nm (if given, and the reference plot exists) in
         the reference plot. Its summary is added below the summary line; the maps do not change."""
+        colors = EXTRA_COLORS[len(self.extra_summaries) % len(EXTRA_COLORS)]
         row_y, mean, _ = row_means(design_nm[:, 1], error_nm, self.row_gap_nm)
         row_um = (row_y - self.reference_nm[1]) / 1000
-        for component, (axis, color) in enumerate(zip(("dx", "dy"), EXTRA_COLORS)):
+        for component, (axis, color) in enumerate(zip(("dx", "dy"), colors)):
             self.row_plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=2), name=f"{axis}, {name}")
         if raw_error_nm is not None and self.raw_plot is not None:
             _, raw_mean, _ = row_means(design_nm[:, 1], raw_error_nm, self.row_gap_nm)
-            for component, (axis, color) in enumerate(zip(("dx", "dy"), EXTRA_COLORS)):
+            for component, (axis, color) in enumerate(zip(("dx", "dy"), colors)):
                 self.raw_plot.plot(row_um, raw_mean[:, component], name=f"{axis}, no affine, {name}",
                                    pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
         self.extra_summaries.append(f"{name}: {summary_text(error_nm)}")
