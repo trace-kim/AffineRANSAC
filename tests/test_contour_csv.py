@@ -64,6 +64,24 @@ def test_tile_boxes_are_the_bounding_boxes_of_the_points():
     np.testing.assert_allclose(sizes, [[100, 40], [0, 0]])
     with pytest.raises(ValueError, match="without points"):
         tile_boxes_from_points([np.empty((0, 2))])
+    _, grown = tile_boxes_from_points([np.array([[0.0, 0.0], [100.0, 40.0]])], margin_nm=25.0)
+    np.testing.assert_allclose(grown, [[150, 90]])
+
+
+def test_neighbours_sharing_one_column_need_the_margin():
+    # Tile A sees columns x = 0..1000, tile B x = 1000..2000: they share only the column x = 1000.
+    # B's file is 2 nm to the right, so without a margin the boxes miss each other.
+    column = np.arange(0.0, 2001.0, 100.0)
+    grid = np.array([(x, y) for x in column for y in np.arange(0.0, 1001.0, 100.0)])
+    a, b = grid[grid[:, 0] <= 1000], grid[grid[:, 0] >= 1000] + [2.0, 0.0]
+
+    with pytest.warns(UserWarning, match="could not be stitched"):
+        lost = stitch_tiles([a, b], *tile_boxes_from_points([a, b]))
+    kept = stitch_tiles([a, b], *tile_boxes_from_points([a, b], margin_nm=25.0))
+
+    assert lost.pairs == [] and lost.rejected == []
+    assert len(kept.pairs) == 1 and len(kept.pairs[0].ia) == 11  # the shared column
+    np.testing.assert_allclose(kept.corrections, [[1.0, 0.0], [-1.0, 0.0]])  # B - A = +2 nm
 
 
 # 2 x 2 tiles of 2.88 um, 2.6 um apart: ~280 nm overlap strips; contact pitch 136 nm.

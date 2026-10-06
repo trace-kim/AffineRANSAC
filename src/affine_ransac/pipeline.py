@@ -226,19 +226,22 @@ def stitch_tiles(
     return result
 
 
-def tile_boxes_from_points(points: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    """Per tile, the centre and size (n_tiles, 2 each, mask nm) of the bounding box of its points.
+def tile_boxes_from_points(points: list[np.ndarray], margin_nm: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Per tile, the centre and size (n_tiles, 2 each, mask nm) of the bounding box of its points,
+    grown by margin_nm on every side.
 
-    For tiles without a known centre and FOV, e.g. contour CSVs in mask coordinates. Passed to
-    stitch_tiles as centres and FOVs, two tiles' overlap box is then where BOTH report contacts
-    (grown by the match gate when matching), which is all stitching needs. Every tile needs at
-    least one point (leave empty tiles out first).
+    For tiles without a known centre and FOV, e.g. contour CSVs in mask coordinates; passed to
+    stitch_tiles as centres and FOVs. Without a margin, two neighbours that share only ONE row
+    (or column) of contacts get boxes that just touch or, with a few nm of file offset, miss each
+    other, and the pair is lost; a margin of about the match gate keeps it. Contacts that the
+    margin adds to an overlap box find no partner and are harmless. Every tile needs at least one
+    point (leave empty tiles out first).
     """
     empty = [k for k, p in enumerate(points) if len(p) == 0]
     if empty:
         raise ValueError(f"Tiles without points (leave them out): {empty}")
-    lows = np.array([p.min(axis=0) for p in points]).reshape(-1, 2)
-    highs = np.array([p.max(axis=0) for p in points]).reshape(-1, 2)
+    lows = np.array([p.min(axis=0) for p in points]).reshape(-1, 2) - margin_nm
+    highs = np.array([p.max(axis=0) for p in points]).reshape(-1, 2) + margin_nm
     return (lows + highs) / 2, highs - lows
 
 
