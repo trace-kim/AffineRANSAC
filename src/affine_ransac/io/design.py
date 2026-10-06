@@ -11,7 +11,7 @@ from pathlib import Path
 import klayout.db as kdb
 import numpy as np
 
-from affine_ransac.geometry.polygon import polygon_centroid  # noqa: F401 (also re-exported)
+from affine_ransac.geometry.polygon import polygon_area, polygon_centroid  # noqa: F401 (also re-exported)
 
 
 def load_layout(path: str | Path) -> kdb.Layout:
@@ -57,6 +57,24 @@ def _polygon_vertices(polygon: kdb.Polygon) -> np.ndarray:
     return np.array([(p.x, p.y) for p in polygon.each_point_hull()], dtype=np.float64)
 
 
+def _merged_polygons(layout: kdb.Layout, layer: int, datatype: int, cell_name: str | None) -> list[kdb.Polygon]:
+    """All shapes on (layer, datatype) merged: shapes that touch or overlap become one polygon."""
+    return list(kdb.Region(_shape_iterator(layout, layer, datatype, cell_name)).merged().each())
+
+
+def _area_centroid(polygon: kdb.Polygon) -> np.ndarray:
+    """Area centroid (x, y) of a KLayout polygon in database units, holes subtracted."""
+    if polygon.is_box():
+        center = polygon.bbox().center()
+        return np.array([center.x, center.y], dtype=np.float64)
+    hull = _polygon_vertices(polygon)
+    holes = [np.array([(p.x, p.y) for p in polygon.each_point_hole(i)], dtype=np.float64)
+             for i in range(polygon.holes())]
+    areas = [polygon_area(hull)] + [-polygon_area(h) for h in holes]
+    centroids = [polygon_centroid(hull)] + [polygon_centroid(h) for h in holes]
+    return np.average(centroids, axis=0, weights=areas)
+
+
 def read_contacts(
     layout: kdb.Layout,
     layer: int,
@@ -65,37 +83,23 @@ def read_contacts(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Centre and size of every contact on (layer, datatype). Use this in the pipeline.
 
-    Returns:
-        centers: (N, 2) contact centres in nm (area centroid).
-        sizes:   (N, 2) bounding-box width and height in nm.
+    A contact may be stored as several fractures (trapezoids, boxes) that touch or overlap, so
+    the shapes are merged first (KLayout boolean OR): one merged pattern = one contact.
 
-    Fast path: for a box, the centroid is simply the bounding-box centre, so no
-    vertices are extracted. Other polygons (e.g. OPC-shaped contacts) use the
-    exact area centroid. Text shapes are skipped.
+    Returns:
+        centers: (N, 2) contact centres in nm (area centroid of the merged pattern).
+        sizes:   (N, 2) bounding-box width and height of the merged pattern in nm.
+
+    Text shapes are skipped.
     """
     nm_per_dbu = layout.dbu * 1000.0  # layout.dbu is in micrometres
-    centers, sizes = [], []
-
-    it = _shape_iterator(layout, layer, datatype, cell_name)
-    while not it.at_end():
-        shape = it.shape()
-        if shape.is_box() or shape.is_polygon() or shape.is_simple_polygon() or shape.is_path():
-            box = shape.bbox().transformed(it.trans())
-            sizes.append((box.width(), box.height()))
-            if shape.is_box():
-                center = box.center()
-                centers.append((center.x, center.y))
-            else:
-                vertices = _polygon_vertices(shape.polygon.transformed(it.trans()))
-                centers.append(tuple(polygon_centroid(vertices)))
-        it.next()
-
-    if not centers:
+    merged = _merged_polygons(layout, layer, datatype, cell_name)
+    if not merged:
         return np.empty((0, 2)), np.empty((0, 2))
-    return (
-        np.array(centers, dtype=np.float64) * nm_per_dbu,
-        np.array(sizes, dtype=np.float64) * nm_per_dbu,
-    )
+
+    centers = np.array([_area_centroid(polygon) for polygon in merged])
+    sizes = np.array([(p.bbox().width(), p.bbox().height()) for p in merged], dtype=np.float64)
+    return centers * nm_per_dbu, sizes * nm_per_dbu
 
 
 def read_contacts_tone_reversed(
@@ -219,7 +223,7 @@ def merge_shapes(
             -1 for a shape with no area (it is not part of any merged polygon).
     """
     nm_per_dbu = layout.dbu * 1000.0
-    merged = list(kdb.Region(_shape_iterator(layout, layer, datatype, cell_name)).merged().each())
+    merged = _merged_polygons(layout, layer, datatype, cell_name)
 
     # Each shape lies inside exactly one merged polygon: look among those whose bounding box
     # contains the shape's bounding box, and check by overlap only if there are several.

@@ -222,3 +222,51 @@ def test_merge_shapes_joins_overlapping_and_touching(tmp_path):
     nearest = np.abs(shape_x[:, None] - pattern_x[None, :]).argmin(axis=1)
     np.testing.assert_array_equal(labels, nearest)
     assert sorted(np.bincount(labels)) == [2, 2, 3]
+
+
+def test_read_contacts_merges_fractures(tmp_path):
+    # write_fractured: 3 overlapping boxes, 2 touching boxes, 2 copies of one box (via a cell).
+    centers, sizes = read_contacts(write_fractured(tmp_path / "f.oas"), 1, 0)
+
+    order = np.argsort(centers[:, 0])
+    np.testing.assert_allclose(centers[order], [[0, 0], [300, 0], [600, 0]], atol=1e-9)
+    np.testing.assert_allclose(sizes[order], [[100, 100], [100, 60], [50, 50]])
+
+
+def test_read_contacts_merges_trapezoid_fractures(tmp_path):
+    # An octagon-like contact centred at (40, -20) nm, stored as 3 touching trapezoids/box,
+    # placed in a child cell; and a separate square 300 nm away. dbu 0.5 nm.
+    layout = kdb.Layout()
+    layout.dbu = 0.0005
+    top, child = layout.create_cell("TOP"), layout.create_cell("C")
+    shapes = child.shapes(layout.layer(1, 0))
+    to_dbu = 2  # dbu per nm
+    pieces = [
+        [(-50, 20), (50, 20), (30, 50), (-30, 50)],      # top trapezoid
+        [(-50, -20), (50, -20), (50, 20), (-50, 20)],    # middle box
+        [(-30, -50), (30, -50), (50, -20), (-50, -20)],  # bottom trapezoid
+    ]
+    for piece in pieces:
+        shapes.insert(kdb.Polygon([kdb.Point(x * to_dbu, y * to_dbu) for x, y in piece]))
+    top.insert(kdb.CellInstArray(child.cell_index(), kdb.Trans(40 * to_dbu, -20 * to_dbu)))
+    top.shapes(layout.layer(1, 0)).insert(kdb.Box(640, -40, 680, 0))  # 20 x 20 nm at (330, -10) nm
+    path = tmp_path / "trap.oas"
+    layout.write(str(path))
+
+    centers, sizes = read_contacts(load_layout(path), 1, 0)
+
+    order = np.argsort(centers[:, 0])
+    np.testing.assert_allclose(centers[order], [[40, -20], [330, -10]], atol=1e-9)
+    np.testing.assert_allclose(sizes[order], [[100, 100], [20, 20]])
+
+
+def test_read_contacts_centroid_subtracts_holes(tmp_path):
+    # A 100 x 100 nm square with a 40 x 40 nm hole off-centre (hole centre (20, 0)).
+    # Area 10000 - 1600 = 8400; centroid x = (0 * 10000 - 20 * 1600) / 8400.
+    drawn = kdb.Polygon(kdb.Box(-50, -50, 50, 50))
+    drawn.insert_hole(kdb.Box(0, -20, 40, 20))
+    layout = write_tone_reversed(tmp_path / "hole.oas", [drawn])
+
+    centers, _ = read_contacts(layout, 1, 0)
+
+    np.testing.assert_allclose(centers, [[-20 * 1600 / 8400, 0]], atol=1e-9)

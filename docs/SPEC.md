@@ -118,16 +118,17 @@ Rules:
   it can be swapped for `gdstk` (Boost licence) if our code is ever shared (D11).
 - Pipeline entry point: `read_contacts()` (centres + sizes). `read_polygons()` is for the
   viewer only, because extracting every vertex is ~6× slower.
-- **Fractured design data (2026-10-06, user):** in the `ContourCAD/` files one contact is built
-  from several stored shapes that **overlap**. `read_contacts()` still gives one centre per stored
-  shape, so it returns several off-centre points per contact. How to get one centre per contact is
-  being checked on a real file with `notebooks/design_inspect.ipynb`, which uses the inspection
-  helpers `list_shapes()` (every stored shape) and `merge_shapes()` (union of overlapping or
-  touching shapes, plus the pattern each shape belongs to). The pipeline does not use them yet (D42).
+- **Fractured design data (2026-10-06, user):** in the `ContourCAD/` files one contact is stored
+  as several fractures (e.g. 16 trapezoids) that touch or overlap. `read_contacts()` therefore
+  **merges** all shapes on the layer first (KLayout boolean OR) and returns one centre per merged
+  pattern (D43). `notebooks/design_inspect.ipynb` shows one file's stored shapes and merged
+  patterns (`list_shapes()`, `merge_shapes()`, D42). `read_polygons()` still returns the stored
+  fractures (viewer drawing only).
 - Config selects the **top cell** and **layer/datatype**.
 - Hierarchy (cell references, arrays) is flattened.
-- For contact holes: each polygon → one design feature point = **polygon centroid**. Also keep
-  the bounding size (w, h) for classification and matching sanity checks.
+- For contact holes: each **merged pattern** (touching/overlapping shapes joined) → one design
+  feature point = its **area centroid** (holes subtracted). Also keep the bounding size (w, h) of
+  the merged pattern for classification and matching sanity checks.
 - Output: a `DesignFeatures` table with `id, x, y, w, h, kind`.
 
 ### 4.2 SEM images: JPEG
@@ -714,6 +715,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D40 | 2026-10-02 | Detection `method="band"` added (regions enclosed by the bright band, 4-connected, solidity ≥ 0.9) and made the notebook default; `classes` replaced by `method` (`"otsu"`, `"otsu3"`, `"band"`). Supersedes the rejection in D39: the solidity filter removes the pinched-off background. Detection check cell in `tile_index.ipynb`. | User: three-class Otsu still fails on the second dataset; asked for the white-band method that had been proposed. Synthetic: 16 px bands 49/49 (< 0.2 px), also with the hole interior at background grey; background pieces have solidity 0.73–0.88, holes ~1.04. |
 | D41 | 2026-10-06 | Design folder is `ContourCAD/` (was `Contour/`); `.oas` paired with its image when the file name **contains** the T001 key; no match → `None`, several → `ValueError`. Done by the remote agent (T002); contract test checks the `ContourCAD` parent folder. | User: the folder name changed and the `.oas` names now have a prefix. |
 | D42 | 2026-10-06 | Inspection helpers `list_shapes()` and `merge_shapes()` in `io/design.py`, plus `notebooks/design_inspect.ipynb` for one `.oas` file: stored shapes (kind, source cell, size, area), exact duplicates, merged patterns (shapes per pattern, overlap area, distance of shape centroids from the merged centroid), and plots of the whole file and one pattern. `read_contacts()` is unchanged until the structure is confirmed. | User: after the `ContourCAD` fix, one contact consists of several overlapping shapes, so a centre is found per fracture; wants to open a single file and check it step by step before the method is chosen. Merging (KLayout boolean OR) is the proposed fix. |
+| D43 | 2026-10-06 | `read_contacts()` merges all shapes on the layer (`Region.merged()`) and returns the area centroid (holes subtracted) and bounding size of each merged pattern, replacing one centre per stored shape. The box-only fast path is gone. The tone-reversed reader already worked on the merged region. The stitch viewer still draws every tile's whole `.oas` (stored fractures, not clipped to the FOV); fixing that is deferred. | User: one contact = 16 touching/overlapping trapezoids; the merged patterns in `design_inspect.ipynb` match one SEM contact each, no duplicates. The extra shifted "contacts" seen in the stitch viewer were neighbouring tiles' `.oas` files (they extend beyond the FOV; they disappear when the neighbours are hidden); the viewer is deferred (user). Speed: ~39 ms per file of 400 contacts × 16 trapezoids (merge 11 ms, Python centroids 25 ms), above D11's 1.2 ms but small next to SEM processing; optimise only if it matters. |
 
 ---
 
