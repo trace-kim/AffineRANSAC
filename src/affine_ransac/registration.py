@@ -101,8 +101,38 @@ def design_errors(
         nominals.append(design[i_design])
         sems.append(stitched_sem[i_sem])
 
+    return _collect(tiles, designs, nominals, sems, skipped)
+
+
+def paired_errors(
+    sem_points: list[np.ndarray],
+    design_points: list[np.ndarray],
+    sem_corrections: np.ndarray,
+    design_corrections: np.ndarray,
+) -> DesignErrors:
+    """Like design_errors, for contacts that are already paired in each tile: row k of
+    sem_points[t] is the same contact as row k of design_points[t] (e.g. read_contour_csv).
+    No matching and no tone check; tiles not stitched or without contacts are skipped (warned)."""
+    tiles, designs, nominals, sems, skipped = [], [], [], [], {}
+    for k, (sem, design) in enumerate(zip(sem_points, design_points)):
+        if len(design) == 0:
+            skipped[k] = "no contacts"
+        elif np.isnan(sem_corrections[k]).any():
+            skipped[k] = "SEM tile not stitched"
+        elif np.isnan(design_corrections[k]).any():
+            skipped[k] = "design tile not stitched"
+        else:
+            tiles.append(np.full(len(design), k))
+            designs.append(design + design_corrections[k])
+            nominals.append(design)
+            sems.append(sem + sem_corrections[k])
+    return _collect(tiles, designs, nominals, sems, skipped)
+
+
+def _collect(tiles, designs, nominals, sems, skipped) -> DesignErrors:
+    """DesignErrors from per-tile lists of observations; warns about the skipped tiles."""
     if skipped:
-        warnings.warn(f"{len(skipped)} tile(s) not measured (no error computed): {skipped}", stacklevel=2)
+        warnings.warn(f"{len(skipped)} tile(s) not measured (no error computed): {skipped}", stacklevel=3)
 
     def join(parts):
         return np.concatenate(parts) if parts else np.empty((0, 2))

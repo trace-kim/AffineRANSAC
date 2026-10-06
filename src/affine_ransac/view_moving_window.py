@@ -72,9 +72,11 @@ class MovingWindowTuner(QtWidgets.QWidget):
         step_um: float = 5.0,
         row_gap_nm: float = 10.0,
         use_opengl: bool = True,
+        raw_error_nm: np.ndarray | None = None,
     ):
         """sem_nm, design_nm: (N, 2) matched contacts, mask nm; ransac: the RansacResult of the same
-        contacts (its residuals, model and reference are shown for comparison)."""
+        contacts (its residuals, model and reference are shown for comparison); raw_error_nm:
+        optional stitched SEM − design without affine, shown as a reference row profile."""
         super().__init__()
         self.setWindowTitle(f"Moving-window affine tuner - {len(design_nm)} contacts")
         self.sem_nm, self.design_nm, self.ransac = sem_nm, design_nm, ransac
@@ -87,7 +89,7 @@ class MovingWindowTuner(QtWidgets.QWidget):
 
         # Left: the registration view, with the RANSAC row means added as dashed lines.
         self.view = RegistrationView(design_nm, ransac.residuals, ransac.reference, row_gap_nm, use_opengl,
-                                     correction="the RANSAC affine")
+                                     correction="the RANSAC affine", raw_error_nm=raw_error_nm)
         row_y, ransac_rows, _ = row_means(design_nm[:, 1], ransac.residuals, row_gap_nm)
         row_um = row_y / 1000 - self.reference_um[1]
         for component, (name, color) in enumerate((("dx RANSAC", "#ff6040"), ("dy RANSAC", "#40a0ff"))):

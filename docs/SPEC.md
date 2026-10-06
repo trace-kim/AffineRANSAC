@@ -176,6 +176,21 @@ One YAML/TOML config file holds all tunables (layer, ROI, crop, detection parame
 thresholds, model choices, output paths). No magic numbers in code. Every run writes the
 resolved config to its output folder for reproducibility.
 
+### 4.5 Pre-analysed contour CSVs (alternative input)
+Some folders hold **pre-analysed contour CSV files** instead of images: one `*.csv` per image,
+no raw data, one row per contact, read with `io/contour_csv.py::read_contour_folder()` (D45).
+- Columns used: `DesignX_Add`, `DesignY_Add` (design contour centre) and `SEMX_Add`, `SEMY_Add`
+  (SEM contour centre); other columns are ignored. Rows with a missing or non-numeric value in
+  one of them are left out and counted.
+- **Global mask coordinates, nm**, tile centre already added, y up (user, 2026-10-06).
+- **One row = one contact:** design and SEM on a row are already paired, so they are not matched
+  again (`registration.paired_errors`).
+- **No metadata CSV** in these folders (user): each tile's box (centre and size) is the bounding
+  box of its design centres (`pipeline.tile_boxes_from_points`), passed to `stitch_tiles` as
+  centres and FOVs, so two tiles overlap where both report contacts.
+- After reading, SEM and design are stitched, merged, fitted and shown exactly as for the images
+  (`notebooks/csv_stitch.ipynb`).
+
 ---
 
 ## 5. Pipeline Overview
@@ -601,6 +616,7 @@ AffineRANSAC/
 │  ├─ io/
 │  │  ├─ design.py           # OASIS → DesignFeatures (wraps klayout)
 │  │  ├─ sem_image.py        # JPEG load, crop, grayscale
+│  │  ├─ contour_csv.py      # pre-analysed contour CSVs (§4.5)
 │  │  └─ metadata.py         # TileMetadataReader protocol + CSV manifest impl
 │  ├─ features/
 │  │  ├─ base.py             # Feature interface (point now, line-edge later)
@@ -716,6 +732,8 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D41 | 2026-10-06 | Design folder is `ContourCAD/` (was `Contour/`); `.oas` paired with its image when the file name **contains** the T001 key; no match → `None`, several → `ValueError`. Done by the remote agent (T002); contract test checks the `ContourCAD` parent folder. | User: the folder name changed and the `.oas` names now have a prefix. |
 | D42 | 2026-10-06 | Inspection helpers `list_shapes()` and `merge_shapes()` in `io/design.py`, plus `notebooks/design_inspect.ipynb` for one `.oas` file: stored shapes (kind, source cell, size, area), exact duplicates, merged patterns (shapes per pattern, overlap area, distance of shape centroids from the merged centroid), and plots of the whole file and one pattern. `read_contacts()` is unchanged until the structure is confirmed. | User: after the `ContourCAD` fix, one contact consists of several overlapping shapes, so a centre is found per fracture; wants to open a single file and check it step by step before the method is chosen. Merging (KLayout boolean OR) is the proposed fix. |
 | D43 | 2026-10-06 | `read_contacts()` merges all shapes on the layer (`Region.merged()`) and returns the area centroid (holes subtracted) and bounding size of each merged pattern, replacing one centre per stored shape. The box-only fast path is gone. The tone-reversed reader already worked on the merged region. The stitch viewer still draws every tile's whole `.oas` (stored fractures, not clipped to the FOV); fixing that is deferred. | User: one contact = 16 touching/overlapping trapezoids; the merged patterns in `design_inspect.ipynb` match one SEM contact each, no duplicates. The extra shifted "contacts" seen in the stitch viewer were neighbouring tiles' `.oas` files (they extend beyond the FOV; they disappear when the neighbours are hidden); the viewer is deferred (user). Speed: ~39 ms per file of 400 contacts × 16 trapezoids (merge 11 ms, Python centroids 25 ms), above D11's 1.2 ms but small next to SEM processing; optimise only if it matters. |
+| D44 | 2026-10-06 | All analysis viewers in **one tabbed window**, `view_analysis.AnalysisWindow`: an optional stitching tab (the caller's `StitchViewer`), RANSAC monitor, registration error (RANSAC and moving window), moving-window tuner, row pitch. Every registration row profile also gets a **reference plot below it: the mean error per row of the stitched contacts without any affine** (`RegistrationView(raw_error_nm=...)`), in its own plot sharing the row axis because the raw error can be far larger than the residual. `stitch_viewer.ipynb` keeps its calculation and table cells and opens the one window at the end; its row table lists the no-affine row means too. | User: the UIs ran in separate notebook cells; wants one UI for inspection, plus the x-averaged dX/dY of the stitched coordinates without affine correction as a reference next to the existing plots. |
+| D45 | 2026-10-06 | **Contour CSV input** (§4.5): `io/contour_csv.py` reads the four `_Add` columns per file; tiles without contacts are left out (listed); tile boxes from the bounding box of the design centres; SEM and design stitched with `stitch_tiles` as for the images; errors from the CSV pairing (`paired_errors`, no re-matching), then `merge_observations`, RANSAC, moving window, pitch and `AnalysisWindow` without a stitching tab (no images). `notebooks/csv_stitch.ipynb`. Synthetic check (2 × 2 tiles, known stage errors and file offsets) recovers both to < 0.1 nm. | User: folders of pre-analysed CSVs (contour centres only, no raw data) should be stitched and analysed like the image pipeline. User answers: global mask nm, rows already paired, no metadata CSV. The bounding-box tile box replaces a centre estimate with a fixed FOV, which could be off by up to half a pitch. |
 
 ---
 

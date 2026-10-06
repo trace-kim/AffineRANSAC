@@ -79,3 +79,21 @@ def test_set_errors_updates_rows_and_summary_but_keeps_the_colour_scale():
     assert "after nothing" in view.label.text()
     assert view.color_bar.levels() == levels
     view.close()
+
+
+def test_raw_reference_row_profile_is_optional_and_shares_the_row_axis():
+    view, design, result = make_view()
+    assert view.raw_plot is None
+    view.close()
+
+    sem, design, *_ = synthetic(n=600)
+    rows_y = design[:, 1].min() + 4000.0 * np.arange(5)
+    design[:, 1] = rows_y[np.arange(len(design)) % 5]
+    raw = np.zeros_like(design)
+    raw[:, 1] = 10.0 + np.arange(len(design)) % 5  # row k: dy = 10 + k nm, no affine removed
+    pg.mkQApp()
+    view = RegistrationView(design, np.zeros_like(design), design.mean(axis=0), use_opengl=False, raw_error_nm=raw)
+    np.testing.assert_allclose(view.raw_row_mean[:, 1], 10.0 + np.arange(5), atol=1e-9)
+    np.testing.assert_allclose(view.row_mean, 0)  # the corrected profile is unchanged
+    assert view.raw_plot.getViewBox().linkedView(0) is view.row_plot.getViewBox()
+    view.close()

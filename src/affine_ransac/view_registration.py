@@ -11,6 +11,9 @@ reference point (design centroid), in µm; errors in nm.
   are averaged; zoomed in, each contact is a disk of ~0.4 × the contact pitch.
 - Row profile: the mean dx and dy of the contacts of each row (registration.row_means: rows
   grouped by design y) against the row's y.
+- Reference row profile (optional, raw_error_nm): the same for the stitched SEM − design with no
+  affine removed, in its own plot below (the raw error is often far larger than the residual),
+  sharing the row axis.
 """
 
 import numpy as np
@@ -69,10 +72,12 @@ class RegistrationView(QtWidgets.QWidget):
         row_gap_nm: float = 10.0,
         use_opengl: bool = True,
         correction: str = "the RANSAC affine",
+        raw_error_nm: np.ndarray | None = None,
     ):
         """design_nm: (N, 2) contact design positions (mask nm); error_nm: (N, 2) registration error
         G(SEM) − design; reference_nm: (2,) RANSAC reference point; row_gap_nm: see group_rows;
-        correction: what G is, for the summary line."""
+        correction: what G is, for the summary line; raw_error_nm: optional (N, 2) stitched
+        SEM − design of the same contacts without any affine, shown as a reference row profile."""
         super().__init__()
         self.setWindowTitle(f"Registration error - {len(error_nm)} contacts")
         self.design_nm, self.reference_nm, self.row_gap_nm = design_nm, reference_nm, row_gap_nm
@@ -112,6 +117,9 @@ class RegistrationView(QtWidgets.QWidget):
         self.row_plot.addLine(y=0, pen=pg.mkPen("#808080", style=QtCore.Qt.PenStyle.DashLine))
         self.graphics.ci.layout.setRowStretchFactor(0, 2)
         self.graphics.ci.layout.setRowStretchFactor(1, 1)
+        self.raw_plot = None
+        if raw_error_nm is not None:
+            self._add_raw_plot(raw_error_nm)
 
         # Re-rasterize shortly after the view stops changing (zooming fires many range changes).
         self.redraw_timer = QtCore.QTimer(self)
@@ -135,6 +143,22 @@ class RegistrationView(QtWidgets.QWidget):
         low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
         self.maps[0][0].vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
         self.set_errors(error_nm, correction)
+
+    def _add_raw_plot(self, raw_error_nm: np.ndarray):
+        """Mean raw error (stitched, no affine) per row, below the row profile, same row axis."""
+        self.raw_plot = self.graphics.addPlot(row=2, col=0, colspan=3,
+                                              title="Reference: mean error per row, stitched without affine (averaged over x)")
+        self.raw_plot.setLabel("bottom", "row y − y_ref (µm)")
+        self.raw_plot.setLabel("left", "mean error (nm)")
+        self.raw_plot.addLegend(offset=(5, 5))
+        self.raw_plot.setXLink(self.row_plot)
+        self.raw_plot.addLine(y=0, pen=pg.mkPen("#808080", style=QtCore.Qt.PenStyle.DashLine))
+        row_y, self.raw_row_mean, _ = row_means(self.design_nm[:, 1], raw_error_nm, self.row_gap_nm)
+        row_um = (row_y - self.reference_nm[1]) / 1000
+        for component, (name, color) in enumerate((("dx, no affine", "#ff6040"), ("dy, no affine", "#40a0ff"))):
+            self.raw_plot.plot(row_um, self.raw_row_mean[:, component], name=name,
+                               pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
+        self.graphics.ci.layout.setRowStretchFactor(2, 1)
 
     def set_errors(self, error_nm: np.ndarray, correction: str):
         """Show new registration errors for the same contacts (the colour scale is kept, so maps

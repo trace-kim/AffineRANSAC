@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from affine_ransac.registration import design_errors, error_summary, group_rows, merge_observations, row_means, row_pitch
+from affine_ransac.registration import (design_errors, error_summary, group_rows, merge_observations, paired_errors,
+                                        row_means, row_pitch)
 
 DESIGN = np.array([(x, y) for x in np.arange(0, 500, 100.0) for y in np.arange(0, 300, 100.0)])
 
@@ -39,6 +40,24 @@ def test_tiles_not_measured_are_listed_with_the_reason_and_warned():
     assert errors.skipped == {1: "SEM tile not stitched", 2: "design tone not matched (flagged)",
                               3: "design tile not stitched", 4: "no SEM contact matched the design"}
     assert set(errors.tile) == {0}
+
+
+def test_paired_errors_keep_the_row_pairing_without_matching():
+    # Row k of SEM and design is the same contact, even where another design contact is nearer.
+    design = DESIGN
+    sem = DESIGN[::-1] + 0.5  # every SEM row far from its own design row
+    sem_corrections = np.array([[0.0, 0.0], [np.nan, np.nan], [1.0, -1.0], [0.0, 0.0]])
+    design_corrections = np.array([[0.0, 0.0], [0.0, 0.0], [0.0, 2.0], [np.nan, np.nan]])
+
+    with pytest.warns(UserWarning, match="3 tile.s. not measured"):
+        errors = paired_errors([sem] * 4 + [np.empty((0, 2))],
+                               [design] * 4 + [np.empty((0, 2))],
+                               np.vstack([sem_corrections, [0.0, 0.0]]), np.vstack([design_corrections, [0.0, 0.0]]))
+
+    assert errors.skipped == {1: "SEM tile not stitched", 3: "design tile not stitched", 4: "no contacts"}
+    np.testing.assert_allclose(errors.error_nm[errors.tile == 0], sem - design)
+    np.testing.assert_allclose(errors.error_nm[errors.tile == 2], (sem + [1.0, -1.0]) - (design + [0.0, 2.0]))
+    np.testing.assert_allclose(errors.design_nominal_nm[errors.tile == 2], design)
 
 
 def test_error_summary():

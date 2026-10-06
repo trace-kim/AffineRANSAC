@@ -9,6 +9,9 @@
   (translation) and solve one translation correction per tile. Pairs that fail to match and
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
 
+- tile_boxes_from_points(): tile centres and sizes for data without a metadata CSV (e.g. the
+  pre-analysed contour CSVs): the bounding box of the contacts each tile reports.
+
 Tile data is passed as plain arguments (paths, nm values), not as metadata records, so this
 module works with any metadata reader.
 """
@@ -221,6 +224,22 @@ def stitch_tiles(
     result = StitchResult(pairs, rejected, corrections)
     _warn_about_failures(result, label)
     return result
+
+
+def tile_boxes_from_points(points: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Per tile, the centre and size (n_tiles, 2 each, mask nm) of the bounding box of its points.
+
+    For tiles without a known centre and FOV, e.g. contour CSVs in mask coordinates. Passed to
+    stitch_tiles as centres and FOVs, two tiles' overlap box is then where BOTH report contacts
+    (grown by the match gate when matching), which is all stitching needs. Every tile needs at
+    least one point (leave empty tiles out first).
+    """
+    empty = [k for k, p in enumerate(points) if len(p) == 0]
+    if empty:
+        raise ValueError(f"Tiles without points (leave them out): {empty}")
+    lows = np.array([p.min(axis=0) for p in points]).reshape(-1, 2)
+    highs = np.array([p.max(axis=0) for p in points]).reshape(-1, 2)
+    return (lows + highs) / 2, highs - lows
 
 
 def stitch_design(
