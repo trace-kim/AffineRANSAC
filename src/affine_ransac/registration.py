@@ -75,31 +75,6 @@ def error_summary(error_nm: np.ndarray) -> dict:
     }
 
 
-def stitching_summary(contacts: MergedErrors, ransac, moving, ties_nm: np.ndarray) -> dict:
-    """Key numbers of one stitching (translation or affine), to compare stitchings side by side.
-
-    contacts: the merged contacts of that stitching; ransac, moving: their RansacResult and
-    MovingWindowResult; ties_nm: (K, 2) tie residuals after the stitching (pipeline.tie_residuals).
-    Overlap ties and spread show how well the tiles agree; the 3σ values how the registration error
-    looks without an affine, after the RANSAC affine and after the moving-window affine. nm, %.
-    """
-    tie = np.linalg.norm(ties_nm, axis=1)
-    spread = contacts.spread_nm[contacts.count > 1]
-    summary = {
-        "overlap ties RMS (nm)": float(np.sqrt((tie ** 2).mean())) if len(tie) else np.nan,
-        "overlap ties max (nm)": float(tie.max()) if len(tie) else np.nan,
-        "overlap spread median (nm)": float(np.median(spread)) if len(spread) else np.nan,
-        "overlap spread max (nm)": float(spread.max()) if len(spread) else np.nan,
-        "RANSAC inliers (%)": 100 * float(ransac.inliers.mean()),
-    }
-    for name, error in (("no affine", contacts.error_nm), ("RANSAC", ransac.residuals),
-                        ("moving window", moving.residuals)):
-        stats = error_summary(error)
-        summary[f"{name} 3σx (nm)"] = stats.get("3sigma_x_nm", np.nan)
-        summary[f"{name} 3σy (nm)"] = stats.get("3sigma_y_nm", np.nan)
-        summary[f"{name} max (nm)"] = stats.get("max_nm", np.nan)
-    return summary
-
 def design_errors(
     sem_points: list[np.ndarray],
     design_points: list[np.ndarray],

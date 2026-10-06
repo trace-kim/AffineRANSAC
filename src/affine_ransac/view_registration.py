@@ -14,6 +14,8 @@ reference point (design centroid), in µm; errors in nm.
 - Reference row profile (optional, raw_error_nm): the same for the stitched SEM − design with no
   affine removed, in its own plot below (the raw error is often far larger than the residual),
   sharing the row axis.
+- Extra lines (add_rows): the row means of another set of contacts, e.g. the affine-stitched SEM,
+  in both row plots (yellow dx, green dy), with its summary on the next line.
 """
 
 import numpy as np
@@ -28,6 +30,7 @@ from affine_ransac.registration import error_summary, row_means
 JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
                   color=[(0, 0, 128), (0, 0, 255), (0, 255, 255), (255, 255, 0), (255, 0, 0), (128, 0, 0)])
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
+EXTRA_COLORS = ("#e0c040", "#40d040")  # dx, dy of the extra lines (add_rows)
 
 
 def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: int) -> np.ndarray:
@@ -49,6 +52,13 @@ def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: in
             np.add.at(count, (y[inside], x[inside]), 1)
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(count > 0, total / count, np.nan)
+
+
+def summary_text(error_nm: np.ndarray) -> str:
+    """Count, mean, 3σ and max of the errors (N, 2), nm, for a summary line."""
+    s = error_summary(error_nm)
+    return (f"{s['count']} contacts, mean ({s.get('mean_x_nm', 0):+.3f}, {s.get('mean_y_nm', 0):+.3f}) nm, "
+            f"3σ ({s.get('3sigma_x_nm', 0):.3f}, {s.get('3sigma_y_nm', 0):.3f}) nm, max {s.get('max_nm', 0):.3f} nm")
 
 
 def colorize(grid: np.ndarray, levels) -> np.ndarray:
@@ -135,6 +145,7 @@ class RegistrationView(QtWidgets.QWidget):
 
         self.label = QtWidgets.QLabel()
         self.label.setWordWrap(True)
+        self.summary, self.extra_summaries = "", []  # label lines: this view's errors, then add_rows sets
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.label)
         layout.addWidget(self.graphics, stretch=1)
@@ -168,13 +179,27 @@ class RegistrationView(QtWidgets.QWidget):
         row_um = (self.row_y - self.reference_nm[1]) / 1000
         for curve, component in zip(self.row_curves, (0, 1)):
             curve.setData(row_um, self.row_mean[:, component])
-        summary = error_summary(error_nm)
-        self.label.setText(
-            f"Registration error after {correction}, G(SEM) − design: {summary['count']} contacts, "
-            f"mean ({summary.get('mean_x_nm', 0):+.3f}, {summary.get('mean_y_nm', 0):+.3f}) nm, "
-            f"3σ ({summary.get('3sigma_x_nm', 0):.3f}, {summary.get('3sigma_y_nm', 0):.3f}) nm, "
-            f"max {summary.get('max_nm', 0):.3f} nm; {len(self.row_y)} rows")
+        self.summary = (f"Registration error after {correction}, G(SEM) − design: {summary_text(error_nm)}; "
+                        f"{len(self.row_y)} rows")
+        self.label.setText("\n".join([self.summary] + self.extra_summaries))
         self.rasterize_maps()
+
+    def add_rows(self, design_nm: np.ndarray, error_nm: np.ndarray, name: str, raw_error_nm: np.ndarray | None = None):
+        """Mean dx and dy per row of another set of contacts (e.g. the affine-stitched SEM; it may
+        hold other contacts than this view) as extra lines named "dx, <name>" and "dy, <name>":
+        error_nm in the row profile and raw_error_nm (if given, and the reference plot exists) in
+        the reference plot. Its summary is added below the summary line; the maps do not change."""
+        row_y, mean, _ = row_means(design_nm[:, 1], error_nm, self.row_gap_nm)
+        row_um = (row_y - self.reference_nm[1]) / 1000
+        for component, (axis, color) in enumerate(zip(("dx", "dy"), EXTRA_COLORS)):
+            self.row_plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=2), name=f"{axis}, {name}")
+        if raw_error_nm is not None and self.raw_plot is not None:
+            _, raw_mean, _ = row_means(design_nm[:, 1], raw_error_nm, self.row_gap_nm)
+            for component, (axis, color) in enumerate(zip(("dx", "dy"), EXTRA_COLORS)):
+                self.raw_plot.plot(row_um, raw_mean[:, component], name=f"{axis}, no affine, {name}",
+                                   pen=pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DotLine))
+        self.extra_summaries.append(f"{name}: {summary_text(error_nm)}")
+        self.label.setText("\n".join([self.summary] + self.extra_summaries))
 
     def _link_maps(self):
         """Keep both maps on the same area (as link_views does for two plot widgets)."""

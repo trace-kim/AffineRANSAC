@@ -27,3 +27,16 @@ def test_pitch_of_each_set_and_its_difference_from_the_design():
     view.show()
     pg.mkQApp().processEvents()
     view.close()
+
+
+def test_a_set_with_its_own_contacts_is_compared_with_their_design_pitch():
+    other = DESIGN[DESIGN[:, 1] < 300]  # 3 rows only
+    sem = other.copy()
+    sem[other[:, 1] == 200, 1] += 1.0
+    pg.mkQApp()
+    view = PitchView(DESIGN, {"same": DESIGN, "other": (other, sem)}, DESIGN.mean(axis=0), use_opengl=False)
+
+    np.testing.assert_allclose(view.pitch["other"], [100, 101])
+    np.testing.assert_allclose(view.difference["other"], [0, 1])
+    np.testing.assert_allclose(view.difference["same"], 0)
+    view.close()

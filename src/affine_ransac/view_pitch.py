@@ -5,7 +5,9 @@ contacts, and the pitch is the spacing between neighbouring rows (registration.r
 at the rows' mean design y:
 - Top: the pitch of the design and of each SEM set (e.g. stitched without affine, after the RANSAC
   affine).
-- Bottom: each SEM pitch minus the design pitch.
+- Bottom: each SEM pitch minus the design pitch (of the same rows).
+A set may hold other contacts than the design given (e.g. the affine-stitched SEM): it is then
+given with its own design positions and compared with their pitch.
 Tile edges (optional) are drawn as faint vertical lines on both plots, so seams can be spotted.
 Positions relative to the reference point, in µm; pitches and differences in nm. Clicking a legend
 entry hides or shows its curve.
@@ -31,14 +33,20 @@ class PitchView(QtWidgets.QWidget):
         use_opengl: bool = True,
     ):
         """design_nm: (N, 2) contact design positions, mask nm; sem_sets: {name: (N, 2) SEM positions
-        of the same contacts}; reference_nm: (2,) reference point; row_gap_nm: see group_rows;
-        tile_edges_y_nm: y of the tile edges (mask nm)."""
+        of the same contacts, or (design_nm, sem_nm) of other contacts}; reference_nm: (2,) reference
+        point; row_gap_nm: see group_rows; tile_edges_y_nm: y of the tile edges (mask nm)."""
         super().__init__()
         self.setWindowTitle(f"Row-to-row pitch - {len(design_nm)} contacts")
         design_y = design_nm[:, 1]
         mid_y, self.design_pitch = row_pitch(design_y, design_y, row_gap_nm)
         self.mid_um = (mid_y - reference_nm[1]) / 1000
-        self.pitch = {name: row_pitch(design_y, points[:, 1], row_gap_nm)[1] for name, points in sem_sets.items()}
+        self.pitch, self.difference, set_mid_um = {}, {}, {}
+        for name, points in sem_sets.items():
+            own_design, sem = points if isinstance(points, tuple) else (design_nm, points)
+            own_mid_y, own_design_pitch = row_pitch(own_design[:, 1], own_design[:, 1], row_gap_nm)
+            self.pitch[name] = row_pitch(own_design[:, 1], sem[:, 1], row_gap_nm)[1]
+            self.difference[name] = self.pitch[name] - own_design_pitch
+            set_mid_um[name] = (own_mid_y - reference_nm[1]) / 1000
 
         self.graphics = pg.GraphicsLayoutWidget()
         if use_opengl:
@@ -60,9 +68,9 @@ class PitchView(QtWidgets.QWidget):
         self.pitch_plot.plot(self.mid_um, self.design_pitch, pen=pg.mkPen("#c0c0c0", width=2), name="design")
         lines = [f"Design: {self.describe(self.design_pitch)}"]
         for color, (name, pitch) in zip(COLORS, self.pitch.items()):
-            self.pitch_plot.plot(self.mid_um, pitch, pen=pg.mkPen(color, width=1.5), name=name)
-            difference = pitch - self.design_pitch
-            self.diff_plot.plot(self.mid_um, difference, pen=pg.mkPen(color, width=1.5), name=name)
+            self.pitch_plot.plot(set_mid_um[name], pitch, pen=pg.mkPen(color, width=1.5), name=name)
+            difference = self.difference[name]
+            self.diff_plot.plot(set_mid_um[name], difference, pen=pg.mkPen(color, width=1.5), name=name)
             lines.append(f"{name}: {self.describe(pitch)}; − design: mean {difference.mean():+.3f} nm, "
                          f"3σ {3 * difference.std():.3f} nm, max |·| {np.abs(difference).max():.3f} nm")
 

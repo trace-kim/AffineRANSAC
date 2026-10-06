@@ -97,3 +97,20 @@ def test_raw_reference_row_profile_is_optional_and_shares_the_row_axis():
     np.testing.assert_allclose(view.row_mean, 0)  # the corrected profile is unchanged
     assert view.raw_plot.getViewBox().linkedView(0) is view.row_plot.getViewBox()
     view.close()
+
+
+def test_add_rows_draws_another_set_beside_the_original_lines():
+    view, design, result = make_view()
+    other = design[::2]
+    error = np.zeros_like(other)
+    error[:, 0] = 1.5
+    view.add_rows(other, error, "affine stitching")
+
+    names = [label.text for _, label in view.row_plot.legend.items]
+    assert names[:2] == ["dx", "dy"] and names[-2:] == ["dx, affine stitching", "dy, affine stitching"]
+    item = next(sample.item for sample, label in view.row_plot.legend.items if label.text == "dx, affine stitching")
+    np.testing.assert_allclose(item.getData()[1], 1.5)
+    np.testing.assert_allclose(view.error_nm, result.residuals)  # the view's own errors are unchanged
+    first, second = view.label.text().splitlines()
+    assert first.startswith("Registration error after") and second.startswith(f"affine stitching: {len(other)} contacts")
+    view.close()

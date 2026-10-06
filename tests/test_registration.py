@@ -1,10 +1,8 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
-from affine_ransac.registration import (MergedErrors, design_errors, error_summary, group_rows, merge_observations,
-                                        paired_errors, row_means, row_pitch, stitching_summary)
+from affine_ransac.registration import (design_errors, error_summary, group_rows, merge_observations, paired_errors,
+                                        row_means, row_pitch)
 
 DESIGN = np.array([(x, y) for x in np.arange(0, 500, 100.0) for y in np.arange(0, 300, 100.0)])
 
@@ -199,20 +197,3 @@ def test_neighbours_keep_every_tile_on_the_same_row():
     # The largest difference to any neighbour; tiles without a shift give NaN and are not neighbours.
     shifts = np.array([[0.0, 0.0], [3.0, 4.0], [np.nan, np.nan], [0.0, 10.0]])
     np.testing.assert_allclose(neighbour_jumps(shifts, [(0, 1), (1, 2), (0, 3)]), [10.0, 5.0, np.nan, 10.0])
-
-
-def test_stitching_summary_from_ties_spread_and_residuals():
-    errors = np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 2.0]])
-    contacts = MergedErrors(DESIGN[:3], DESIGN[:3] + errors, errors, count=np.array([1, 2, 4]),
-                            spread_nm=np.array([0.0, 0.4, 0.8]), members=[], skipped={})
-    ransac = SimpleNamespace(inliers=np.array([True, True, False]), residuals=errors / 2)
-    moving = SimpleNamespace(residuals=errors / 4)
-
-    summary = stitching_summary(contacts, ransac, moving, ties_nm=np.array([[3.0, 4.0], [0.0, 0.0]]))
-
-    assert summary["overlap ties RMS (nm)"] == pytest.approx(np.sqrt(12.5))
-    assert summary["overlap ties max (nm)"] == 5.0
-    assert summary["overlap spread median (nm)"] == pytest.approx(0.6)  # contacts seen more than once
-    assert summary["RANSAC inliers (%)"] == pytest.approx(200 / 3)
-    assert summary["RANSAC max (nm)"] == 1.0 and summary["moving window max (nm)"] == 0.5
-    assert summary["no affine 3σy (nm)"] == pytest.approx(3 * errors[:, 1].std())
