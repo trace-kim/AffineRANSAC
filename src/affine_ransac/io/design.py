@@ -173,6 +173,77 @@ def read_polygons(
     return polygons
 
 
+def list_shapes(
+    layout: kdb.Layout,
+    layer: int,
+    datatype: int,
+    cell_name: str | None = None,
+) -> list[dict]:
+    """Every shape on (layer, datatype) as it is stored, for inspecting a file.
+
+    One dict per shape (texts skipped), hierarchy flattened:
+        kind: "box", "polygon", "path"; cell: name of the cell the shape is defined in;
+        vertices: (N, 2) outer hull in nm, placed; area_nm2: exact area (holes removed).
+    """
+    nm_per_dbu = layout.dbu * 1000.0
+    shapes = []
+
+    it = _shape_iterator(layout, layer, datatype, cell_name)
+    while not it.at_end():
+        shape = it.shape()
+        polygon = shape.polygon  # None for texts
+        if polygon is not None:
+            placed = polygon.transformed(it.trans())
+            kind = "box" if shape.is_box() else "path" if shape.is_path() else "polygon"
+            shapes.append({
+                "kind": kind,
+                "cell": layout.cell(it.cell_index()).name,
+                "vertices": _polygon_vertices(placed) * nm_per_dbu,
+                "area_nm2": placed.area() * nm_per_dbu**2,
+            })
+        it.next()
+    return shapes
+
+
+def merge_shapes(
+    layout: kdb.Layout,
+    layer: int,
+    datatype: int,
+    cell_name: str | None = None,
+) -> tuple[list[np.ndarray], np.ndarray]:
+    """Union of all shapes on (layer, datatype): overlapping or touching shapes become one.
+
+    Returns:
+        merged: list of (N, 2) outer-hull vertices in nm, one per merged pattern.
+        labels: (number of shapes,) index into merged for each shape, in list_shapes order;
+            -1 for a shape with no area (it is not part of any merged polygon).
+    """
+    nm_per_dbu = layout.dbu * 1000.0
+    merged = list(kdb.Region(_shape_iterator(layout, layer, datatype, cell_name)).merged().each())
+
+    # Each shape lies inside exactly one merged polygon: look among those whose bounding box
+    # contains the shape's bounding box, and check by overlap only if there are several.
+    boxes = np.array([(b.left, b.bottom, b.right, b.top) for b in (m.bbox() for m in merged)]).reshape(-1, 4)
+    labels = []
+    it = _shape_iterator(layout, layer, datatype, cell_name)
+    while not it.at_end():
+        polygon = it.shape().polygon  # None for texts
+        if polygon is not None:
+            placed = polygon.transformed(it.trans())
+            b = placed.bbox()
+            inside = ((boxes[:, 0] <= b.left) & (boxes[:, 1] <= b.bottom)
+                      & (boxes[:, 2] >= b.right) & (boxes[:, 3] >= b.top))
+            candidates = np.flatnonzero(inside)
+            if len(candidates) > 1:
+                candidates = [j for j in candidates
+                              if not (kdb.Region(merged[j]) & kdb.Region(placed)).is_empty()]
+            labels.append(candidates[0] if len(candidates) else -1)
+        it.next()
+
+    vertices = [_polygon_vertices(m) * nm_per_dbu for m in merged]
+    return vertices, np.array(labels, dtype=int)
+
+
 def contact_centers(polygons: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """Feature point and size for each contact polygon.
 

@@ -118,6 +118,12 @@ Rules:
   it can be swapped for `gdstk` (Boost licence) if our code is ever shared (D11).
 - Pipeline entry point: `read_contacts()` (centres + sizes). `read_polygons()` is for the
   viewer only, because extracting every vertex is ~6× slower.
+- **Fractured design data (2026-10-06, user):** in the `ContourCAD/` files one contact is built
+  from several stored shapes that **overlap**. `read_contacts()` still gives one centre per stored
+  shape, so it returns several off-centre points per contact. How to get one centre per contact is
+  being checked on a real file with `notebooks/design_inspect.ipynb`, which uses the inspection
+  helpers `list_shapes()` (every stored shape) and `merge_shapes()` (union of overlapping or
+  touching shapes, plus the pattern each shape belongs to). The pipeline does not use them yet (D42).
 - Config selects the **top cell** and **layer/datatype**.
 - Hierarchy (cell references, arrays) is flattened.
 - For contact holes: each polygon → one design feature point = **polygon centroid**. Also keep
@@ -707,6 +713,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D39 | 2026-10-02 | Contact detection option **three-class Otsu** (`detect_contacts(classes=3)`), threshold hole | background; plain Otsu stays the library default, the notebooks use 3. A band-enclosure method (bright band threshold, holes = regions enclosed by bands) was rejected. | User: on a second dataset with wider white bands Otsu detected regions inside and outside the bands; the hole interior is clearly darker than the background; bands come close but never touch. Synthetic test: 16 px bands, plain Otsu 85 regions for 49 holes, three-class 49 (< 0.1 px). Band enclosure fails the same way as plain Otsu, because the blurred gaps between nearly touching bands rise above a band threshold and close the rings. |
 | D40 | 2026-10-02 | Detection `method="band"` added (regions enclosed by the bright band, 4-connected, solidity ≥ 0.9) and made the notebook default; `classes` replaced by `method` (`"otsu"`, `"otsu3"`, `"band"`). Supersedes the rejection in D39: the solidity filter removes the pinched-off background. Detection check cell in `tile_index.ipynb`. | User: three-class Otsu still fails on the second dataset; asked for the white-band method that had been proposed. Synthetic: 16 px bands 49/49 (< 0.2 px), also with the hole interior at background grey; background pieces have solidity 0.73–0.88, holes ~1.04. |
 | D41 | 2026-10-06 | Design folder is `ContourCAD/` (was `Contour/`); `.oas` paired with its image when the file name **contains** the T001 key; no match → `None`, several → `ValueError`. Done by the remote agent (T002); contract test checks the `ContourCAD` parent folder. | User: the folder name changed and the `.oas` names now have a prefix. |
+| D42 | 2026-10-06 | Inspection helpers `list_shapes()` and `merge_shapes()` in `io/design.py`, plus `notebooks/design_inspect.ipynb` for one `.oas` file: stored shapes (kind, source cell, size, area), exact duplicates, merged patterns (shapes per pattern, overlap area, distance of shape centroids from the merged centroid), and plots of the whole file and one pattern. `read_contacts()` is unchanged until the structure is confirmed. | User: after the `ContourCAD` fix, one contact consists of several overlapping shapes, so a centre is found per fracture; wants to open a single file and check it step by step before the method is chosen. Merging (KLayout boolean OR) is the proposed fix. |
 
 ---
 

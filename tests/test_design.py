@@ -5,7 +5,9 @@ import pytest
 from affine_ransac.io.design import (
     contact_centers,
     list_layers,
+    list_shapes,
     load_layout,
+    merge_shapes,
     polygon_centroid,
     read_contacts,
     read_contacts_tone_reversed,
@@ -170,3 +172,53 @@ def test_oasis_stores_holes_as_cut_lines(tmp_path):
     polygons = read_polygons(layout, 1, 0)
     assert len(polygons) == 1
     assert [-100, -100] in polygons[0].tolist()  # the hole's corner is on the outline
+
+
+def write_fractured(path):
+    """One 100 x 100 nm contact at (0, 0) as three OVERLAPPING boxes, one 100 x 60 nm contact at
+    (300, 0) as two TOUCHING boxes, and a separate 50 x 50 nm contact at (600, 0) placed twice
+    on top of itself through a child cell. Layer 1/0, dbu 1 nm, plus a text (skipped)."""
+    layout = kdb.Layout()
+    layout.dbu = 0.001
+    top, child = layout.create_cell("TOP"), layout.create_cell("CHILD")
+    shapes = top.shapes(layout.layer(1, 0))
+    for box in [(-50, -50, 10, 50), (-20, -50, 50, 50), (-50, -10, 50, 10)]:
+        shapes.insert(kdb.Box(*box))
+    shapes.insert(kdb.Box(250, -30, 300, 30))
+    shapes.insert(kdb.Box(300, -30, 350, 30))
+    shapes.insert(kdb.Box(575, -25, 625, 25))
+    shapes.insert(kdb.Text("label", kdb.Trans()))
+    child.shapes(layout.layer(1, 0)).insert(kdb.Box(-25, -25, 25, 25))
+    top.insert(kdb.CellInstArray(child.cell_index(), kdb.Trans(600, 0)))
+    layout.write(str(path))
+    return load_layout(path)
+
+
+def test_list_shapes_reports_each_stored_shape(tmp_path):
+    shapes = list_shapes(write_fractured(tmp_path / "f.oas"), 1, 0)
+
+    assert len(shapes) == 7  # text skipped
+    assert all(s["kind"] == "box" for s in shapes)
+    assert sorted(s["cell"] for s in shapes) == ["CHILD"] + ["TOP"] * 6
+    assert sorted(s["area_nm2"] for s in shapes)[-1] == 70 * 100  # box -20..50 x -50..50 nm
+    child = next(s for s in shapes if s["cell"] == "CHILD")
+    np.testing.assert_allclose(child["vertices"].min(axis=0), [575, -25])  # placed at (600, 0)
+
+
+def test_merge_shapes_joins_overlapping_and_touching(tmp_path):
+    layout = write_fractured(tmp_path / "f.oas")
+
+    merged, labels = merge_shapes(layout, 1, 0)
+
+    assert len(merged) == 3
+    centers = sort_rows(np.array([polygon_centroid(m) for m in merged]))
+    np.testing.assert_allclose(centers, [[0, 0], [300, 0], [600, 0]], atol=1e-9)
+    # Labels follow list_shapes order (KLayout's order, not insertion order): each shape's
+    # label is the merged pattern it lies in, so 3 + 2 + 2 shapes share 3 labels.
+    shapes = list_shapes(layout, 1, 0)
+    assert len(labels) == len(shapes) == 7
+    pattern_x = np.array([polygon_centroid(m)[0] for m in merged])
+    shape_x = np.array([s["vertices"][:, 0].mean() for s in shapes])
+    nearest = np.abs(shape_x[:, None] - pattern_x[None, :]).argmin(axis=1)
+    np.testing.assert_array_equal(labels, nearest)
+    assert sorted(np.bincount(labels)) == [2, 2, 3]
