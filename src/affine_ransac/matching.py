@@ -2,11 +2,11 @@
 
 - match_points(): mutual nearest neighbours within a gate. Correct only while the offset between
   the two sets is well below half the pitch: the gate rejects pairs, it never chooses them.
-- match_with_shift(): for offsets of any size up to search_nm. Finds the shift b − a at which
-  most points line up (within tolerance_nm), then pairs with match_points at that shift (D48).
-- consistent_choice(): for many neighbouring tiles at once: picks each tile's shift among its
-  scored_shifts so that neighbours agree, and the lattice offset of the whole group by the total
-  score (D49). Replaces the per-tile smallest-shift tie-break, which failed on real data.
+- scored_shifts(): for offsets of any size up to search_nm: candidate shifts b − a, each scored
+  by its MISMATCHES, the points without a partner where both sets are complete (D50).
+- match_with_shift(): one set on its own: the candidate with the fewest mismatches (D48, D50).
+- consistent_choice(): many neighbouring tiles at once: each tile keeps a clear winner; only
+  tiles whose best candidates are tied (periodic content) follow their neighbours (D49, D50).
 """
 
 from dataclasses import dataclass
@@ -45,7 +45,12 @@ class ShiftMatch:
     ib: np.ndarray
     shift: np.ndarray   # (2,) shift b − a used for pairing, nm (NaN if nothing matched)
     score: int          # number of pairs at that shift
-    ambiguous: bool     # another candidate shift matched almost as many points (see choose_shift)
+    mismatches: int     # points without a partner inside the common box (see scored_shifts)
+    compared: int       # points (of a and b) inside the common box
+
+    @property
+    def mismatch_fraction(self) -> float:
+        return self.mismatches / self.compared if self.compared else 1.0
 
 
 def candidate_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_nm: float,
@@ -55,7 +60,7 @@ def candidate_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_n
     Every pair closer than search_nm votes for its difference b[j] − a[i]; a shift's votes are the
     differences within tolerance_nm of it. Peaks are taken greedily, each suppressing the
     differences within 2 × tolerance_nm. On a periodic array the true shift and the shifts one
-    pitch away all get many votes, so several candidates are kept and scored by choose_shift.
+    pitch away all get many votes, so several candidates are kept and scored by scored_shifts.
     """
     near = cKDTree(b).query_ball_point(a, search_nm)
     diffs = np.array([b[j] - a[i] for i, js in enumerate(near) for j in js]).reshape(-1, 2)
@@ -75,81 +80,101 @@ def candidate_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_n
     return np.array(peaks)
 
 
-def choose_shift(shifts: np.ndarray, scores: np.ndarray, tie_fraction: float = 0.1) -> tuple[int, bool]:
-    """Index of the shift to use, and whether the choice was ambiguous.
+def _in_box(points: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+    return np.all((points >= low) & (points <= high), axis=1)
 
-    Tie-break for ONE set on its own (user, D48): shifts scoring at least (1 − tie_fraction) × the
-    best score count as equally good matches; of those, the SMALLEST shift is taken. This is right
-    only while the true offset is below half the pitch; on real data neighbouring tiles then jumped
-    one row, so tiles are now chosen together by consistent_choice (D49). Ambiguous = more than
-    one shift counted as a match.
-    """
-    near_ties = np.flatnonzero(scores >= (1 - tie_fraction) * scores.max())
-    chosen = near_ties[np.argmin(np.linalg.norm(shifts[near_ties], axis=1))]
-    return int(chosen), len(near_ties) > 1
+
+def _score(a: np.ndarray, b: np.ndarray, shift: np.ndarray, tolerance_nm: float) -> ShiftMatch:
+    """Pairs at this shift and the mismatches inside the common box: the overlap of the bounding
+    boxes of a + shift and b, shrunk by tolerance_nm, where both sets should be complete."""
+    moved = a + shift
+    ia, ib = match_points(moved, b, tolerance_nm)
+    low = np.maximum(moved.min(axis=0), b.min(axis=0)) + tolerance_nm
+    high = np.minimum(moved.max(axis=0), b.max(axis=0)) - tolerance_nm
+    inside_a, inside_b = _in_box(moved, low, high), _in_box(b, low, high)
+    paired_a, paired_b = np.zeros(len(a), bool), np.zeros(len(b), bool)
+    paired_a[ia], paired_b[ib] = True, True
+    mismatches = int((inside_a & ~paired_a).sum() + (inside_b & ~paired_b).sum())
+    return ShiftMatch(ia, ib, np.asarray(shift, float), len(ia), mismatches,
+                      int(inside_a.sum() + inside_b.sum()))
 
 
 def scored_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_nm: float) -> list[ShiftMatch]:
-    """Every candidate shift of a (N, 2) against b (M, 2), refined and scored, best score first.
+    """Every candidate shift of a (N, 2) against b (M, 2), refined and scored, best first.
 
     1. candidate_shifts: shifts at which many points line up (up to search_nm).
-    2. Each is refined (mean b − a of its pairs) and scored: the number of mutual nearest pairs
-       within tolerance_nm after the shift (match_points on a + shift).
-    Candidates without any pair are left out; ambiguous is False here (set by the chooser).
+    2. Each is refined (mean b − a of its pairs, then paired again within tolerance_nm).
+    3. Scored by MISMATCHES (D50): inside the box where both sets are complete at that shift,
+       the points of either set without a partner. At the true shift that is ~0 (only failed
+       detections); one row off, every missing contact makes a point without a partner. Counting
+       pairs instead would reward how much area the two sets share, which depends on where the
+       offset comes from and can favour the wrong row.
+    Order: lowest mismatch fraction first, then most pairs. Candidates without pairs are left out.
     """
     if len(a) == 0 or len(b) == 0:
         return []
     matches = []
     for shift in candidate_shifts(a, b, search_nm, tolerance_nm):
-        ia, ib = match_points(a + shift, b, tolerance_nm)
-        if len(ia) == 0:
+        first = _score(a, b, shift, tolerance_nm)
+        if first.score == 0:
             continue
-        shift = (b[ib] - a[ia]).mean(axis=0)  # refine on the pairs, then pair again
-        ia, ib = match_points(a + shift, b, tolerance_nm)
-        matches.append(ShiftMatch(ia, ib, shift, len(ia), False))
-    return sorted(matches, key=lambda m: -m.score)
+        refined = (b[first.ib] - a[first.ia]).mean(axis=0)
+        matches.append(_score(a, b, refined, tolerance_nm))
+    return sorted(matches, key=lambda m: (m.mismatch_fraction, -m.score))
+
+
+def near_ties(matches: list[ShiftMatch], min_extra: float = 2.0) -> list[int]:
+    """Indices of the candidates (of a scored_shifts list, best first) not clearly worse than the
+    best: their extra mismatch fraction over the best, in points of the best's compared set, is
+    below min_extra. One index = a clear winner; several = tied (e.g. a fully periodic tile)."""
+    best = matches[0]
+    return [k for k, m in enumerate(matches)
+            if (m.mismatch_fraction - best.mismatch_fraction) * best.compared < min_extra]
+
+
+def choose_shift(matches: list[ShiftMatch], min_extra: float = 2.0) -> tuple[int, bool]:
+    """Index of the candidate to use for ONE set on its own, and whether it was tied.
+
+    The fewest mismatches; among near_ties the SMALLEST shift (user's rule, D48), which is right
+    only while the true offset is below half the pitch. Several tiles: use consistent_choice.
+    """
+    tied = near_ties(matches, min_extra)
+    chosen = min(tied, key=lambda k: np.linalg.norm(matches[k].shift))
+    return chosen, len(tied) > 1
 
 
 def match_with_shift(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_nm: float,
-                     tie_fraction: float = 0.1) -> ShiftMatch:
-    """One-to-one pairs between a (N, 2) and b (M, 2) offset by an unknown shift up to search_nm,
-    for ONE set on its own: the best-scoring shift of scored_shifts, near-ties broken by the
-    smallest shift (choose_shift). Several neighbouring tiles: use consistent_choice instead.
-    The shift only chooses the pairs; b[ib] − a[ia] still holds the full difference.
-    tolerance_nm must stay well below half the pitch; search_nm above the largest expected shift.
-    """
+                     min_extra: float = 2.0) -> tuple[ShiftMatch, bool]:
+    """Pairs between a (N, 2) and b (M, 2) offset by an unknown shift up to search_nm, for ONE set
+    on its own (scored_shifts, then choose_shift). Returns (match, tied); match.score == 0 and a
+    NaN shift if nothing matched. The shift only chooses the pairs; b[ib] − a[ia] keeps the full
+    difference. tolerance_nm must stay well below half the pitch."""
     matches = scored_shifts(a, b, search_nm, tolerance_nm)
     if not matches:
-        return ShiftMatch(np.empty(0, int), np.empty(0, int), np.full(2, np.nan), 0, False)
-    k, ambiguous = choose_shift(np.array([m.shift for m in matches]), np.array([m.score for m in matches]),
-                                tie_fraction)
-    chosen = matches[k]
-    return ShiftMatch(chosen.ia, chosen.ib, chosen.shift, chosen.score, ambiguous)
+        return ShiftMatch(np.empty(0, int), np.empty(0, int), np.full(2, np.nan), 0, 0, 0), False
+    k, tied = choose_shift(matches, min_extra)
+    return matches[k], tied
 
 
 def consistent_choice(candidates: list[list[ShiftMatch]], neighbours: list[tuple[int, int]],
-                      min_score_fraction: float = 0.5, passes: int = 20) -> np.ndarray:
-    """One candidate shift per tile such that neighbouring tiles agree (D49).
+                      min_extra: float = 2.0, passes: int = 20) -> np.ndarray:
+    """One candidate shift per tile (D49, D50).
 
     candidates: per tile, its scored_shifts (best first; [] = no candidate); neighbours: (i, j)
-    pairs of overlapping tiles. A tile may only use candidates scoring at least
-    min_score_fraction × its best score. On a periodic array a tile's candidates lie about one
-    pitch apart, while neighbours' true shifts differ by far less, so agreeing with the neighbours
-    fixes the choice up to ONE lattice offset per connected group of tiles ("branch"):
-
-    1. Per group, start from the tile with the most matched points (the seed), once for each of
-       its allowed candidates, and spread outwards: each tile takes the candidate closest to the
-       mean of its already decided neighbours; then every tile re-takes the candidate closest to
-       the median of all its neighbours until nothing changes.
-    2. Of these solutions the one with the highest TOTAL score wins: at the wrong lattice offset
-       every tile loses an edge row, so the sum over many tiles decides clearly where one tile
-       alone could not. Equal totals: the smaller median shift.
-    Tiles without neighbours keep their best-scoring candidate. Returns (n_tiles,) indices into
-    each tile's candidates; -1 for tiles without candidates.
+    pairs of overlapping tiles.
+    1. A tile whose best candidate is a clear winner (near_ties has one entry) keeps it: its own
+       content, e.g. missing contacts, decides; neighbours never overrule it.
+    2. Tied tiles (periodic content) choose among their tied candidates the one closest to the
+       mean of their already decided neighbours, spreading out from the decided tiles; then they
+       re-choose (closest to the median of all neighbours) until nothing changes.
+    3. A connected group of tied tiles without any decided tile is solved from its tile with the
+       most pairs, once for each of its tied candidates; the solution with the fewest total
+       mismatches wins, equal: the smallest median shift (the user's rule, for the whole group).
+    Tiles without neighbours: choose_shift. Returns (n_tiles,) indices into each tile's
+    candidates; -1 for tiles without candidates.
     """
     n = len(candidates)
-    allowed = [[k for k, m in enumerate(c) if m.score >= min_score_fraction * c[0].score] if c else []
-               for c in candidates]
+    allowed = [near_ties(c, min_extra) if c else [] for c in candidates]
     adjacent = [[] for _ in range(n)]
     for i, j in neighbours:
         if allowed[i] and allowed[j]:
@@ -162,20 +187,20 @@ def consistent_choice(candidates: list[list[ShiftMatch]], neighbours: list[tuple
     def closest(t, target):
         return min(allowed[t], key=lambda k: np.linalg.norm(shift(t, k) - target))
 
-    def spread(group, seed, seed_choice):
-        choice = {seed: seed_choice}
-        queue = [seed]
+    def spread(group, fixed):
+        """fixed: {tile: candidate} decided up front; the other tiles follow their neighbours."""
+        choice = dict(fixed)
+        queue = list(fixed)
         while queue:
             t = queue.pop(0)
             for u in adjacent[t]:
                 if u not in choice:
-                    decided = [shift(v, choice[v]) for v in adjacent[u] if v in choice]
-                    choice[u] = closest(u, np.mean(decided, axis=0))
+                    choice[u] = closest(u, np.mean([shift(v, choice[v]) for v in adjacent[u] if v in choice], axis=0))
                     queue.append(u)
         for _ in range(passes):
             changed = False
             for t in group:
-                if adjacent[t]:
+                if t not in fixed:
                     best = closest(t, np.median([shift(v, choice[v]) for v in adjacent[t]], axis=0))
                     changed |= best != choice[t]
                     choice[t] = best
@@ -197,14 +222,21 @@ def consistent_choice(candidates: list[list[ShiftMatch]], neighbours: list[tuple
                 if not seen[u]:
                     seen[u] = True
                     queue.append(u)
-        seed = max(group, key=lambda t: candidates[t][0].score)
-        solutions = []
-        for k in allowed[seed]:
-            choice = spread(group, seed, k)
-            total = sum(candidates[t][choice[t]].score for t in group)
-            median_shift = np.linalg.norm(np.median([shift(t, choice[t]) for t in group], axis=0))
-            solutions.append((-total, median_shift, choice))
-        _, _, best = min(solutions, key=lambda s: (s[0], s[1]))
+        if len(group) == 1:
+            result[start] = choose_shift(candidates[start], min_extra)[0]
+            continue
+        decided = {t: allowed[t][0] for t in group if len(allowed[t]) == 1}
+        if decided:
+            best = spread(group, decided)
+        else:
+            seed = max(group, key=lambda t: candidates[t][0].score)
+            solutions = []
+            for k in allowed[seed]:
+                choice = spread(group, {seed: k})
+                total = sum(candidates[t][choice[t]].mismatches for t in group)
+                median_shift = np.linalg.norm(np.median([shift(t, choice[t]) for t in group], axis=0))
+                solutions.append((total, median_shift, choice))
+            best = min(solutions, key=lambda s: (s[0], s[1]))[2]
         for t, k in best.items():
             result[t] = k
     return result

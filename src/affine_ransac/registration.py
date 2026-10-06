@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.matching import choose_shift, consistent_choice, scored_shifts
+from affine_ransac.matching import choose_shift, consistent_choice, near_ties, scored_shifts
 from affine_ransac.stitching import connected_groups
 
 
@@ -35,12 +35,16 @@ class DesignErrors:
     design_nominal_nm: np.ndarray  # (N, 2) design centre at the nominal placement (for grouping)
     skipped: dict                  # tile index -> reason why it was not measured (no error computed)
     # Per tile, from the matching (design_errors only; None for paired_errors): the SEM − design
-    # shift used to choose the pairs (NaN if not matched); whether other shifts matched almost as
-    # well (near-ties, normal on a periodic array); and the largest difference from a neighbour's
+    # shift used to choose the pairs (NaN if not matched); whether other shifts matched equally well
+    # (tied: no missing contact or other feature decides, so the neighbours did); and the largest
+    # difference from a neighbour's
     # shift (NaN without matched neighbours; about one pitch = paired one row off).
     match_shift_nm: np.ndarray | None = None      # (n_tiles, 2) nm
     ambiguous: np.ndarray | None = None           # (n_tiles,) bool
     neighbour_jump_nm: np.ndarray | None = None   # (n_tiles,) nm
+    # Points without a partner at the chosen shift, where both sets are complete (NaN if not
+    # matched): ~0 = the tile matched its design exactly; more = failed detections or a wrong row.
+    match_mismatches: np.ndarray | None = None    # (n_tiles,)
 
 
 @dataclass
@@ -80,7 +84,7 @@ def design_errors(
     search_nm: float = 100.0,
     tolerance_nm: float = 10.0,
     neighbours: list[tuple[int, int]] | None = None,
-    tie_fraction: float = 0.1,
+    min_extra: float = 2.0,
 ) -> DesignErrors:
     """Raw registration error of every contact found in both the stitched SEM and the design.
 
@@ -89,10 +93,10 @@ def design_errors(
     points, e.g. one placement of stitching.placement_corrections (NaN = tile not stitched).
     design_ok: per tile, whether its design tone matched the SEM (DesignContacts.ok).
     Matching: each tile's candidate shifts (matching.scored_shifts, up to search_nm, pairs within
-    tolerance_nm after the shift). With neighbours ((i, j) pairs of overlapping tiles, e.g.
-    pipeline.tile_neighbours) the shifts are chosen so that neighbouring tiles agree
-    (matching.consistent_choice, D49); without, per tile (best score, near-ties: the smallest
-    shift, matching.choose_shift). The shift only chooses the pairs: each error is the full
+    tolerance_nm after the shift), scored by their mismatches (D50). A candidate with at least
+    min_extra fewer mismatches than the others wins outright. Tied tiles: with neighbours ((i, j)
+    pairs of overlapping tiles, e.g. pipeline.tile_neighbours) the one agreeing with the
+    neighbours (matching.consistent_choice, D49); without, the smallest shift (choose_shift). The shift only chooses the pairs: each error is the full
     stitched SEM − design (D48, option a).
     """
     n = len(sem_points)
@@ -110,21 +114,21 @@ def design_errors(
             if not candidates[k]:
                 skipped[k] = "no SEM contact matched the design"
 
-    ambiguous = np.array([len(c) > 1 and c[1].score >= (1 - tie_fraction) * c[0].score for c in candidates])
+    ambiguous = np.array([bool(c) and len(near_ties(c, min_extra)) > 1 for c in candidates])
     if neighbours is not None:
-        choice = consistent_choice(candidates, neighbours)
+        choice = consistent_choice(candidates, neighbours, min_extra)
     else:
-        choice = [choose_shift(np.array([m.shift for m in c]), np.array([m.score for m in c]), tie_fraction)[0]
-                  if c else -1 for c in candidates]
+        choice = [choose_shift(c, min_extra)[0] if c else -1 for c in candidates]
 
     tiles, designs, nominals, sems = [], [], [], []
     match_shift = np.full((n, 2), np.nan)
+    mismatches = np.full(n, np.nan)
     for k in range(n):
         if not candidates[k]:
             continue
         match = candidates[k][choice[k]]
         stitched_sem, stitched_design = stitched[k]
-        match_shift[k] = match.shift
+        match_shift[k], mismatches[k] = match.shift, match.mismatches
         tiles.append(np.full(len(match.ia), k))
         designs.append(stitched_design[match.ia])
         nominals.append(design_points[k][match.ia])
@@ -133,6 +137,7 @@ def design_errors(
     errors = _collect(tiles, designs, nominals, sems, skipped)
     errors.match_shift_nm, errors.ambiguous = match_shift, ambiguous
     errors.neighbour_jump_nm = neighbour_jumps(match_shift, neighbours or [])
+    errors.match_mismatches = mismatches
     return errors
 
 

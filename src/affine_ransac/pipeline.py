@@ -40,17 +40,17 @@ class DesignContacts:
     match_fraction: float   # fraction of the SEM contacts that matched a design contact
     ok: bool                # False: neither tone matched well enough (flagged), or no .oas
     # SEM − design shift found by the tone check (tile-local, nm; NaN if nothing matched), and
-    # whether the tie-break chose it among near-equal shifts (matching.match_with_shift).
+    # whether other shifts matched equally well (tied, e.g. a fully periodic tile), in which case
+    # the smallest was taken (matching.match_with_shift).
     shift_nm: np.ndarray = field(default_factory=lambda: np.full(2, np.nan))
     ambiguous: bool = False
 
 
 def matched_fraction(design: np.ndarray, sem: np.ndarray, search_nm: float, tolerance_nm: float):
-    """(fraction of the SEM points paired with a design point, ShiftMatch) after the shift search."""
-    if len(sem) == 0:
-        return 0.0, match_with_shift(design, sem, search_nm, tolerance_nm)
-    match = match_with_shift(design, sem, search_nm, tolerance_nm)
-    return match.score / len(sem), match
+    """(fraction of the SEM points paired with a design point, (ShiftMatch, tied)) after the shift
+    search."""
+    match, tied = match_with_shift(design, sem, search_nm, tolerance_nm)
+    return (match.score / len(sem) if len(sem) else 0.0), (match, tied)
 
 
 def inside_frame(centers: np.ndarray, sizes: np.ndarray, fov_nm, margin_nm: float = 1.0) -> np.ndarray:
@@ -82,7 +82,8 @@ def choose_design_contacts(
     with ok=False.
     """
     def result(centers, reversed_tone, fraction, match, ok):
-        return DesignContacts(centers, reversed_tone, fraction, ok, match.shift, match.ambiguous)
+        shift_match, tied = match
+        return DesignContacts(centers, reversed_tone, fraction, ok, shift_match.shift, tied)
 
     normal, sizes = read_contacts(layout, *layer)
     normal = normal[inside_frame(normal, sizes, fov_nm)]

@@ -150,27 +150,27 @@ def test_row_pitch_is_the_spacing_of_neighbouring_row_means():
 
 
 def test_neighbours_keep_every_tile_on_the_same_row():
-    # Mosaic whose shift drifts across half the pitch (see test_matching): per tile, some tiles
-    # pair one row off (error ~ -65 nm instead of +65 nm); with neighbours none do, and the
-    # error keeps the full shift.
+    # Every tile 80 nm off (> P / 2 = 65 nm); only the left column of tiles has missing contacts.
+    # Alone, the fully periodic tiles take -50 nm (one row off, error -50 instead of +80); with
+    # neighbours they follow the tiles their missing contacts decided, and the error keeps 80 nm.
     from test_matching import mosaic
     from affine_ransac.registration import neighbour_jumps
-    shift_x = np.linspace(45.0, 85.0, 16)
-    designs, sems, _, neighbours = mosaic(shift_x)
+    holes = np.array([0.08 if k % 4 == 0 else 0.0 for k in range(16)])
+    designs, sems, _, neighbours = mosaic(np.full(16, 80.0), holes=holes)
     zero = np.zeros((16, 2))
 
     alone = design_errors(sems, designs, zero, zero, [True] * 16, search_nm=200)
     together = design_errors(sems, designs, zero, zero, [True] * 16, search_nm=200, neighbours=neighbours)
 
-    assert (np.abs(alone.match_shift_nm[:, 0] - shift_x) > 100).any()
-    np.testing.assert_allclose(together.match_shift_nm[:, 0], shift_x, atol=0.5)
+    np.testing.assert_allclose(alone.match_shift_nm[holes == 0, 0], -50.0, atol=0.5)
+    np.testing.assert_allclose(together.match_shift_nm[:, 0], 80.0, atol=0.5)
     for k in range(16):
-        np.testing.assert_allclose(together.error_nm[together.tile == k, 0].mean(), shift_x[k], atol=0.5)
-    # Neighbours differ by up to ~11 nm here (the drift); a one-row jump is ~120 nm.
-    assert np.nanmax(together.neighbour_jump_nm) < 20
+        np.testing.assert_allclose(together.error_nm[together.tile == k, 0].mean(), 80.0, atol=0.5)
+    assert np.nanmax(together.neighbour_jump_nm) < 5
     assert np.nanmax(neighbour_jumps(alone.match_shift_nm, neighbours)) > 100
     assert np.isnan(alone.neighbour_jump_nm).all()  # no neighbours given
-    assert together.ambiguous.all()  # periodic array: near-equal shifts one pitch away
+    np.testing.assert_array_equal(together.ambiguous, holes == 0)  # tied = no missing contact decided
+    assert np.all(together.match_mismatches == 0)  # every tile matched its design exactly
     # The largest difference to any neighbour; tiles without a shift give NaN and are not neighbours.
     shifts = np.array([[0.0, 0.0], [3.0, 4.0], [np.nan, np.nan], [0.0, 10.0]])
     np.testing.assert_allclose(neighbour_jumps(shifts, [(0, 1), (1, 2), (0, 3)]), [10.0, 5.0, np.nan, 10.0])
