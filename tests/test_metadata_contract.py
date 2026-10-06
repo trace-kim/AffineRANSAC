@@ -2,7 +2,7 @@
 
 io/metadata.py is written by the remote agent and exists only on the machine with the
 real data, so these tests are skipped everywhere else. They check that its interface is
-exactly what docs/tasks/T001-tile-index-reader.md specifies, because the rest of the
+exactly what docs/tasks/T001-tile-index-reader.md specifies (pairing updated in T002), because the rest of the
 code is built against that interface without seeing the implementation.
 
 To also check the real data, set AFFINE_RANSAC_DATA_DIR to the data folder:
@@ -56,7 +56,7 @@ def test_real_data_records(records):
         assert isinstance(r.image_path, Path) and r.image_path.is_absolute() and r.image_path.is_file()
         if r.oas_path is not None:
             assert isinstance(r.oas_path, Path) and r.oas_path.is_file()
-            assert r.oas_path.parent.name == "Contour"
+            assert r.oas_path.parent.name == "ContourCAD"
         for value in (r.center_x_nm, r.center_y_nm, r.fov_x_nm, r.fov_y_nm):
             assert isinstance(value, float) and math.isfinite(value)
         for value in (r.stage_x_nm, r.stage_y_nm):

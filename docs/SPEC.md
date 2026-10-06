@@ -98,7 +98,9 @@ Rules:
 - **Each SEM image comes with its own small, pre-processed `.oas` file** covering that image.
   It is in **local coordinates centred on (0, 0) = the image centre**, i.e. the tile-local
   frame (§3). The global mask position of each file's (0, 0) is in the metadata CSV (§4.3).
-- Folder layout: `<DATA_DIR>/*.jpg` + one metadata `.csv`, and `<DATA_DIR>/Contour/*.oas`.
+- Folder layout: `<DATA_DIR>/*.jpg` + one metadata `.csv`, and `<DATA_DIR>/ContourCAD/*.oas`.
+  An `.oas` belongs to an image when its file name **contains** the image's key (the names
+  carry an extra prefix); more than one match is an error (D41, task T002).
 - **Tone reversal:** some `.oas` files draw the area *around* the holes. For those, use
   `read_contacts_tone_reversed()` (holes = frame − drawn shapes, D17). Which tone a file uses is
   decided per tile by matching against the SEM (D28, `pipeline.choose_design_contacts`): normal
@@ -704,6 +706,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D38 | 2026-10-02 | **Row-to-row pitch** along y (`row_pitch`, `PitchView`) for the design, the stitched SEM without affine and the SEM after the RANSAC affine; SEM − design pitch below; tile edges marked. Row position = plain mean y of the row's contacts. | User: the moving-window affine did not find the cause; the relative position of each row (pitch) should be compared along y for design and SEM, including the bare stitched SEM. Tile edges added to tell stitching seams from mask errors. |
 | D39 | 2026-10-02 | Contact detection option **three-class Otsu** (`detect_contacts(classes=3)`), threshold hole | background; plain Otsu stays the library default, the notebooks use 3. A band-enclosure method (bright band threshold, holes = regions enclosed by bands) was rejected. | User: on a second dataset with wider white bands Otsu detected regions inside and outside the bands; the hole interior is clearly darker than the background; bands come close but never touch. Synthetic test: 16 px bands, plain Otsu 85 regions for 49 holes, three-class 49 (< 0.1 px). Band enclosure fails the same way as plain Otsu, because the blurred gaps between nearly touching bands rise above a band threshold and close the rings. |
 | D40 | 2026-10-02 | Detection `method="band"` added (regions enclosed by the bright band, 4-connected, solidity ≥ 0.9) and made the notebook default; `classes` replaced by `method` (`"otsu"`, `"otsu3"`, `"band"`). Supersedes the rejection in D39: the solidity filter removes the pinched-off background. Detection check cell in `tile_index.ipynb`. | User: three-class Otsu still fails on the second dataset; asked for the white-band method that had been proposed. Synthetic: 16 px bands 49/49 (< 0.2 px), also with the hole interior at background grey; background pieces have solidity 0.73–0.88, holes ~1.04. |
+| D41 | 2026-10-06 | Design folder is `ContourCAD/` (was `Contour/`); `.oas` paired with its image when the file name **contains** the T001 key; no match → `None`, several → `ValueError`. Done by the remote agent (T002); contract test checks the `ContourCAD` parent folder. | User: the folder name changed and the `.oas` names now have a prefix. |
 
 ---
 
