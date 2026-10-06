@@ -1,8 +1,10 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
-from affine_ransac.registration import (design_errors, error_summary, group_rows, merge_observations, paired_errors,
-                                        row_means, row_pitch)
+from affine_ransac.registration import (MergedErrors, design_errors, error_summary, group_rows, merge_observations,
+                                        paired_errors, row_means, row_pitch, stitching_summary)
 
 DESIGN = np.array([(x, y) for x in np.arange(0, 500, 100.0) for y in np.arange(0, 300, 100.0)])
 
@@ -19,6 +21,17 @@ def test_raw_error_is_stitched_sem_minus_design():
     np.testing.assert_allclose(errors.error_nm[errors.tile == 0], np.tile([2.0, 0.0], (len(DESIGN), 1)))
     np.testing.assert_allclose(errors.error_nm[errors.tile == 1], np.tile([0.0, -2.0], (len(DESIGN), 1)))
     np.testing.assert_allclose(errors.sem_nm - errors.design_nm, errors.error_nm)
+
+
+def test_design_errors_take_affine_corrections():
+    # Tile 0 measured 0.2 % too small about the origin; its affine correction scales it back.
+    sem = [DESIGN / 1.002, DESIGN + (0.0, -2.0)]
+    corrections = np.array([np.diag([1.002, 1.002, 1.0]), np.eye(3)])
+
+    errors = design_errors(sem, [DESIGN, DESIGN], corrections, np.zeros((2, 2)), design_ok=[True, True])
+
+    np.testing.assert_allclose(errors.error_nm[errors.tile == 0], 0, atol=1e-9)
+    np.testing.assert_allclose(errors.error_nm[errors.tile == 1], np.tile([0.0, -2.0], (len(DESIGN), 1)))
 
 
 def test_large_tile_offset_is_matched_and_kept_in_the_error():
@@ -52,6 +65,18 @@ def test_tiles_not_measured_are_listed_with_the_reason_and_warned():
     assert errors.skipped == {1: "SEM tile not stitched", 2: "design tone not matched (flagged)",
                               3: "design tile not stitched", 4: "no SEM contact matched the design"}
     assert set(errors.tile) == {0}
+
+
+def test_paired_errors_take_affine_corrections():
+    # Tile 0 is corrected by a 0.1 % scale about (200, 100) and a shift; tile 1 by nothing.
+    affine = np.array([[1.001, 0.0, -0.2 + 1.0], [0.0, 1.001, -0.1], [0.0, 0.0, 1.0]])
+    identity_nan = np.full((3, 3), np.nan)
+
+    with pytest.warns(UserWarning, match="1 tile.s. not measured"):
+        errors = paired_errors([DESIGN, DESIGN], [DESIGN, DESIGN], np.array([affine, identity_nan]), np.zeros((2, 2)))
+
+    assert errors.skipped == {1: "SEM tile not stitched"}
+    np.testing.assert_allclose(errors.sem_nm, DESIGN @ affine[:2, :2].T + affine[:2, 2])
 
 
 def test_paired_errors_keep_the_row_pairing_without_matching():
@@ -174,3 +199,20 @@ def test_neighbours_keep_every_tile_on_the_same_row():
     # The largest difference to any neighbour; tiles without a shift give NaN and are not neighbours.
     shifts = np.array([[0.0, 0.0], [3.0, 4.0], [np.nan, np.nan], [0.0, 10.0]])
     np.testing.assert_allclose(neighbour_jumps(shifts, [(0, 1), (1, 2), (0, 3)]), [10.0, 5.0, np.nan, 10.0])
+
+
+def test_stitching_summary_from_ties_spread_and_residuals():
+    errors = np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 2.0]])
+    contacts = MergedErrors(DESIGN[:3], DESIGN[:3] + errors, errors, count=np.array([1, 2, 4]),
+                            spread_nm=np.array([0.0, 0.4, 0.8]), members=[], skipped={})
+    ransac = SimpleNamespace(inliers=np.array([True, True, False]), residuals=errors / 2)
+    moving = SimpleNamespace(residuals=errors / 4)
+
+    summary = stitching_summary(contacts, ransac, moving, ties_nm=np.array([[3.0, 4.0], [0.0, 0.0]]))
+
+    assert summary["overlap ties RMS (nm)"] == pytest.approx(np.sqrt(12.5))
+    assert summary["overlap ties max (nm)"] == 5.0
+    assert summary["overlap spread median (nm)"] == pytest.approx(0.6)  # contacts seen more than once
+    assert summary["RANSAC inliers (%)"] == pytest.approx(200 / 3)
+    assert summary["RANSAC max (nm)"] == 1.0 and summary["moving window max (nm)"] == 0.5
+    assert summary["no affine 3σy (nm)"] == pytest.approx(3 * errors[:, 1].std())

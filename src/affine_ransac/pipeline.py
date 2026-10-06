@@ -8,6 +8,8 @@
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
   (translation) and solve one translation correction per tile. Pairs that fail to match and
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
+- stitch_tiles_affine(): one affine per tile instead, from the same pairs and tie contacts.
+- tie_residuals(): how well the tie contacts agree after either stitching.
 
 - tile_boxes_from_points(): tile centres and sizes for data without a metadata CSV (e.g. the
   pre-analysed contour CSVs): the bounding box of the contacts each tile reports.
@@ -30,7 +32,7 @@ from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.matching import match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
-from affine_ransac.stitching import solve_tile_shifts
+from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_shifts
 
 
 @dataclass
@@ -238,6 +240,30 @@ def stitch_tiles(
     result = StitchResult(pairs, rejected, corrections)
     _warn_about_failures(result, label)
     return result
+
+
+def stitch_ties(points: list[np.ndarray], stitch: StitchResult) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Per used pair of stitch, (a, b): its inlier contacts (overlap_fit) at nominal placement in
+    tile i and in tile j, (K, 2) mask nm each."""
+    return [(points[p.i][p.ia[p.fit.inliers]], points[p.j][p.ib[p.fit.inliers]]) for p in stitch.pairs]
+
+
+def stitch_tiles_affine(points: list[np.ndarray], centers: np.ndarray, stitch: StitchResult) -> np.ndarray:
+    """Per-tile affines (n_tiles, 3, 3), nominal mask nm -> stitched (stitching.solve_tile_affines).
+
+    Uses the pairs and tie contacts of the translation stitching `stitch` of the same points
+    (stitch_tiles: its used pairs and their inlier contacts), so both stitchings see the same ties
+    and differ only in the tile model. The same tiles are left out (NaN).
+    """
+    return solve_tile_affines(len(points), [(p.i, p.j) for p in stitch.pairs], stitch_ties(points, stitch), centers)
+
+
+def tie_residuals(points: list[np.ndarray], stitch: StitchResult, corrections: np.ndarray) -> np.ndarray:
+    """(K, 2) T_i(a) − T_j(b), nm, for every tie contact of stitch (stitch_ties) after the
+    corrections: shifts (n_tiles, 2) or affines (n_tiles, 3, 3). ~0 = the tiles agree."""
+    parts = [apply_correction(a, corrections[p.i]) - apply_correction(b, corrections[p.j])
+             for p, (a, b) in zip(stitch.pairs, stitch_ties(points, stitch))]
+    return np.concatenate(parts) if parts else np.empty((0, 2))
 
 
 def tile_neighbours(centers: np.ndarray, fovs: np.ndarray) -> list[tuple[int, int]]:

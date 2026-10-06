@@ -23,7 +23,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac.matching import choose_shift, consistent_choice, near_ties, scored_shifts
-from affine_ransac.stitching import connected_groups
+from affine_ransac.stitching import apply_correction, connected_groups
 
 
 @dataclass
@@ -75,6 +75,31 @@ def error_summary(error_nm: np.ndarray) -> dict:
     }
 
 
+def stitching_summary(contacts: MergedErrors, ransac, moving, ties_nm: np.ndarray) -> dict:
+    """Key numbers of one stitching (translation or affine), to compare stitchings side by side.
+
+    contacts: the merged contacts of that stitching; ransac, moving: their RansacResult and
+    MovingWindowResult; ties_nm: (K, 2) tie residuals after the stitching (pipeline.tie_residuals).
+    Overlap ties and spread show how well the tiles agree; the 3σ values how the registration error
+    looks without an affine, after the RANSAC affine and after the moving-window affine. nm, %.
+    """
+    tie = np.linalg.norm(ties_nm, axis=1)
+    spread = contacts.spread_nm[contacts.count > 1]
+    summary = {
+        "overlap ties RMS (nm)": float(np.sqrt((tie ** 2).mean())) if len(tie) else np.nan,
+        "overlap ties max (nm)": float(tie.max()) if len(tie) else np.nan,
+        "overlap spread median (nm)": float(np.median(spread)) if len(spread) else np.nan,
+        "overlap spread max (nm)": float(spread.max()) if len(spread) else np.nan,
+        "RANSAC inliers (%)": 100 * float(ransac.inliers.mean()),
+    }
+    for name, error in (("no affine", contacts.error_nm), ("RANSAC", ransac.residuals),
+                        ("moving window", moving.residuals)):
+        stats = error_summary(error)
+        summary[f"{name} 3σx (nm)"] = stats.get("3sigma_x_nm", np.nan)
+        summary[f"{name} 3σy (nm)"] = stats.get("3sigma_y_nm", np.nan)
+        summary[f"{name} max (nm)"] = stats.get("max_nm", np.nan)
+    return summary
+
 def design_errors(
     sem_points: list[np.ndarray],
     design_points: list[np.ndarray],
@@ -89,8 +114,10 @@ def design_errors(
     """Raw registration error of every contact found in both the stitched SEM and the design.
 
     sem_points, design_points: per tile, SEM / design centres in mask nm at the nominal placement.
-    sem_corrections, design_corrections: (n_tiles, 2) corrections added to each tile's SEM / design
-    points, e.g. one placement of stitching.placement_corrections (NaN = tile not stitched).
+    sem_corrections, design_corrections: per tile, the correction applied to its SEM / design points:
+    shifts (n_tiles, 2), e.g. one placement of stitching.placement_corrections, or affines
+    (n_tiles, 3, 3), e.g. pipeline.stitch_tiles_affine (stitching.apply_correction; NaN = tile not
+    stitched).
     design_ok: per tile, whether its design tone matched the SEM (DesignContacts.ok).
     Matching: each tile's candidate shifts (matching.scored_shifts, up to search_nm, pairs within
     tolerance_nm after the shift), scored by their mismatches (D50). A candidate with at least
@@ -109,7 +136,8 @@ def design_errors(
         elif np.isnan(design_corrections[k]).any():
             skipped[k] = "design tile not stitched"
         else:
-            stitched[k] = (sem + sem_corrections[k], design + design_corrections[k])
+            stitched[k] = (apply_correction(sem, sem_corrections[k]),
+                           apply_correction(design, design_corrections[k]))
             candidates[k] = scored_shifts(stitched[k][1], stitched[k][0], search_nm, tolerance_nm)
             if not candidates[k]:
                 skipped[k] = "no SEM contact matched the design"
@@ -166,7 +194,8 @@ def paired_errors(
 ) -> DesignErrors:
     """Like design_errors, for contacts that are already paired in each tile: row k of
     sem_points[t] is the same contact as row k of design_points[t] (e.g. read_contour_csv).
-    No matching and no tone check; tiles not stitched or without contacts are skipped (warned)."""
+    No matching and no tone check; tiles not stitched or without contacts are skipped (warned).
+    Corrections: shifts or affines, as for design_errors."""
     tiles, designs, nominals, sems, skipped = [], [], [], [], {}
     for k, (sem, design) in enumerate(zip(sem_points, design_points)):
         if len(design) == 0:
@@ -177,9 +206,9 @@ def paired_errors(
             skipped[k] = "design tile not stitched"
         else:
             tiles.append(np.full(len(design), k))
-            designs.append(design + design_corrections[k])
+            designs.append(apply_correction(design, design_corrections[k]))
             nominals.append(design)
-            sems.append(sem + sem_corrections[k])
+            sems.append(apply_correction(sem, sem_corrections[k]))
     return _collect(tiles, designs, nominals, sems, skipped)
 
 

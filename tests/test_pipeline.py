@@ -5,9 +5,12 @@ import pytest
 
 from affine_ransac.io.design import load_layout
 from affine_ransac.features.contact import DetectedContacts
+from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, inside_frame,
-                                    process_tile, stitch_design, stitch_tiles)
+                                    process_tile, stitch_design, stitch_tiles, stitch_tiles_affine, tie_residuals)
 from sample_sem import render_tile
+from test_affine import known_affine
+from test_stitching import about
 
 FOV, SIZE = 720.0, 512
 LATTICE = np.array([(x, y) for x in np.arange(-1530, 1530, 90.0) for y in np.arange(-1530, 1530, 90.0)])
@@ -184,3 +187,21 @@ def test_tile_neighbours_are_the_overlapping_pairs():
     from affine_ransac.pipeline import tile_neighbours
     assert sorted(tile_neighbours(NOMINAL, np.full((4, 2), FOV))) == [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
     assert tile_neighbours(np.array([[0.0, 0.0], [5000.0, 0.0]]), np.full((2, 2), FOV)) == []
+
+
+def test_affine_stitching_removes_tile_scale_and_rotation_that_shifts_cannot():
+    # Each tile measures with its own scale / rotation (~1 nm at the tile edge) and stage error.
+    rng = np.random.default_rng(4)
+    truth = [about(known_affine(*rng.normal(0, 3000, 4), t=e), c) for e, c in zip(ERRORS, NOMINAL)]
+    points = []
+    for t, c in zip(truth, NOMINAL):
+        inside = np.all(np.abs(apply_affine(np.linalg.inv(t), LATTICE) - c) < FOV / 2 - 10, axis=1)
+        points.append(apply_affine(np.linalg.inv(t), LATTICE[inside]))  # tile reports truth^-1(p)
+    stitch = stitch_tiles(points, NOMINAL, np.full((4, 2), FOV))
+
+    affines = stitch_tiles_affine(points, NOMINAL, stitch)
+
+    rms = {name: np.sqrt((tie_residuals(points, stitch, c) ** 2).sum(axis=1).mean())
+           for name, c in (("shift", stitch.corrections), ("affine", affines))}
+    assert rms["shift"] > 0.2 and rms["affine"] < 1e-3
+    assert len(tie_residuals(points, stitch, affines)) == sum(p.fit.inliers.sum() for p in stitch.pairs)

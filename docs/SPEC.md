@@ -384,6 +384,22 @@ centres (translation per tile, no rotation; flagged tiles left out → NaN, repo
 `stitching.placement_corrections()` gives, per placement ("nominal", "mean", "first"), the
 (SEM, design) corrections; "first" fixes the first tile stitched in both.
 
+**Affine stitching (D51).** `stitching.solve_tile_affines(n_tiles, pairs, ties, centers)`: one full
+affine per tile, `T_i(p) = p + D_i (p − c_i) + t_i` (2×2 `D_i` about the tile centre `c_i`), least
+squares over every tie contact `T_i(a) − T_j(b)` (weight 1 each; with `D` = 0 this is exactly the
+translation solve, whose pair weights are the inlier counts). x and y share one sparse normal matrix
+(3 unknowns per tile and axis, `D` in nm/µm for conditioning), solved with the gauge as exact
+constraints (KKT, `scipy.sparse.linalg.spsolve`): `D_i` and `t_i` average zero over the largest
+connected group (mean tile affine = identity, D6); other tiles NaN. Tiles whose tie contacts lie on
+one line (spread across it < 10 nm) are warned about; a tiny pull of `D` towards 0 (10⁻⁶ µm²) keeps
+their unmeasured scale nominal and biases measured tiles by ~1 ppb. `pipeline.stitch_tiles_affine()`
+uses the **same pairs and inlier tie contacts** as the translation stitching (`stitch_tiles`), so
+the two differ only in the tile model; ~0.7 s for 1,500 tiles / 5,200 pairs. Only the SEM is
+affine-stitched; the design keeps its translation stitching. Result: (n_tiles, 3, 3) matrices,
+nominal mask nm → stitched mask nm. A tile correction is a shift (2,) or an affine (3, 3)
+(`stitching.apply_correction`), accepted by `design_errors` and `paired_errors`.
+`pipeline.tie_residuals()` gives `T_i(a) − T_j(b)` of every tie after either stitching.
+
 Unknowns: one affine `T_i` per tile (6 parameters each). Observations: every tie point
 `(p ∈ tile i, q ∈ tile j)` contributes `T_i(p) − T_j(q) = 0` (2 equations).
 
@@ -542,6 +558,16 @@ row position = mean y of its contacts, pitch = difference between neighbouring r
 rows' mean design y. `view_pitch.PitchView` plots it along y for the design and any SEM sets
 (notebook: stitched SEM without affine, SEM after the RANSAC affine), plus SEM − design pitch,
 with the tile edges as dotted lines.
+
+**Translation vs affine stitching (D51).** Both notebooks run the affine stitching (S5) beside the
+translation stitching, compute the errors of the affine-stitched contacts (mean gauge), RANSAC and
+the moving window on them, and compare: `registration.stitching_summary()` (overlap tie residuals,
+spread of merged overlap contacts, RANSAC inlier share, 3σ / max without affine, after RANSAC, after
+the moving window) and the RANSAC G of both. `view_compare.StitchingComparison` replaces the single
+`AnalysisWindow` at the end: optional Stitching tab, a **Comparison** tab (the summary table and the
+mean dx / dy per row of both stitchings: without affine, after RANSAC, after the moving window) and
+one full `AnalysisWindow` per stitching. The image stitch viewer still shows the translation
+stitching only.
 
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
@@ -762,6 +788,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D48 | 2026-10-06 | Design↔SEM matching (tone check and `design_errors`) by **shift search** (`matching.match_with_shift`): find the per-tile shift at which most contacts line up within `tolerance_nm` (default 10 nm, notebook `DESIGN_TOLERANCE_NM`), searched up to `search_nm` (default 100 nm, `DESIGN_SEARCH_NM`, replaces `DESIGN_MATCH_NM`); near-ties (within 10 % of the best score) → the smallest shift (`choose_shift`, tile marked ambiguous). Pairs are chosen after removing the shift; the error keeps it (option a). The shift and the ambiguous flag are kept per tile (`DesignContacts.shift_nm/ambiguous`, `DesignErrors.match_shift_nm/ambiguous`) and listed in `stitch_viewer.ipynb`. Tile↔tile overlap matching (`match_overlap`) and `tile_index.ipynb` still use plain `match_points`. | User: on new data the 40 nm gate rejected every pair; at 100 nm contacts were paired with the wrong design contact. Nearest-neighbour pairing only works for offsets below P/2, and a gate cannot choose, only reject. User's method (overlay the patterns, find the matching shift, correct it, the minimum-distance match among several) and the proposed vote are the same idea; combined: votes find the candidates, the score decides, the user's minimum-distance rule breaks near-ties. Contour shapes were not used: identical contacts add no position information over their centres. The user may later replace the tie-break with the smallest change against the adjacent tiles' shifts. Synthetic: offsets of 55 nm (P = 130 nm) paired correctly where a 100 nm gate picked wrong neighbours; a 0.6 P offset is taken as −0.4 P and flagged (documented limit). |
 | D49 | 2026-10-06 | Design↔SEM shifts in `design_errors` are chosen **for all tiles together** (`matching.consistent_choice`, `design_errors(neighbours=pipeline.tile_neighbours(...))`): each tile takes the candidate (score ≥ 50 % of its best) closest to its overlapping neighbours' shifts, and the lattice offset of each connected group is decided by the total score over its tiles; `neighbour_jump_nm` per tile (largest difference from a neighbour's shift, not the median, which hides a straight seam). The per-tile smallest-shift rule stays only for single sets (tone check). `stitch_viewer.ipynb` passes the neighbours, lists the jumps and opens the diagnostic viewer for jumps above 2 × `DESIGN_TOLERANCE_NM`. | User: on the real data the smallest-shift tie-break failed; overlaps suddenly matched the next contact row/column. User proposed the smallest change against the adjacent shifts; added: the branch of the whole group by the total score, because each tile's edge-row advantage of the true offset is small (~5 %) but adds up over many tiles, which also resolves a field-wide offset beyond P/2. Synthetic: a shift drifting 45 → 85 nm across P/2 = 65 nm (the reported failure) and a field-wide 80 nm offset are both recovered (< 0.5 nm); 529 tiles: 0.2 s for the choice. |
 | D50 | 2026-10-06 | Shift candidates are scored by **mismatches** (points of either set without a partner inside the box where both are complete) instead of the number of pairs; a clear winner needs ≥ 2 fewer mismatches than every other candidate (absolute, not 10 %); `consistent_choice` keeps clear winners and lets only tied tiles follow their neighbours; a group of only tied tiles is decided by the fewest total mismatches, then the smallest median shift (the total-score rule of D49 is dropped). `match_with_shift` returns (match, tied); `DesignErrors.match_mismatches` per tile; `min_extra` replaces `tie_fraction`. | User: on the real data (patterns with missing contacts) D49 still matched the next row in places, although the missing contacts should rule that out. Cause: the missing contacts change the pair count by only a few %, far less than the D48 tie margin (10 %) and the D49 allowance (any candidate with ≥ 50 % of the best score), so the evidence was discarded and the smallest-shift / neighbour rules decided; and the neighbours could overrule a tile that clearly knew its shift. Counting pairs also mixes in how much area the sets share at each shift, which does not tell the rows apart; the D49 claim that the total pair score picks the right lattice offset relied on that and is withdrawn. Synthetic: 8 % missing contacts, offset 80 nm (> P/2) inside the same area: one row off keeps ≥ 90 % of the pairs (a former 'tie') but has > 5 mismatches, the true shift 0; independent per-tile shifts ±85 nm all recovered; periodic tiles follow decided neighbours; 7 ms per tile. |
+| D51 | 2026-10-06 | **Affine stitching** per SEM tile (`solve_tile_affines`, `stitch_tiles_affine`) beside the translation stitching, from the same pairs and inlier ties; gauge mean affine = identity as exact KKT constraints; tiny ridge on the linear part (10⁻⁶ µm²) plus a warning for tiles with collinear ties. Corrections may be shifts or affines (`apply_correction`) in `design_errors` / `paired_errors`. Comparison: `stitching_summary` and `view_compare.StitchingComparison` (comparison tab + one `AnalysisWindow` per stitching) at the end of both notebooks. Design stays translation-stitched; the stitch viewer shows translation only; affine side mean gauge only. | User: implement a full affine correction for the SEM stitching and compare it with translation stitching in the final analysis UI of `csv_stitch.ipynb` and `stitch_viewer.ipynb`. Same ties so only the tile model differs. Per-tie least squares instead of pairwise affines: strips are narrow, so pairwise affines are poorly conditioned, while all ties of a tile together (top, bottom, sides) fix its scale and skew. KKT instead of a heavy gauge weight: exact, no weight to tune. Synthetic: per-tile affines recovered up to one common affine (≤ 0.01 ppm), pure shifts reproduce the translation solution, ~1 nm tile scale/rotation errors: tie RMS 0.2 nm (shifts) → < 0.001 nm (affine). |
 
 ---
 
@@ -782,7 +809,11 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
    sets τ and the sub-pixel method.
 7. **Tile model conditioning:** is a full per-tile affine really needed, or would a
    shared-intrafield + per-tile rigid model be acceptable if it proves more stable on
-   synthetic data?
+   synthetic data? *Partly answered (2026-10-06):* the user asked for a full per-tile affine
+   stitching to compare with translation stitching on real data (D51). Synthetic note: on tiles
+   without their own distortion the per-tile affine fits tie noise from the edge strips and raises
+   the 3σ (2 × 2 CSV tiles, 0.1 nm noise: 0.30 → 0.42 nm after RANSAC). Which model to keep is
+   decided from the real-data comparison.
 8. **Output format** preferred by downstream tools (CSV columns, units, sign convention
    `SEM − design` vs `design − SEM`). *Tentative (user, 2026-10-02):* SEM − design, to be
    checked; set only in `registration.registration_error()` so it can be changed in one place.
