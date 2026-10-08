@@ -148,11 +148,14 @@ def test_error_map_shares_zoom():
     viewer.close()
 
 
-def test_start_with_heavy_layers_off():
+def test_start_with_heavy_layers_and_non_failure_flags_off():
     _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
     shown = {layer for layer, box in viewer.layer_boxes.items() if box.isChecked()}
     assert shown == {IMAGES, DESIGN_CENTRES, REFINED_CENTRES, BOXES, ERRORS, TILE_FRAMES,
-                     FAILED, DESIGN_FAILED, UNSTITCHED, NOT_MEASURED, SPREAD}
+                     FAILED, DESIGN_FAILED, UNSTITCHED, NOT_MEASURED}
+    assert not viewer.spread_rings.isVisible()
+    viewer.layer_boxes[SPREAD].setChecked(True)
+    assert viewer.spread_rings.isVisible()
     viewer.close()
 
 

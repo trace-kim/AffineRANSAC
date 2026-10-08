@@ -14,7 +14,8 @@ stitched (these stay at their nominal position in every placement).
   view, sharing its zoom and pan, with one line per physical contact from its design position
   along its raw error, magnified by the arrow scale (registration.merge_observations: overlap
   contacts seen by several tiles are averaged; sign as in registration_error). Merged overlap
-  contacts can be ringed; a magenta ring marks a large spread between their SEM observations.
+  contacts can be ringed; a magenta ring marks a large spread between their SEM observations
+  (off at start: at the nominal placement nearly every overlap contact has one).
   It shows the errors of the selected placement. Tiles that were not measured (no error
   computed: not stitched, or design tone flagged) are framed in magenta.
 - Layers and tiles can be hidden with the check boxes on the right (hide a tile to see the
@@ -66,8 +67,10 @@ COLORS = {
     SKIPPED: "#909090", UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060",
     NOT_MEASURED: FAILURE_COLOR, MERGED: "#ffa500", SPREAD: FAILURE_COLOR,
 }
-# Off at start: many items (slow to draw); switch on in the panel. Failure markers stay on.
-HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED, MERGED}
+# Off at start: many items (slow to draw), and flags that are not failures (a large spread rings
+# nearly every overlap contact at the nominal placement); switch on in the panel. The failure
+# markers (not matched, not stitched, not measured) stay on.
+HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED, MERGED, SPREAD}
 SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by SEM corrections
 DESIGN_LAYERS = {DESIGN, DESIGN_CENTRES}                                      # moved by design corrections
 PLACEMENTS = {"nominal": "Nominal (metadata centres)", "mean": "Stitched (corrections average 0)",
