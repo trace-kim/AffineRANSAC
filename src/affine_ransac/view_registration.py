@@ -18,8 +18,8 @@ reference point (design centroid), in µm; errors in nm.
   plots (first set yellow dx, green dy; second magenta dx, cyan dy), each with its summary on a
   line of its own.
 - Show bar above the plots (instead of legends, which overflow the short row plots): per set of
-  lines its name and a dx and a dy check box with the line colour; a box shows or hides that
-  component of the set in both row plots, which then rescale in y.
+  lines its name and a dx and a dy check box with the line colour, three sets per row; a box shows
+  or hides that component of the set in both row plots, which then rescale in y.
 - External reference measurements (add_external, e.g. another tool's result, io.external): the mean
   dx and dy per row as lines with symbols in the row profile, and on the error maps a ring around
   every site in the colour of its error (maps' colour scale, white edges), sized to enclose the contact
@@ -40,8 +40,10 @@ JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
                   color=[(0, 0, 128), (0, 0, 255), (0, 255, 255), (255, 255, 0), (255, 0, 0), (128, 0, 0)])
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
 RING_PX = 3  # width of an external reference ring (its white outline is 1 px wider on each side)
+SETS_PER_ROW = 3  # Show bar
 MAIN_COLORS = ("#ff6040", "#40a0ff")  # dx, dy of the view's own contacts
-EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0"), ("#c080ff", "#a0ff60")]  # (dx, dy) of the 1st, 2nd... add_rows set
+EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0"), ("#c080ff", "#a0ff60"),  # (dx, dy) of the 1st,
+                ("#ff2020", "#3050ff")]                                                  # 2nd... add_rows set
 EXTERNAL_COLORS = [("#ffffff", "#b0b0b0"), ("#ffa0c0", "#ffd080")]  # (dx, dy) lines of the 1st, 2nd... add_external set
 
 
@@ -107,9 +109,10 @@ class RegistrationView(QtWidgets.QWidget):
         self.line_items, self.line_boxes = {}, {}  # (set name, "dx" / "dy") -> its plot lines / its check box
         self.external_rings = []  # (ring item, its outline item, their dx or dy values) per map of an add_external set
         self.dot_radius_px = 0.0  # contact disk radius on the maps, logical px (rasterize_maps)
-        self.show_bar = QtWidgets.QHBoxLayout()
-        self.show_bar.addWidget(QtWidgets.QLabel("Show:"))
-        self.show_bar.addStretch(1)
+        self.show_bar = QtWidgets.QGridLayout()  # SETS_PER_ROW sets per row: more sets add rows, not width
+        self.show_bar.addWidget(QtWidgets.QLabel("Show:"), 0, 0)
+        self.show_bar.setColumnStretch(1 + 3 * SETS_PER_ROW, 1)
+        self.show_sets = []  # names of the sets in the Show bar, in order
         self.setWindowTitle(f"Registration error - {len(error_nm)} contacts")
         self.design_nm, self.reference_nm, self.row_gap_nm = design_nm, reference_nm, row_gap_nm
         self.position_um = (design_nm - reference_nm) / 1000
@@ -207,12 +210,14 @@ class RegistrationView(QtWidgets.QWidget):
         self.label.setText("\n".join([self.summary] + self.extra_summaries))
         self.rasterize_maps()
 
-    def add_rows(self, design_nm: np.ndarray, error_nm: np.ndarray, name: str, raw_error_nm: np.ndarray | None = None):
+    def add_rows(self, design_nm: np.ndarray, error_nm: np.ndarray, name: str, raw_error_nm: np.ndarray | None = None,
+                 colors: tuple[str, str] | None = None):
         """Mean dx and dy per row of another set of contacts (e.g. corrected; it may hold other
         contacts than this view) as extra lines under `name` in the Show bar: error_nm in the row
         profile and raw_error_nm (if given, and the reference plot exists) in the reference plot.
-        Its summary is added below the summary line; the maps do not change."""
-        colors = EXTRA_COLORS[len(self.extra_summaries) % len(EXTRA_COLORS)]
+        Its summary is added below the summary line; the maps do not change. colors: (dx, dy) line
+        colours, by default the next pair of EXTRA_COLORS."""
+        colors = colors or EXTRA_COLORS[len(self.extra_summaries) % len(EXTRA_COLORS)]
         row_y, mean, _ = row_means(design_nm[:, 1], error_nm, self.row_gap_nm)
         row_um = (row_y - self.reference_nm[1]) / 1000
         for component, (axis, color) in enumerate(zip(("dx", "dy"), colors)):
@@ -274,18 +279,26 @@ class RegistrationView(QtWidgets.QWidget):
         name and box are added with its first line."""
         key = (name, axis)
         if key not in self.line_boxes:
-            if all(set_name != name for set_name, _ in self.line_boxes):
-                self.show_bar.insertWidget(self.show_bar.count() - 1, QtWidgets.QLabel(f"   {name}:"))
+            if name not in self.show_sets:  # the set's cells: its name, then its dx and dy boxes
+                self.show_sets.append(name)
+                label = QtWidgets.QLabel(f"   {name}:")
+                label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                self.show_bar.addWidget(label, *self.show_cell(name, 0))
             swatch = QtGui.QPixmap(18, 6)
             swatch.fill(QtGui.QColor(color))
             box = QtWidgets.QCheckBox(axis)
             box.setIcon(QtGui.QIcon(swatch))
             box.setChecked(True)
             box.toggled.connect(lambda shown, key=key: self.show_lines(key, shown))
-            self.show_bar.insertWidget(self.show_bar.count() - 1, box)
+            self.show_bar.addWidget(box, *self.show_cell(name, 1 + ("dx", "dy").index(axis)))
             self.line_boxes[key], self.line_items[key] = box, []
         self.line_items[key].append(line)
         line.setVisible(self.line_boxes[key].isChecked())
+
+    def show_cell(self, name: str, offset: int) -> tuple[int, int]:
+        """(row, column) in the Show bar of set `name`'s name (offset 0), dx box (1) or dy box (2)."""
+        k = self.show_sets.index(name)
+        return k // SETS_PER_ROW, 1 + 3 * (k % SETS_PER_ROW) + offset
 
     def show_lines(self, key, shown: bool):
         """Show or hide the lines of key = (set name, "dx" / "dy"); the row plots rescale in y."""

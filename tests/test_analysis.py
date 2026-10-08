@@ -21,9 +21,11 @@ FOV, PITCH = 2880.0, 136.0
 NOMINAL = np.array([(x, y) for x in (0.0, 2600.0) for y in (0.0, 2600.0, 5200.0)])
 STAGE = np.array([[1.2, -0.7], [-3.1, 2.4], [0.5, 1.5], [2.0, -2.0], [-1.0, 0.8], [0.3, -1.6]])  # SEM tile errors, nm
 FILES = np.array([[0.0, 0.0], [4.0, -3.0], [-2.0, 5.0], [1.0, 1.0], [-3.0, 2.0], [2.5, -0.5]])   # design file offsets
+BOTH = "in-image + stripe drift corrected, translation + rotation"  # the set placed with translation + rotation
+SETS = ["uncorrected", "in-image corrected", "drift corrected", "stripe drift corrected", BOTH]
 TABS = ["Stitching", "RANSAC monitor", "Registration, RANSAC", "Registration, moving window", "Moving-window tuner",
-        "Row pitch", "In-image corrected", "Drift corrected", "Stripe drift corrected", "Stripe drift curves",
-        "Stitching residuals"]
+        "Row pitch", "In-image corrected", "Drift corrected", "Stripe drift corrected", BOTH[0].upper() + BOTH[1:],
+        "Stripe drift curves", "Stitching residuals"]
 
 
 def write_contour_folder(folder, local_columns=True, noise_nm=0.1, seed=0, sem_error=None):
@@ -55,7 +57,7 @@ def test_contour_folder_runs_the_notebook_flow(tmp_path):
         result = analyse_contour_folder(tmp_path, Settings(), log=lines.append)
 
     assert result.kind == "contour CSV" and result.tile_ids == [f"CD{k:06d}" for k in range(6)]
-    assert list(result.sets) == ["uncorrected", "in-image corrected", "drift corrected", "stripe drift corrected"]
+    assert list(result.sets) == SETS
     assert list(result.stitchings) == ["raw", "in-image corrected", "stripe drift corrected",
                                        "in-image + stripe drift corrected"]
     np.testing.assert_allclose(result.stitchings["raw"].stitch.corrections, STAGE - STAGE.mean(axis=0), atol=0.1)
@@ -67,6 +69,7 @@ def test_contour_folder_runs_the_notebook_flow(tmp_path):
     assert result.stitchings["raw"].rigid.shape == (6, 3, 3)
     assert lines == result.log and lines[0] == "6 of 6 files used, " + lines[0].split(", ", 1)[1]
     assert any(line.startswith("RANSAC, stripe drift corrected") for line in lines)
+    assert result.sets[BOTH].moving is not None and any(line.startswith(f"RANSAC, {BOTH}") for line in lines)
 
     pg.mkQApp()
     window = analysis_window(result, use_opengl=False)
@@ -81,7 +84,7 @@ def test_without_image_centres_the_in_image_correction_is_left_out(tmp_path):
     lines = []
     with pytest.warns(UserWarning, match="AffineCoefficients_Summary.csv"):
         result = analyse_contour_folder(tmp_path, Settings(), log=lines.append)
-    assert "in-image corrected" not in result.sets
+    assert list(result.sets) == ["uncorrected", "drift corrected", "stripe drift corrected"]
     assert list(result.stitchings) == ["raw", "stripe drift corrected"]
     assert any("in-image correction is left out" in line for line in lines)
     pg.mkQApp()
@@ -108,6 +111,23 @@ def test_in_image_and_stripe_drift_corrections_together_leave_only_the_noise_in_
     assert max(rms["in-image corrected"], rms["stripe drift corrected"]) < rms["raw"], rms
 
 
+def test_the_translation_and_rotation_set_removes_the_rotation_of_each_tile(tmp_path):
+    """Every tile sees the mask rotated by its own angle (about 1 mrad): the sets placed with
+    translation keep each tile's rotation in their registration error, the set placed with
+    translation + rotation removes it (the mean rotation goes into the global affine)."""
+    angles = np.random.default_rng(3).normal(0, 1e-3, len(NOMINAL))
+
+    def sem_error(k, local, mask):
+        return angles[k] * np.column_stack([-local[:, 1], local[:, 0]])
+
+    write_contour_folder(tmp_path, sem_error=sem_error)
+    with pytest.warns(UserWarning):  # the summary table left out; few RANSAC inliers with these errors
+        result = analyse_contour_folder(tmp_path, Settings(), log=lambda line: None)
+    rms = {name: np.sqrt((c.ransac.residuals ** 2).mean()) for name, c in result.sets.items()}
+    assert rms[BOTH] < 0.15 and rms[BOTH] < 0.25 * rms["stripe drift corrected"], rms
+    assert np.sqrt((result.sets[BOTH].moving.residuals ** 2).mean()) < 0.15
+
+
 def test_settings_for_each_kind_of_folder():
     assert "tile_margin_nm" in settings_for("contour CSV") and "detection" not in settings_for("contour CSV")
     assert "detection" in settings_for("images") and "tile_margin_nm" not in settings_for("images")
@@ -128,7 +148,7 @@ def test_image_folder_runs_the_notebook_flow(tmp_path):
 
     assert result.kind == "images" and result.tile_ids == ["T0", "T1", "T2", "T3"]
     np.testing.assert_allclose(result.stitchings["raw"].stitch.corrections, ERRORS - ERRORS.mean(axis=0), atol=0.3)
-    assert list(result.sets) == ["uncorrected", "in-image corrected", "drift corrected", "stripe drift corrected"]
+    assert list(result.sets) == SETS
     assert list(result.stitchings) == ["raw", "in-image corrected", "stripe drift corrected",
                                        "in-image + stripe drift corrected"]
     assert len(result.images.tiles) == 4 and set(result.images.merged) == {"nominal", "mean", "first"}

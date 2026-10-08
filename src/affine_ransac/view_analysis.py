@@ -31,7 +31,7 @@ from affine_ransac.view_moving_window import MovingWindowTuner
 from affine_ransac.view_pitch import PitchView
 from affine_ransac.view_points import PointsStitchView
 from affine_ransac.view_ransac import RansacMonitor
-from affine_ransac.view_registration import RegistrationView
+from affine_ransac.view_registration import EXTRA_COLORS, RegistrationView
 from affine_ransac.view_stitch import StitchViewer
 from affine_ransac.view_stitch_residuals import StitchResidualView
 
@@ -83,11 +83,12 @@ class AnalysisWindow(QtWidgets.QTabWidget):
         self.addTab(self.tuner, "Moving-window tuner")
         extra = extra or {}
         pitch_sets = {"stitched, no affine": sem_nm, "after RANSAC affine": design_nm + ransac.residuals}
-        for name, (extra_sem, extra_design, extra_ransac, extra_moving) in extra.items():
+        for k, (name, (extra_sem, extra_design, extra_ransac, extra_moving)) in enumerate(extra.items()):
             extra_raw = extra_sem - extra_design
-            self.ransac_view.add_rows(extra_design, extra_ransac.residuals, name, extra_raw)
+            colors = EXTRA_COLORS[k % len(EXTRA_COLORS)]  # a set has the same colours in both tabs
+            self.ransac_view.add_rows(extra_design, extra_ransac.residuals, name, extra_raw, colors)
             if extra_moving is not None:
-                self.moving_view.add_rows(extra_design, extra_moving.residuals, name, extra_raw)
+                self.moving_view.add_rows(extra_design, extra_moving.residuals, name, extra_raw, colors)
             pitch_sets[f"{name}, after RANSAC affine"] = (extra_design, extra_design + extra_ransac.residuals)
         self.pitch_view = PitchView(design_nm, pitch_sets, reference, row_gap_nm, tile_edges_y_nm, use_opengl)
         self.addTab(self.pitch_view, "Row pitch")

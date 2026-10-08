@@ -19,7 +19,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.registration import row_pitch
 
-COLORS = ["#ff6040", "#40d040", "#40a0ff", "#e0c040", "#c080ff"]
+COLORS = ["#ff6040", "#40d040", "#40a0ff", "#e0c040", "#c080ff", "#40e0e0"]
 
 
 class PitchView(QtWidgets.QWidget):
@@ -67,7 +67,8 @@ class PitchView(QtWidgets.QWidget):
 
         self.pitch_plot.plot(self.mid_um, self.design_pitch, pen=pg.mkPen("#c0c0c0", width=2), name="design")
         lines = [f"Design: {self.describe(self.design_pitch)}"]
-        for color, (name, pitch) in zip(COLORS, self.pitch.items()):
+        for k, (name, pitch) in enumerate(self.pitch.items()):
+            color = COLORS[k % len(COLORS)]
             self.pitch_plot.plot(set_mid_um[name], pitch, pen=pg.mkPen(color, width=1.5), name=name)
             difference = self.difference[name]
             self.diff_plot.plot(set_mid_um[name], difference, pen=pg.mkPen(color, width=1.5), name=name)

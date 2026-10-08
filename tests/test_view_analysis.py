@@ -12,6 +12,7 @@ from affine_ransac.fitting.moving_window import moving_window_affine
 from affine_ransac.fitting.ransac import ransac_affine
 from affine_ransac.registration import row_means
 from affine_ransac.view_analysis import AnalysisWindow
+from affine_ransac.view_registration import EXTRA_COLORS
 from test_ransac import synthetic
 
 
@@ -88,6 +89,17 @@ def test_extra_sets_add_lines_and_one_tab_each():
     # Each set's own tab: its registration error, on the colour scale of the RANSAC tab.
     np.testing.assert_allclose(window.extra_views["drift corrected"].error_nm, d_ransac.residuals)
     assert window.extra_views["in-image corrected"].color_bar.levels() == window.ransac_view.color_bar.levels()
+    window.close()
+
+
+def test_a_set_has_the_same_colours_in_every_tab():
+    corrected = analysed(seed=5, n=500)
+    d_sem, d_design, d_ransac, _ = analysed(seed=6, n=400)
+    window, *_ = make_window(extra={"drift corrected": (d_sem, d_design, d_ransac, None), "in-image corrected": corrected})
+
+    def color(view):
+        return view.line_items["in-image corrected", "dx"][0].opts["pen"].color().name()
+    assert color(window.ransac_view) == color(window.moving_view) == EXTRA_COLORS[1][0]  # 2nd set, 1st in the moving tab
     window.close()
 
 

@@ -7,8 +7,9 @@ Two kinds of folder (docs/SPEC.md §4):
   machine, so the caller passes them in).
 Both run the same steps on the tiles' points (_analyse): stitching (translation, all overlaps), errors
 per placement and merged contacts, the in-image map, the drift curve, the drift per stripe in
-measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals
-(also of the in-image corrected points with their drift per stripe removed).
+measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals.
+Both corrections together (the in-image corrected points with their drift per stripe removed) are
+stitched for the residuals and, placed with translation + rotation per tile, are one more set.
 The AnalysisResult holds what the analysis window shows (view_analysis.analysis_window). No UI code.
 `log` receives what the notebooks print (counts, failures).
 """
@@ -126,7 +127,8 @@ class AnalysisResult:
     design_stitch: StitchResult
     stitchings: dict[str, Stitching]   # "raw", "in-image corrected", "stripe drift corrected",
                                        # "in-image + stripe drift corrected" (both, in that order)
-    sets: dict[str, ContactSet]        # "uncorrected" (translation stitching), then the corrected sets
+    sets: dict[str, ContactSet]        # "uncorrected" (translation stitching), then the corrected sets; the last
+                                       # one is placed with translation + rotation per tile
     drift: DriftCurve                  # its bend was subtracted from the "drift corrected" set
     stripe_drift: StripeDrift          # its curves were subtracted from the "stripe drift corrected" set
     log: list[str]                     # what the run reported
@@ -218,8 +220,8 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
         return stitch_tiles(points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
                             only_pairs=only_pairs)
 
-    def merged_contacts(points, stitched):
-        return merge_observations(errors(points, stitched.corrections, design_stitch.corrections),
+    def merged_contacts(points, corrections):  # shifts (n, 2) or translation + rotation affines (n, 3, 3)
+        return merge_observations(errors(points, corrections, design_stitch.corrections),
                                   design_stitch.corrections, s.group_radius_nm)
 
     raw_stitch = stitch(sem_points)
@@ -256,7 +258,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
         log(f"In-image map from {intrafield.images} of {n} images, up to {np.abs(intrafield.shift_nm).max():.3f} nm")
         ic_points = [correct_points(p, c, intrafield) for p, c in zip(sem_points, image_centers)]
         ic_stitch = stitch(ic_points)
-        ic = merged_contacts(ic_points, ic_stitch)
+        ic = merged_contacts(ic_points, ic_stitch.corrections)
         sets["in-image corrected"] = _fitted(ic.sem_nm, ic.design_nm, s, log, "in-image corrected")
         stitchings["in-image corrected"] = (ic_points, ic_stitch)
 
@@ -284,18 +286,25 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
 
     sd_points, stripe_drifts = without_stripe_drift(sem_points, "SEM points")
     sd_stitch = stitch(sd_points)
-    sd = merged_contacts(sd_points, sd_stitch)
+    sd = merged_contacts(sd_points, sd_stitch.corrections)
     sets["stripe drift corrected"] = _fitted(sd.sem_nm, sd.design_nm, s, log, "stripe drift corrected")
     stitchings["stripe drift corrected"] = (sd_points, sd_stitch)
-    if ic_points is not None:  # both corrections before stitching, in that order: for the stitching residuals
+    if ic_points is not None:  # both corrections before stitching, in that order
         icsd_points, _ = without_stripe_drift(ic_points, "In-image corrected points")
         stitchings["in-image + stripe drift corrected"] = (icsd_points, stitch(icsd_points))
 
+    # Translation + rotation per tile, from the ties of each translation stitching (stitching residuals).
+    stitchings = {name: Stitching(points, st, stitch_tiles_rigid(points, centers, st))
+                  for name, (points, st) in stitchings.items()}
+    if "in-image + stripe drift corrected" in stitchings:  # both corrections, placed with translation + rotation
+        both = stitchings["in-image + stripe drift corrected"]
+        m = merged_contacts(both.points, both.rigid)
+        name = "in-image + stripe drift corrected, translation + rotation"
+        sets[name] = _fitted(m.sem_nm, m.design_nm, s, log, name)
+
     result = AnalysisResult(
         folder=folder, kind=kind, settings=s, tile_ids=list(tile_ids), centers=centers, sizes=sizes,
-        design_points=design_points, design_stitch=design_stitch,
-        stitchings={name: Stitching(points, st, stitch_tiles_rigid(points, centers, st))
-                    for name, (points, st) in stitchings.items()},
+        design_points=design_points, design_stitch=design_stitch, stitchings=stitchings,
         sets=sets, drift=drift, stripe_drift=stripe_drifts, log=[])
     return result, merged
 

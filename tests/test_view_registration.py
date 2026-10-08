@@ -116,6 +116,18 @@ def test_add_rows_draws_another_set_beside_the_original_lines():
     view.close()
 
 
+def test_show_bar_holds_three_sets_per_row_in_the_given_colours():
+    view, design, result = make_view()
+    for k in range(4):
+        view.add_rows(design, result.residuals, f"set {k}")
+    view.add_rows(design, result.residuals, "chosen", colors=("#123456", "#654321"))
+    box = view.line_boxes["set 2", "dx"]  # the 4th set of the bar (the view's own contacts first)
+    assert view.show_bar.getItemPosition(view.show_bar.indexOf(box))[:2] == (1, 2)  # 2nd row, 1st set's dx
+    (line,) = view.line_items["chosen", "dy"]
+    assert line.opts["pen"].color().name() == "#654321"
+    view.close()
+
+
 def test_a_check_box_hides_its_lines_in_both_row_plots_and_the_y_axis_follows():
     sem, design, *_ = synthetic(n=600)
     pg.mkQApp()

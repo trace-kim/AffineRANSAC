@@ -449,7 +449,12 @@ translation + rotation) and show them in the *Stitching residuals* tab
 a check box per stitching, two per row: an input's two tile models). A correction that acts inside the
 images (in-image map) shows up there; a slowly varying one (drift curves, tens of µm) hardly does: over
 one overlap it is nearly a shift, which the per-tile translations take up anyway. The registration
-results use translation stitching.
+results use translation stitching, except the set *in-image + stripe drift corrected, translation +
+rotation* (D67): both corrections, each tile placed with its translation + rotation (the errors take
+the (n, 3, 3) affines as corrections), then RANSAC and the moving window. Along a long stripe the
+rotations add up: a tile's rotation moves its overlap contacts sideways, so the translations of the
+next tiles follow, and small rotation errors become a bow of the tiles in x that no global affine
+removes (the moving window does).
 
 **In-image (intrafield) distortion map (D53).** `intrafield.py`: one distortion shared by all
 images, measured against the design and removed from every SEM point **before** stitching.
@@ -682,8 +687,9 @@ its own colormap tab).
 contacts (stitched and, for the images, matched to the design again; RANSAC and moving window) and
 the drift-corrected contacts (RANSAC), with `error_summary` tables. `AnalysisWindow(..., extra={name:
 (sem_nm, design_nm, ransac, moving or None)})` keeps its tabs and adds each set as **extra lines**
-(`RegistrationView.add_rows`; 1st set yellow dx / green dy, 2nd magenta / cyan, named after the set,
-each with its summary on a line of its own): the row means after the affine and without affine in
+(`RegistrationView.add_rows`; 1st set yellow dx / green dy, 2nd magenta / cyan, 3rd purple / lime,
+4th red / blue, the same in every tab (D67), named after the set, each with its summary on a line of
+its own): the row means after the affine and without affine in
 the RANSAC tab, in the moving-window tab if the set has a moving-window result, and the pitch after
 its RANSAC affine in the row pitch (`PitchView` also takes a set with its own contacts, `(design_nm,
 sem_nm)`). Each set also gets one tab (*In-image corrected*, *Drift corrected*): the registration
@@ -692,7 +698,8 @@ moving-window tuner and the stitch viewers show the uncorrected translation stit
 of `RegistrationView` have no legends (D56): a **Show** bar above the plots lists each set of lines
 (the view's own contacts under `name`, e.g. "uncorrected", then every `add_rows` set and lines
 registered with `add_line`, e.g. the tuner's dashed RANSAC means) with a dx and a dy check box and the
-line colour; a box shows or hides that component of the set in both row plots, which rescale in y.
+line colour, three sets per row (D67); a box shows or hides that component of the set in both row
+plots, which rescale in y.
 
 **End-to-end flows as library functions (D62).** `analysis.py` runs the notebooks' flow on one folder,
 without UI: `analyse_contour_folder(folder, settings, log)` (csv_stitch.ipynb) and
@@ -706,7 +713,8 @@ texts as field metadata). The `AnalysisResult` holds what the window shows: the 
 the design stitching, `stitchings` (raw / in-image corrected / stripe drift corrected / in-image +
 stripe drift corrected: points,
 translation `StitchResult`, rigid affines), `sets` (uncorrected / in-image / drift / stripe drift
-corrected: merged contacts, RANSAC, moving window), the drift curves and the run's log; after an image
+corrected / in-image + stripe drift corrected, translation + rotation: merged contacts, RANSAC, moving
+window), the drift curves and the run's log; after an image
 run also the tiles with their images, the design polygons and the merged errors per placement
 (`ImageTiles`, for the image stitch viewer; not saved). `view_analysis.analysis_window(result)` builds
 the window of the notebooks' last cell from it (points stitch view when there are no images). On the
@@ -976,6 +984,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D64 | 2026-10-08 | **Standalone analyzer app** (`app.py`): open a contour-CSV or image folder (settings dialog per kind, background run with a log), open / save results, load external measurements; the image metadata reader is imported only when an image folder is opened. | User: the analysis UI of the notebooks as the first version of a standalone UI where folders are loaded for analysis; both kinds of folder (user's choice); results saved and reloaded; external measurements overlaid. A daemon thread rather than a QThread, so quitting during a run cannot crash on a running thread. |
 | D65 | 2026-10-08 | External reference on the error maps: a hollow ring in the error's colour around the contact at each site, white edges, growing with the zoom like the contact disks, replacing the filled markers of D61. | Seen on the local test data (a field of 16 × 650 µm): zoomed out, 12 px filled markers hid the whole contact column; zoomed in, a marker was the size of a contact disk and could not be found. A ring keeps our contact visible inside the reference colour. |
 | D66 | 2026-10-08 | Stitching residuals of **both corrections before stitching**: the in-image corrected points, stitched in measurement order, their own drift per stripe measured and removed (D57), then stitched over all overlaps; translation and translation + rotation (`stitchings["in-image + stripe drift corrected"]`, both notebooks and `analysis._analyse`; only for the stitching residuals, no registration set). The *Stitching residuals* tab's check boxes are laid out two per row. | User asked for the cases "in-image correction, drift correction, translation" and "... translation + rotation". The drift is the drift per stripe: the global drift curve (D54) is applied after stitching and has no stitching of its own. The drift is measured again on the corrected points, since the in-image correction changes what the stitching in measurement order sees. Two per row because eight boxes in one row needed ~2000 px with Windows fonts, wider than a full-HD screen, and the tab sets the whole window's minimum width. On the local test data the run takes ~8 s longer (43 → 51 s); the other results are unchanged (bit-identical). |
+| D67 | 2026-10-08 | Set **in-image + stripe drift corrected, translation + rotation**: the stitching of D66 with each tile placed by its translation + rotation (`stitch_tiles_rigid` affines as the corrections of `paired_errors` / `design_errors`), merged, then RANSAC and the moving window; an extra set (lines, row pitch, own tab) in `analysis._analyse` and both notebooks (sections 11b / 12b). Window: a set has the same colours in every tab (`add_rows(colors=...)`, 4th pair red / blue); the `RegistrationView` Show bar holds three sets per row; `PitchView` cycles its colours (it dropped sets beyond its five). | User asked for the methods "in-image, stripe drift correction, translation + rotation" with the global RANSAC and with the moving-window affine (overriding D58's translation-only registration for this set). On the local test data the tile rotations are small (tens of µrad) but add up along the long stripes into a bow of the tile centres in x, the same in all stripes; the global RANSAC cannot remove it (its dx error about doubles against the translation sets), the moving window does (on par with them); dy improves slightly. The same integration made the per-tile affine stitching fail (D53). Colours were assigned per tab by order, so a set without a moving-window result shifted the colours of the next sets in the moving-window tab; a fourth set would have reused the first set's pair; five sets in one Show row needed 1431 px with Windows fonts. |
 
 ---
 
