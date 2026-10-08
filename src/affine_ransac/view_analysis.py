@@ -14,6 +14,9 @@ Optional extra result sets (D52, D55), e.g. the contacts after the in-image corr
 drift curve: each is drawn as extra lines (RegistrationView.add_rows) in both registration tabs (the
 moving-window tab only if it has a moving-window result) and in the row pitch (after its RANSAC
 affine), and gets one tab of its own: the registration view of its RANSAC residuals.
+
+External reference measurements (add_external, e.g. another tool's result) go into every
+registration view: lines in the row profile after the affine, markers on the error maps.
 """
 
 import numpy as np
@@ -89,3 +92,13 @@ class AnalysisWindow(QtWidgets.QTabWidget):
             self.extra_views[name] = view
             self.addTab(view, name[0].upper() + name[1:])
         self.resize(1700, 1050)
+
+    def registration_views(self) -> list[RegistrationView]:
+        """Every RegistrationView of the window: RANSAC, moving window, tuner, one per extra set."""
+        return [self.ransac_view, self.moving_view, self.tuner.view, *self.extra_views.values()]
+
+    def add_external(self, name: str, xy_nm: np.ndarray, error_nm: np.ndarray):
+        """An external reference measurement in every registration view (RegistrationView.add_external):
+        xy_nm (N, 2) site positions, mask nm; error_nm (N, 2) its dx, dy, nm."""
+        for view in self.registration_views():
+            view.add_external(name, xy_nm, error_nm)

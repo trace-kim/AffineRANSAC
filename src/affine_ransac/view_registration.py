@@ -20,6 +20,11 @@ reference point (design centroid), in µm; errors in nm.
 - Show bar above the plots (instead of legends, which overflow the short row plots): per set of
   lines its name and a dx and a dy check box with the line colour; a box shows or hides that
   component of the set in both row plots, which then rescale in y.
+- External reference measurements (add_external, e.g. another tool's result, io.external): the mean
+  dx and dy per row as lines with symbols in the row profile, and every site as a white-ringed marker
+  on the error maps, filled with its error in the maps' colour scale, so the same colour means the
+  same error (hover a marker for its values). Its dx / dy box also shows or hides its markers on the
+  dx / dy map.
 """
 
 import numpy as np
@@ -36,6 +41,7 @@ JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
 MAIN_COLORS = ("#ff6040", "#40a0ff")  # dx, dy of the view's own contacts
 EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0"), ("#c080ff", "#a0ff60")]  # (dx, dy) of the 1st, 2nd... add_rows set
+EXTERNAL_COLORS = [("#ffffff", "#b0b0b0"), ("#ffa0c0", "#ffd080")]  # (dx, dy) lines of the 1st, 2nd... add_external set
 
 
 def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: int) -> np.ndarray:
@@ -59,10 +65,10 @@ def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: in
         return np.where(count > 0, total / count, np.nan)
 
 
-def summary_text(error_nm: np.ndarray) -> str:
+def summary_text(error_nm: np.ndarray, what: str = "contacts") -> str:
     """Count, mean, 3σ and max of the errors (N, 2), nm, for a summary line."""
     s = error_summary(error_nm)
-    return (f"{s['count']} contacts, mean ({s.get('mean_x_nm', 0):+.3f}, {s.get('mean_y_nm', 0):+.3f}) nm, "
+    return (f"{s['count']} {what}, mean ({s.get('mean_x_nm', 0):+.3f}, {s.get('mean_y_nm', 0):+.3f}) nm, "
             f"3σ ({s.get('3sigma_x_nm', 0):.3f}, {s.get('3sigma_y_nm', 0):.3f}) nm, max {s.get('max_nm', 0):.3f} nm")
 
 
@@ -98,6 +104,7 @@ class RegistrationView(QtWidgets.QWidget):
         super().__init__()
         self.name = name
         self.line_items, self.line_boxes = {}, {}  # (set name, "dx" / "dy") -> its plot lines / its check box
+        self.external_markers = []  # (map markers of an add_external set, their dx or dy values)
         self.show_bar = QtWidgets.QHBoxLayout()
         self.show_bar.addWidget(QtWidgets.QLabel("Show:"))
         self.show_bar.addStretch(1)
@@ -126,8 +133,9 @@ class RegistrationView(QtWidgets.QWidget):
         limit = limit if limit > 0 else 1.0
         self.color_bar = pg.ColorBarItem(values=(-limit, limit), colorMap=JET, label="nm")
         # The maps colour their pixels themselves (colorize), so the bar is not attached to the images;
-        # moving its handles redraws the maps with the new limits.
+        # moving its handles redraws the maps (and recolours the external markers) with the new limits.
         self.color_bar.sigLevelsChanged.connect(lambda *_: self.rasterize_maps())
+        self.color_bar.sigLevelsChanged.connect(lambda *_: self.colour_external())
         self.graphics.addItem(self.color_bar, row=0, col=2)  # own column: both maps keep the same size
 
         self.row_plot = self.graphics.addPlot(row=1, col=0, colspan=3, title="Mean error per row (averaged over x)")
@@ -217,9 +225,42 @@ class RegistrationView(QtWidgets.QWidget):
         self.extra_summaries.append(f"{name}: {summary_text(error_nm)}")
         self.label.setText("\n".join([self.summary] + self.extra_summaries))
 
+    def add_external(self, name: str, xy_nm: np.ndarray, error_nm: np.ndarray):
+        """An external reference measurement under `name` in the Show bar: xy_nm (N, 2) site
+        positions, mask nm; error_nm (N, 2) its dx, dy there, nm (io.external.read_external). Its
+        mean per row (rows grouped by the sites' y) goes into the row profile, its sites onto the
+        error maps (see the module docstring); its summary is added below the summary line."""
+        sets_so_far = len(self.external_markers) // 2  # two marker items (dx and dy map) per set
+        colors = EXTERNAL_COLORS[sets_so_far % len(EXTERNAL_COLORS)]
+        position_um = (xy_nm - self.reference_nm) / 1000
+        row_y, mean, _ = row_means(xy_nm[:, 1], error_nm, self.row_gap_nm)
+        row_um = (row_y - self.reference_nm[1]) / 1000
+        tips = [f"{name}\nx {x:.3f} µm, y {y:.3f} µm\ndx {dx:+.3f} nm, dy {dy:+.3f} nm"
+                for (x, y), (dx, dy) in zip(xy_nm / 1000, error_nm)]
+        for component, (axis, color, symbol) in enumerate(zip(("dx", "dy"), colors, ("o", "t"))):
+            line = self.row_plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=1.5), symbol=symbol,
+                                      symbolSize=7, symbolPen=None, symbolBrush=color)
+            self.add_line(name, axis, line, color)
+            markers = pg.ScatterPlotItem(position_um[:, 0], position_um[:, 1], data=tips, size=12,
+                                         pen=pg.mkPen("#ffffff", width=1.5), hoverable=True,
+                                         tip=lambda x, y, data: data)
+            markers.setZValue(10)  # above the rasterized map
+            self.maps[component][0].addItem(markers)
+            self.add_line(name, axis, markers, color)
+            self.external_markers.append((markers, error_nm[:, component]))
+        self.colour_external()
+        self.extra_summaries.append(f"{name} (external reference): {summary_text(error_nm, 'sites')}")
+        self.label.setText("\n".join([self.summary] + self.extra_summaries))
+
+    def colour_external(self):
+        """Fill every external marker with its value in the maps' colour scale (colorize)."""
+        for markers, values in self.external_markers:
+            markers.setBrush([pg.mkBrush(*rgb) for rgb in colorize(values, self.color_bar.levels())])
+
     def add_line(self, name: str, axis: str, line, color: str):
-        """Put line (a curve of row_plot or raw_plot) under the check box of set `name`, component
-        axis ("dx" / "dy"), in the Show bar; the set's name and box are added with its first line."""
+        """Put line (a curve of row_plot or raw_plot, or the markers of an external set on a map)
+        under the check box of set `name`, component axis ("dx" / "dy"), in the Show bar; the set's
+        name and box are added with its first line."""
         key = (name, axis)
         if key not in self.line_boxes:
             if all(set_name != name for set_name, _ in self.line_boxes):

@@ -89,3 +89,17 @@ def test_extra_sets_add_lines_and_one_tab_each():
     np.testing.assert_allclose(window.extra_views["drift corrected"].error_nm, d_ransac.residuals)
     assert window.extra_views["in-image corrected"].color_bar.levels() == window.ransac_view.color_bar.levels()
     window.close()
+
+
+def test_external_reference_goes_into_every_registration_view():
+    d_sem, d_design, d_ransac, _ = analysed(seed=6, n=400)
+    window, sem, design, *_ = make_window(extra={"drift corrected": (d_sem, d_design, d_ransac, None)})
+    sites = design[:5]
+    window.add_external("tool A", sites, np.full((5, 2), 0.3))
+    views = window.registration_views()
+    assert len(views) == 4 and window.extra_views["drift corrected"] in views and window.tuner.view in views
+    for view in views:
+        (line, markers) = view.line_items["tool A", "dy"]
+        np.testing.assert_allclose(line.getData()[1], 0.3)
+        assert len(markers.data) == 5
+    window.close()

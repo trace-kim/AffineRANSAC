@@ -202,6 +202,21 @@ no raw data, one row per contact, read with `io/contour_csv.py::read_contour_fol
 - After reading, SEM and design are stitched, merged, fitted and shown exactly as for the images
   (`notebooks/csv_stitch.ipynb`).
 
+### 4.6 External reference measurements (D61)
+Registration results of the same mask from elsewhere (e.g. another tool), to compare with ours: a
+**txt file with four columns X, Y, dX, dY and no header** (spaces, tabs or commas between them),
+read with `io/external.py::read_external()`.
+- X, Y: site position in **mask µm**, the same mask coordinates as the design (user, 2026-10-08);
+  converted to nm on load. dX, dY: registration error in **nm**.
+- The sign convention is not known (user): `flip_sign=True` negates dX, dY (the app asks per file).
+- It is a **reference residual** that ideally matches our result, whatever corrections it went
+  through (user), so it is compared with our residuals after the affine. `AnalysisWindow.add_external()`
+  puts it into every registration view (`RegistrationView.add_external`): its mean dx and dy per row
+  (rows grouped by the sites' y, as for the contacts) as lines with symbols in the row profile after
+  the affine, and every site as a white-ringed marker on the dx / dy error maps, filled with its error
+  in the maps' jet colour scale (the same colour = the same error; hover shows the values). Its dx /
+  dy check box in the Show bar hides its line and its markers together. Several files can be shown.
+
 ---
 
 ## 5. Pipeline Overview
@@ -903,6 +918,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D58 | 2026-10-07 | **Translation + rotation stitching** (`solve_tile_rigid`, `stitch_tiles_rigid`, first-order rotation, same ties as the translation stitching) and the **stitching residuals** of every input × tile model (`pair_residuals`, `pair_kind`, `residual_summary`; tab *Stitching residuals*, `StitchResidualView`). `intrafield.overlap_slopes` uses `pair_kind`. Registration results stay on translation stitching. | User: with corrections applied before stitching, a tab showing the stitching residual should tell whether they are valid (lower residual than the raw input); translation + rotation added to diagnose all combinations of stitching. User asked why the stripe drift curves do not meet at the joints: verified that the tied images agree on their shared contacts and that the gap equals the error's x-slope times the stripe distance. |
 | D59 | 2026-10-08 | Stitch viewer: the *large spread* rings start **off**, like the other heavy layers; only the failure markers (overlaps not matched, tiles not stitched, tiles not measured) stay on. | User: the viewer opens on the nominal placement, where nearly every overlap contact has a large spread (nothing is stitched yet), so the magenta rings flooded the view and slowed the start; flags should be off unless there is a severe error such as a stitching failure. |
 | D60 | 2026-10-08 | `read_contour_folder` reads every `*.csv` that has the four contour columns and leaves out (with a warning naming them) the other CSVs of the folder, instead of failing on them. | The real folders also hold the measuring tool's summary tables (`AffineCoefficients_*.csv`, `AvgDiff*_ByDesign*.csv`, `DiffAllPoint.csv`); the user had narrowed the file pattern to `CD*.csv` locally. Checking the columns works for any naming. |
+| D61 | 2026-10-08 | **External reference measurements** (§4.6): `read_external` (X, Y mask µm, dX, dY nm, no header; optional sign flip) and `AnalysisWindow.add_external` / `RegistrationView.add_external`: row means as lines with symbols in the row profile after the affine; on the 2-D maps, each site as a marker filled in the maps' colour scale with a white ring, hover for values, toggled with the set's dx / dy boxes. | User: external txt results should be overlaid on ours, literally in the row plots; the map design was left to me. Markers in the same colour scale let the eye compare at every site while the contact map stays visible around them; a separate difference map would need SEM values interpolated at the sites. Units and frame from the user; sign unknown, so it is chosen per file; the data are a reference residual to compare with our result after the affine (user). |
 
 ---
 
