@@ -707,6 +707,16 @@ the window of the notebooks' last cell from it (points stitch view when there ar
 local contour-CSV test data the flow gives bit-identical results to the notebook. The notebooks keep
 their step-by-step cells (they show the intermediate tables).
 
+**Results file (D63).** `results_file.save_result(result, path)` / `load_result(path)`: one `.npz`
+(compressed) of plain arrays, loaded with `allow_pickle=False` (opens without this code; loading
+never runs code). Array names are paths (`sets/uncorrected/ransac/residuals`); a list of arrays (per
+tile, per overlap) is one concatenated array plus the part lengths; the folder, kind, settings, tile
+ids and log are one JSON text (`info`). The images of an image run are not saved: a reopened result
+shows the points stitch view. `FORMAT` changes with the layout and other formats are refused; saved
+settings unknown to the code are ignored, missing ones take their default. Local contour-CSV test
+data (221k contacts): 51 MB, saved in ~6 s, loaded in < 1 s. This is the app's own file, not the
+downstream report format (§13-8, still open).
+
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
 - **Reported registration error = residuals after the full affine is removed** (decision D4).
@@ -822,6 +832,7 @@ AffineRANSAC/
 │  ├─ report.py              # CSV/JSON/plots
 │  ├─ pipeline.py            # S2–S5 steps for a set of tiles
 │  ├─ analysis.py            # end-to-end flow of one folder (contour CSVs / images), D62
+│  ├─ results_file.py        # save / load an AnalysisResult (.npz), D63
 │  └─ cli.py                 # `affine-ransac run config.yaml`
 └─ tests/
    ├─ synthetic/             # generators for layouts, SEM tiles, distortions
@@ -939,6 +950,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D60 | 2026-10-08 | `read_contour_folder` reads every `*.csv` that has the four contour columns and leaves out (with a warning naming them) the other CSVs of the folder, instead of failing on them. | The real folders also hold the measuring tool's summary tables (`AffineCoefficients_*.csv`, `AvgDiff*_ByDesign*.csv`, `DiffAllPoint.csv`); the user had narrowed the file pattern to `CD*.csv` locally. Checking the columns works for any naming. |
 | D61 | 2026-10-08 | **External reference measurements** (§4.6): `read_external` (X, Y mask µm, dX, dY nm, no header; optional sign flip) and `AnalysisWindow.add_external` / `RegistrationView.add_external`: row means as lines with symbols in the row profile after the affine; on the 2-D maps, each site as a marker filled in the maps' colour scale with a white ring, hover for values, toggled with the set's dx / dy boxes. | User: external txt results should be overlaid on ours, literally in the row plots; the map design was left to me. Markers in the same colour scale let the eye compare at every site while the contact map stays visible around them; a separate difference map would need SEM values interpolated at the sites. Units and frame from the user; sign unknown, so it is chosen per file; the data are a reference residual to compare with our result after the affine (user). |
 | D62 | 2026-10-08 | The notebooks' flows become library functions: `analysis.py` (`Settings`, `analyse_contour_folder`, `analyse_images`, shared `_analyse`, `AnalysisResult`) and `view_analysis.analysis_window(result)`. Image records are passed in (the metadata reader stays remote-only). A contour-CSV folder without image centres skips the in-image correction instead of failing. | User: a standalone analyzer UI that loads folders, instead of the notebooks holding the whole pipeline in memory; it must stay compatible with the notebook UI (the notebooks and `AnalysisWindow`'s signature are unchanged). One shared core keeps the two input kinds from drifting apart; a missing optional correction should not cost the user the whole run. |
+| D63 | 2026-10-08 | **Results file**: an `AnalysisResult` saved as one compressed `.npz` of named plain arrays plus a JSON `info` text (`results_file.py`), with a format number; no pickle; images not saved. | User: results should be saved and loaded later instead of living only in notebook memory. Pickle would be shorter but runs code on load and breaks silently when the result classes change; named arrays stay readable with numpy alone. Compression halves the file (114 → 51 MB on the test data) for ~6 s of saving, done in the background by the app. |
 
 ---
 
