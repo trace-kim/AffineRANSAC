@@ -17,15 +17,23 @@ affine), and gets one tab of its own: the registration view of its RANSAC residu
 
 External reference measurements (add_external, e.g. another tool's result) go into every
 registration view: lines in the row profile after the affine, markers on the error maps.
+
+analysis_window(result) builds the whole window of an analysis.AnalysisResult, with the tabs the
+notebooks add at the end (stitching, stripe drift curves, stitching residuals).
 """
 
 import numpy as np
 from pyqtgraph.Qt import QtWidgets
 
+from affine_ransac.analysis import AnalysisResult, tile_edges_y
+from affine_ransac.view_drift import StripeDriftView
 from affine_ransac.view_moving_window import MovingWindowTuner
 from affine_ransac.view_pitch import PitchView
+from affine_ransac.view_points import PointsStitchView
 from affine_ransac.view_ransac import RansacMonitor
 from affine_ransac.view_registration import RegistrationView
+from affine_ransac.view_stitch import StitchViewer
+from affine_ransac.view_stitch_residuals import StitchResidualView
 
 
 class AnalysisWindow(QtWidgets.QTabWidget):
@@ -102,3 +110,35 @@ class AnalysisWindow(QtWidgets.QTabWidget):
         xy_nm (N, 2) site positions, mask nm; error_nm (N, 2) its dx, dy, nm."""
         for view in self.registration_views():
             view.add_external(name, xy_nm, error_nm)
+
+
+def analysis_window(result: AnalysisResult, use_opengl: bool = True) -> AnalysisWindow:
+    """The analysis window of a result, as the notebooks' last cell builds it: Stitching tab (the image
+    stitch viewer after an image run, else the points view), the AnalysisWindow tabs with the corrected
+    sets as extra lines and tabs, the subtracted drift bend in its tab, Stripe drift curves, Stitching
+    residuals (translation and translation + rotation of every input)."""
+    s = result.settings
+    main, raw = result.sets["uncorrected"], result.stitchings["raw"]
+    if result.images is not None:
+        stitch_view = StitchViewer(result.images.tiles, result.tile_ids, result.images.design_polygons, raw.stitch,
+                                   result.design_stitch, refined=s.stitch_refined, use_opengl=use_opengl,
+                                   errors=result.images.merged, arrow_scale=s.arrow_scale,
+                                   spread_flag_nm=s.spread_flag_nm)
+    else:
+        stitch_view = PointsStitchView(result.tile_ids, raw.points, result.design_points, result.centers, result.sizes,
+                                       raw.stitch, result.design_stitch, use_opengl=use_opengl)
+    extra = {name: (c.sem_nm, c.design_nm, c.ransac, c.moving) for name, c in result.sets.items() if name != "uncorrected"}
+    window = AnalysisWindow(main.sem_nm, main.design_nm, main.ransac, main.moving, s.moving_window_um, s.moving_step_um,
+                            s.ransac_threshold_nm, s.ransac_seed, s.ransac_delay_ms, s.row_gap_nm,
+                            tile_edges_y(result.centers, result.sizes), stitch_view=stitch_view, use_opengl=use_opengl,
+                            extra=extra)
+    window.extra_views["drift corrected"].add_rows(main.design_nm, result.drift.correction(main.design_nm[:, 1]),
+                                                   "drift correction applied")  # the bend that was subtracted
+    reference = main.ransac.reference
+    window.addTab(StripeDriftView(result.stripe_drift, reference, use_opengl=use_opengl), "Stripe drift curves")
+    stitchings = {}
+    for name, st in result.stitchings.items():
+        stitchings[f"{name}, translation"] = (st.points, st.stitch, st.stitch.corrections)
+        stitchings[f"{name}, translation + rotation"] = (st.points, st.stitch, st.rigid)
+    window.addTab(StitchResidualView(stitchings, result.centers, reference, use_opengl=use_opengl), "Stitching residuals")
+    return window

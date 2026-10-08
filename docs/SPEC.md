@@ -689,6 +689,24 @@ of `RegistrationView` have no legends (D56): a **Show** bar above the plots list
 registered with `add_line`, e.g. the tuner's dashed RANSAC means) with a dx and a dy check box and the
 line colour; a box shows or hides that component of the set in both row plots, which rescale in y.
 
+**End-to-end flows as library functions (D62).** `analysis.py` runs the notebooks' flow on one folder,
+without UI: `analyse_contour_folder(folder, settings, log)` (csv_stitch.ipynb) and
+`analyse_images(folder, records, settings, log)` (stitch_viewer.ipynb; `records` from the remote-only
+`read_tile_index`, passed in by the caller). Both share `_analyse`: translation stitching over all
+overlaps, errors per placement and merged contacts, the in-image map (left out, with a log line, for
+contour CSVs without `DesignX`, `DesignY`), the drift curve, the drift per stripe in measurement order,
+RANSAC (+ moving window) of every set, and the translation + rotation stitchings for the residuals.
+`Settings` holds the notebooks' settings (same names in lower case, defaults as the notebooks, help
+texts as field metadata). The `AnalysisResult` holds what the window shows: the tile boxes and points,
+the design stitching, `stitchings` (raw / in-image corrected / stripe drift corrected: points,
+translation `StitchResult`, rigid affines), `sets` (uncorrected / in-image / drift / stripe drift
+corrected: merged contacts, RANSAC, moving window), the drift curves and the run's log; after an image
+run also the tiles with their images, the design polygons and the merged errors per placement
+(`ImageTiles`, for the image stitch viewer; not saved). `view_analysis.analysis_window(result)` builds
+the window of the notebooks' last cell from it (points stitch view when there are no images). On the
+local contour-CSV test data the flow gives bit-identical results to the notebook. The notebooks keep
+their step-by-step cells (they show the intermediate tables).
+
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
 - **Reported registration error = residuals after the full affine is removed** (decision D4).
@@ -802,7 +820,8 @@ AffineRANSAC/
 │  │  └─ solve.py            # global sparse LSQ solve for tile affines
 │  ├─ registration.py        # S6–S8 orchestration, residuals, stats
 │  ├─ report.py              # CSV/JSON/plots
-│  ├─ pipeline.py            # end-to-end run from config
+│  ├─ pipeline.py            # S2–S5 steps for a set of tiles
+│  ├─ analysis.py            # end-to-end flow of one folder (contour CSVs / images), D62
 │  └─ cli.py                 # `affine-ransac run config.yaml`
 └─ tests/
    ├─ synthetic/             # generators for layouts, SEM tiles, distortions
@@ -919,6 +938,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D59 | 2026-10-08 | Stitch viewer: the *large spread* rings start **off**, like the other heavy layers; only the failure markers (overlaps not matched, tiles not stitched, tiles not measured) stay on. | User: the viewer opens on the nominal placement, where nearly every overlap contact has a large spread (nothing is stitched yet), so the magenta rings flooded the view and slowed the start; flags should be off unless there is a severe error such as a stitching failure. |
 | D60 | 2026-10-08 | `read_contour_folder` reads every `*.csv` that has the four contour columns and leaves out (with a warning naming them) the other CSVs of the folder, instead of failing on them. | The real folders also hold the measuring tool's summary tables (`AffineCoefficients_*.csv`, `AvgDiff*_ByDesign*.csv`, `DiffAllPoint.csv`); the user had narrowed the file pattern to `CD*.csv` locally. Checking the columns works for any naming. |
 | D61 | 2026-10-08 | **External reference measurements** (§4.6): `read_external` (X, Y mask µm, dX, dY nm, no header; optional sign flip) and `AnalysisWindow.add_external` / `RegistrationView.add_external`: row means as lines with symbols in the row profile after the affine; on the 2-D maps, each site as a marker filled in the maps' colour scale with a white ring, hover for values, toggled with the set's dx / dy boxes. | User: external txt results should be overlaid on ours, literally in the row plots; the map design was left to me. Markers in the same colour scale let the eye compare at every site while the contact map stays visible around them; a separate difference map would need SEM values interpolated at the sites. Units and frame from the user; sign unknown, so it is chosen per file; the data are a reference residual to compare with our result after the affine (user). |
+| D62 | 2026-10-08 | The notebooks' flows become library functions: `analysis.py` (`Settings`, `analyse_contour_folder`, `analyse_images`, shared `_analyse`, `AnalysisResult`) and `view_analysis.analysis_window(result)`. Image records are passed in (the metadata reader stays remote-only). A contour-CSV folder without image centres skips the in-image correction instead of failing. | User: a standalone analyzer UI that loads folders, instead of the notebooks holding the whole pipeline in memory; it must stay compatible with the notebook UI (the notebooks and `AnalysisWindow`'s signature are unchanged). One shared core keeps the two input kinds from drifting apart; a missing optional correction should not cost the user the whole run. |
 
 ---
 
