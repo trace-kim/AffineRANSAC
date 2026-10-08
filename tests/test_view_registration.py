@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt s
 
 import numpy as np
 import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore
 
 from affine_ransac.fitting.ransac import ransac_affine
 from affine_ransac.view_registration import RegistrationView, colorize, rasterize
@@ -136,7 +137,7 @@ def test_a_check_box_hides_its_lines_in_both_row_plots_and_the_y_axis_follows():
     view.close()
 
 
-def test_external_reference_adds_row_lines_and_map_markers_in_the_colour_scale():
+def test_external_reference_adds_row_lines_and_rings_in_the_colour_scale():
     sem, design, *_ = synthetic(n=600)
     rows_y = design[:, 1].min() + 4000.0 * np.arange(5)
     design[:, 1] = rows_y[np.arange(len(design)) % 5]
@@ -148,22 +149,27 @@ def test_external_reference_adds_row_lines_and_map_markers_in_the_colour_scale()
     errors = np.array([[-1.0, 0.0], [1.0, 0.0], [0.0, 0.5]])
     view.add_external("tool A", sites, errors)
 
-    row_dx, map_dx = view.line_items["tool A", "dx"]  # its row line and its dx map markers
+    row_dx, outline_dx, ring_dx = view.line_items["tool A", "dx"]  # its row line, its dx map rings
     row_y_um, mean_dx = row_dx.getData()
     np.testing.assert_allclose(row_y_um, (rows_y[[0, 3]] - view.reference_nm[1]) / 1000)
     np.testing.assert_allclose(mean_dx, [0.0, 0.0])  # row 0: mean of -1 and +1
-    assert map_dx in view.maps[0][0].items and len(map_dx.data) == 3
-    _, map_dy = view.line_items["tool A", "dy"]
-    assert map_dy in view.maps[1][0].items
-    # Filled with the maps' jet colours: -1 = low end (dark blue), +1 = high end (dark red).
-    assert map_dx.points()[0].brush().color().getRgb()[:3] == (0, 0, 128)
-    assert map_dx.points()[1].brush().color().getRgb()[:3] == (128, 0, 0)
+    assert ring_dx in view.maps[0][0].items and len(ring_dx.data) == 3
+    _, _, ring_dy = view.line_items["tool A", "dy"]
+    assert ring_dy in view.maps[1][0].items
+    # Hollow rings in the maps' jet colours: -1 = low end (dark blue), +1 = high end (dark red).
+    assert ring_dx.points()[0].pen().color().getRgb()[:3] == (0, 0, 128)
+    assert ring_dx.points()[1].pen().color().getRgb()[:3] == (128, 0, 0)
+    assert ring_dx.points()[0].brush().style() == QtCore.Qt.BrushStyle.NoBrush  # no fill: the contact shows
     view.color_bar.setLevels((-2.0, 2.0))  # recoloured when the user drags the colour bar:
     view.color_bar.sigLevelsChanged.emit(view.color_bar)  # (setLevels alone does not emit it)
-    assert map_dx.points()[1].brush().color().getRgb()[:3] != (128, 0, 0)
+    assert ring_dx.points()[1].pen().color().getRgb()[:3] != (128, 0, 0)
     assert "tool A (external reference): 3 sites" in view.label.text()
-    assert "dx +1.000 nm" in map_dx.points()[1].data()  # hover tip
+    assert "dx +1.000 nm" in ring_dx.points()[1].data()  # hover tip
 
-    view.line_boxes["tool A", "dx"].setChecked(False)  # hides its dx line and dx markers, not dy
-    assert not row_dx.isVisible() and not map_dx.isVisible() and map_dy.isVisible()
+    view.dot_radius_px = 20  # zoomed in: the rings grow to enclose the contact disks
+    view.size_external()
+    assert ring_dx.points()[0].size() > 40 and outline_dx.points()[0].size() == ring_dx.points()[0].size()
+
+    view.line_boxes["tool A", "dx"].setChecked(False)  # hides its dx line and dx rings, not dy
+    assert not row_dx.isVisible() and not ring_dx.isVisible() and not outline_dx.isVisible() and ring_dy.isVisible()
     view.close()

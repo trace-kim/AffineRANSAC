@@ -21,10 +21,10 @@ reference point (design centroid), in µm; errors in nm.
   lines its name and a dx and a dy check box with the line colour; a box shows or hides that
   component of the set in both row plots, which then rescale in y.
 - External reference measurements (add_external, e.g. another tool's result, io.external): the mean
-  dx and dy per row as lines with symbols in the row profile, and every site as a white-ringed marker
-  on the error maps, filled with its error in the maps' colour scale, so the same colour means the
-  same error (hover a marker for its values). Its dx / dy box also shows or hides its markers on the
-  dx / dy map.
+  dx and dy per row as lines with symbols in the row profile, and on the error maps a ring around
+  every site in the colour of its error (maps' colour scale, white edges), sized to enclose the contact
+  disk there: the contact inside shows our error, the ring the reference, so the same colour means
+  agreement (hover a ring for its values). Its dx / dy box also shows or hides its rings on that map.
 """
 
 import numpy as np
@@ -39,6 +39,7 @@ from affine_ransac.registration import error_summary, row_means
 JET = pg.ColorMap(pos=[0.0, 0.125, 0.375, 0.625, 0.875, 1.0],
                   color=[(0, 0, 128), (0, 0, 255), (0, 255, 255), (255, 255, 0), (255, 0, 0), (128, 0, 0)])
 MAX_DOT_PX = 25  # disk radius cap when zoomed far in
+RING_PX = 3  # width of an external reference ring (its white outline is 1 px wider on each side)
 MAIN_COLORS = ("#ff6040", "#40a0ff")  # dx, dy of the view's own contacts
 EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0"), ("#c080ff", "#a0ff60")]  # (dx, dy) of the 1st, 2nd... add_rows set
 EXTERNAL_COLORS = [("#ffffff", "#b0b0b0"), ("#ffa0c0", "#ffd080")]  # (dx, dy) lines of the 1st, 2nd... add_external set
@@ -104,7 +105,8 @@ class RegistrationView(QtWidgets.QWidget):
         super().__init__()
         self.name = name
         self.line_items, self.line_boxes = {}, {}  # (set name, "dx" / "dy") -> its plot lines / its check box
-        self.external_markers = []  # (map markers of an add_external set, their dx or dy values)
+        self.external_rings = []  # (ring item, its outline item, their dx or dy values) per map of an add_external set
+        self.dot_radius_px = 0.0  # contact disk radius on the maps, logical px (rasterize_maps)
         self.show_bar = QtWidgets.QHBoxLayout()
         self.show_bar.addWidget(QtWidgets.QLabel("Show:"))
         self.show_bar.addStretch(1)
@@ -230,9 +232,9 @@ class RegistrationView(QtWidgets.QWidget):
         positions, mask nm; error_nm (N, 2) its dx, dy there, nm (io.external.read_external). Its
         mean per row (rows grouped by the sites' y) goes into the row profile, its sites onto the
         error maps (see the module docstring); its summary is added below the summary line."""
-        sets_so_far = len(self.external_markers) // 2  # two marker items (dx and dy map) per set
+        sets_so_far = len(self.external_rings) // 2  # a ring item on the dx and on the dy map per set
         colors = EXTERNAL_COLORS[sets_so_far % len(EXTERNAL_COLORS)]
-        position_um = (xy_nm - self.reference_nm) / 1000
+        x_um, y_um = ((xy_nm - self.reference_nm) / 1000).T
         row_y, mean, _ = row_means(xy_nm[:, 1], error_nm, self.row_gap_nm)
         row_um = (row_y - self.reference_nm[1]) / 1000
         tips = [f"{name}\nx {x:.3f} µm, y {y:.3f} µm\ndx {dx:+.3f} nm, dy {dy:+.3f} nm"
@@ -241,21 +243,30 @@ class RegistrationView(QtWidgets.QWidget):
             line = self.row_plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=1.5), symbol=symbol,
                                       symbolSize=7, symbolPen=None, symbolBrush=color)
             self.add_line(name, axis, line, color)
-            markers = pg.ScatterPlotItem(position_um[:, 0], position_um[:, 1], data=tips, size=12,
-                                         pen=pg.mkPen("#ffffff", width=1.5), hoverable=True,
-                                         tip=lambda x, y, data: data)
-            markers.setZValue(10)  # above the rasterized map
-            self.maps[component][0].addItem(markers)
-            self.add_line(name, axis, markers, color)
-            self.external_markers.append((markers, error_nm[:, component]))
+            # A ring in the error's colour around the contact at the site (the contact stays visible
+            # inside it), on a white ring that makes it easy to find.
+            outline = pg.ScatterPlotItem(x_um, y_um, brush=None, pen=pg.mkPen("#ffffff", width=RING_PX + 2))
+            ring = pg.ScatterPlotItem(x_um, y_um, data=tips, brush=None, hoverable=True, tip=lambda x, y, data: data)
+            for z, item in ((10, outline), (11, ring)):  # above the rasterized map
+                item.setZValue(z)
+                self.maps[component][0].addItem(item)
+                self.add_line(name, axis, item, color)
+            self.external_rings.append((ring, outline, error_nm[:, component]))
         self.colour_external()
+        self.size_external()
         self.extra_summaries.append(f"{name} (external reference): {summary_text(error_nm, 'sites')}")
         self.label.setText("\n".join([self.summary] + self.extra_summaries))
 
     def colour_external(self):
-        """Fill every external marker with its value in the maps' colour scale (colorize)."""
-        for markers, values in self.external_markers:
-            markers.setBrush([pg.mkBrush(*rgb) for rgb in colorize(values, self.color_bar.levels())])
+        """Colour every external ring with its value in the maps' colour scale (colorize)."""
+        for ring, _, values in self.external_rings:
+            ring.setPen([pg.mkPen(rgb.tolist(), width=RING_PX) for rgb in colorize(values, self.color_bar.levels())])
+
+    def size_external(self):
+        """Make the external rings enclose the contact disks as drawn now (dot_radius_px)."""
+        for ring, outline, _ in self.external_rings:
+            for item in (ring, outline):
+                item.setSize(2 * self.dot_radius_px + RING_PX + 5)
 
     def add_line(self, name: str, axis: str, line, color: str):
         """Put line (a curve of row_plot or raw_plot, or the markers of an external set on a map)
@@ -321,3 +332,5 @@ class RegistrationView(QtWidgets.QWidget):
             grid = rasterize(self.position_um[near], self.error_nm[near, component], rect, (rows, cols), radius_px)
             image.setImage(colorize(grid, self.color_bar.levels()), autoLevels=False)
             image.setRect(QtCore.QRectF(*rect))
+            self.dot_radius_px = radius_px / scale  # both maps show the same area: the same radius
+        self.size_external()

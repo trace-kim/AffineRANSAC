@@ -99,7 +99,7 @@ def test_external_reference_goes_into_every_registration_view():
     views = window.registration_views()
     assert len(views) == 4 and window.extra_views["drift corrected"] in views and window.tuner.view in views
     for view in views:
-        (line, markers) = view.line_items["tool A", "dy"]
+        line, _, ring = view.line_items["tool A", "dy"]
         np.testing.assert_allclose(line.getData()[1], 0.3)
-        assert len(markers.data) == 5
+        assert len(ring.data) == 5
     window.close()

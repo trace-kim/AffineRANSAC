@@ -44,7 +44,7 @@ The program:
 | Pluggable metadata reader (format still unknown) | Vendor-specific metadata parsers |
 | Per-tile affine + global affine | Higher-order distortion models (polynomial intrafield) |
 | Overlap stitching from matched contact coordinates | **Pixel-to-pixel (intensity-based) affine** registration of the overlap regions |
-| Batch/CLI processing | GUI, interactive review |
+| Standalone analyzer app (D64), notebooks | Batch/CLI processing |
 
 ---
 
@@ -213,9 +213,12 @@ read with `io/external.py::read_external()`.
   through (user), so it is compared with our residuals after the affine. `AnalysisWindow.add_external()`
   puts it into every registration view (`RegistrationView.add_external`): its mean dx and dy per row
   (rows grouped by the sites' y, as for the contacts) as lines with symbols in the row profile after
-  the affine, and every site as a white-ringed marker on the dx / dy error maps, filled with its error
-  in the maps' jet colour scale (the same colour = the same error; hover shows the values). Its dx /
-  dy check box in the Show bar hides its line and its markers together. Several files can be shown.
+  the affine, and on the dx / dy error maps a hollow **ring around every site** in the colour of its
+  error (the maps' jet scale, white edges), sized with the zoom to enclose the contact disk there
+  (D65): the contact inside shows our error, the ring the reference, so the same colour means
+  agreement; hover shows the values. Its dx / dy check box in the Show bar hides its line and its
+  rings together. Several files can be shown. The app logs how many sites lie on the analysed field
+  (±1 µm), a check of the units and coordinates.
 
 ---
 
@@ -717,6 +720,20 @@ settings unknown to the code are ignored, missing ones take their default. Local
 data (221k contacts): 51 MB, saved in ~6 s, loaded in < 1 s. This is the app's own file, not the
 downstream report format (§13-8, still open).
 
+**Standalone analyzer (D64).** `app.py` (`python -m affine_ransac.app`): a main window with the
+analysis window in the middle and a log below. *File → Open folder* detects the kind (a `ContourCAD`
+folder or `*.jpg` → images, else contour CSVs), shows that kind's settings (name as in the notebooks,
+value, help text; the RANSAC threshold is shown but fixed; the last used settings and folder are
+remembered in the user's Qt settings), then runs `analyse_contour_folder` / `analyse_images` in a
+background thread; image folders get their records from `io/metadata.read_tile_index`, imported only
+then (only on the data machine; elsewhere the error says so). The log shows the run's messages and the
+library's warnings with the time; a failure shows its last line in a message box and the traceback in
+the log. *Open results* / *Save results* use `results_file` (in the background); a reopened result
+also shows the log of its run. *Load external measurement* reads a txt reference (§4.6), asking for
+the sign of dX, dY. *View*: the log, and OpenGL drawing (off if the plots stay black; used for the next
+window). On the local contour-CSV test data (1,494 files, 221k contacts) a run takes ~45 s, building
+the window ~9 s.
+
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
 - **Reported registration error = residuals after the full affine is removed** (decision D4).
@@ -814,6 +831,7 @@ AffineRANSAC/
 │  │  ├─ design.py           # OASIS → DesignFeatures (wraps klayout)
 │  │  ├─ sem_image.py        # JPEG load, crop, grayscale
 │  │  ├─ contour_csv.py      # pre-analysed contour CSVs (§4.5)
+│  │  ├─ external.py         # external reference measurements, txt (§4.6)
 │  │  └─ metadata.py         # TileMetadataReader protocol + CSV manifest impl
 │  ├─ features/
 │  │  ├─ base.py             # Feature interface (point now, line-edge later)
@@ -833,6 +851,7 @@ AffineRANSAC/
 │  ├─ pipeline.py            # S2–S5 steps for a set of tiles
 │  ├─ analysis.py            # end-to-end flow of one folder (contour CSVs / images), D62
 │  ├─ results_file.py        # save / load an AnalysisResult (.npz), D63
+│  ├─ app.py                 # standalone analyzer: python -m affine_ransac.app, D64
 │  └─ cli.py                 # `affine-ransac run config.yaml`
 └─ tests/
    ├─ synthetic/             # generators for layouts, SEM tiles, distortions
@@ -951,6 +970,8 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D61 | 2026-10-08 | **External reference measurements** (§4.6): `read_external` (X, Y mask µm, dX, dY nm, no header; optional sign flip) and `AnalysisWindow.add_external` / `RegistrationView.add_external`: row means as lines with symbols in the row profile after the affine; on the 2-D maps, each site as a marker filled in the maps' colour scale with a white ring, hover for values, toggled with the set's dx / dy boxes. | User: external txt results should be overlaid on ours, literally in the row plots; the map design was left to me. Markers in the same colour scale let the eye compare at every site while the contact map stays visible around them; a separate difference map would need SEM values interpolated at the sites. Units and frame from the user; sign unknown, so it is chosen per file; the data are a reference residual to compare with our result after the affine (user). |
 | D62 | 2026-10-08 | The notebooks' flows become library functions: `analysis.py` (`Settings`, `analyse_contour_folder`, `analyse_images`, shared `_analyse`, `AnalysisResult`) and `view_analysis.analysis_window(result)`. Image records are passed in (the metadata reader stays remote-only). A contour-CSV folder without image centres skips the in-image correction instead of failing. | User: a standalone analyzer UI that loads folders, instead of the notebooks holding the whole pipeline in memory; it must stay compatible with the notebook UI (the notebooks and `AnalysisWindow`'s signature are unchanged). One shared core keeps the two input kinds from drifting apart; a missing optional correction should not cost the user the whole run. |
 | D63 | 2026-10-08 | **Results file**: an `AnalysisResult` saved as one compressed `.npz` of named plain arrays plus a JSON `info` text (`results_file.py`), with a format number; no pickle; images not saved. | User: results should be saved and loaded later instead of living only in notebook memory. Pickle would be shorter but runs code on load and breaks silently when the result classes change; named arrays stay readable with numpy alone. Compression halves the file (114 → 51 MB on the test data) for ~6 s of saving, done in the background by the app. |
+| D64 | 2026-10-08 | **Standalone analyzer app** (`app.py`): open a contour-CSV or image folder (settings dialog per kind, background run with a log), open / save results, load external measurements; the image metadata reader is imported only when an image folder is opened. | User: the analysis UI of the notebooks as the first version of a standalone UI where folders are loaded for analysis; both kinds of folder (user's choice); results saved and reloaded; external measurements overlaid. A daemon thread rather than a QThread, so quitting during a run cannot crash on a running thread. |
+| D65 | 2026-10-08 | External reference on the error maps: a hollow ring in the error's colour around the contact at each site, white edges, growing with the zoom like the contact disks, replacing the filled markers of D61. | Seen on the local test data (a field of 16 × 650 µm): zoomed out, 12 px filled markers hid the whole contact column; zoomed in, a marker was the size of a contact disk and could not be found. A ring keeps our contact visible inside the reference colour. |
 
 ---
 
