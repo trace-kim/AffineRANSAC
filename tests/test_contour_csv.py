@@ -75,6 +75,20 @@ def test_folder_reads_every_csv_sorted_by_name(tmp_path):
     assert COLUMNS == ("DesignX_Add", "DesignY_Add", "SEMX_Add", "SEMY_Add")
 
 
+def test_folder_leaves_out_other_csvs_and_names_them(tmp_path):
+    write_csv(tmp_path / "CD000001.csv", [[0.0, 0.0]], [[0.0, 0.0]])
+    # A summary table of the measuring tool: some of the names, not all four columns.
+    (tmp_path / "DiffAllPoint.csv").write_text("Index,File name,DesignX_Add,DesignY_Add,DiffX,DiffY\n0,a,1,2,3,4\n",
+                                               encoding="utf-8")
+    with pytest.warns(UserWarning, match=r"1 \.csv file.*DiffAllPoint\.csv"):
+        tiles = read_contour_folder(tmp_path)
+    assert [t.name for t in tiles] == ["CD000001"]
+
+    (tmp_path / "CD000001.csv").unlink()
+    with pytest.warns(UserWarning), pytest.raises(FileNotFoundError, match="No contour .csv"):
+        read_contour_folder(tmp_path)
+
+
 def test_tile_boxes_are_the_bounding_boxes_of_the_points():
     centers, sizes = tile_boxes_from_points([np.array([[0.0, 0.0], [100.0, 40.0]]), np.array([[5.0, 5.0]])])
     np.testing.assert_allclose(centers, [[50, 20], [5, 5]])

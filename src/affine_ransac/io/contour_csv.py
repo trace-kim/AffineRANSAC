@@ -9,6 +9,7 @@ distortion map, intrafield.py).
 """
 
 import csv
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,8 +59,18 @@ def read_contour_csv(path: str | Path) -> ContourCsvTile:
 
 
 def read_contour_folder(folder: str | Path) -> list[ContourCsvTile]:
-    """Read every *.csv in folder (not in subfolders), sorted by file name."""
-    paths = sorted(Path(folder).glob("*.csv"))
-    if not paths:
-        raise FileNotFoundError(f"No .csv files in {folder}")
-    return [read_contour_csv(p) for p in paths]
+    """Read every *.csv in folder (not in subfolders) that has the COLUMNS, sorted by file name.
+    Other CSVs in the folder (e.g. summary tables written by the measuring tool) are left out
+    with a warning that names them."""
+    tiles, skipped = [], []
+    for path in sorted(Path(folder).glob("*.csv")):
+        try:
+            tiles.append(read_contour_csv(path))
+        except ValueError:  # a column of COLUMNS is missing: not a contour CSV
+            skipped.append(path.name)
+    if skipped:
+        warnings.warn(f"{len(skipped)} .csv file(s) without the columns {list(COLUMNS)}, left out: {skipped}",
+                      stacklevel=2)
+    if not tiles:
+        raise FileNotFoundError(f"No contour .csv files (columns {list(COLUMNS)}) in {folder}")
+    return tiles
