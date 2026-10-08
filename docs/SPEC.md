@@ -442,9 +442,11 @@ used pair, T_i(a) − T_j(b) of its tie contacts, for shifts or affines), `pair_
 ("vertical" = one image above the other, within a stripe; "horizontal" = side by side, between
 stripes; "corner") and `residual_summary(...)` (RMS over the tie contacts within stripes, between
 stripes and all, largest, number of overlaps). Both notebooks compute every input (raw, in-image
-corrected, stripe drift corrected) × tile model (translation, translation + rotation) and show them in
-the *Stitching residuals* tab (`view_stitch_residuals.StitchResidualView`: RMS per overlap against
-its y, within / between stripes, a check box per stitching). A correction that acts inside the
+corrected, stripe drift corrected, and both corrections in the order they are made: the in-image
+corrected points with their own drift per stripe measured and removed, D66) × tile model (translation,
+translation + rotation) and show them in the *Stitching residuals* tab
+(`view_stitch_residuals.StitchResidualView`: RMS per overlap against its y, within / between stripes,
+a check box per stitching, two per row: an input's two tile models). A correction that acts inside the
 images (in-image map) shows up there; a slowly varying one (drift curves, tens of µm) hardly does: over
 one overlap it is nearly a shift, which the per-tile translations take up anyway. The registration
 results use translation stitching.
@@ -701,7 +703,8 @@ contour CSVs without `DesignX`, `DesignY`), the drift curve, the drift per strip
 RANSAC (+ moving window) of every set, and the translation + rotation stitchings for the residuals.
 `Settings` holds the notebooks' settings (same names in lower case, defaults as the notebooks, help
 texts as field metadata). The `AnalysisResult` holds what the window shows: the tile boxes and points,
-the design stitching, `stitchings` (raw / in-image corrected / stripe drift corrected: points,
+the design stitching, `stitchings` (raw / in-image corrected / stripe drift corrected / in-image +
+stripe drift corrected: points,
 translation `StitchResult`, rigid affines), `sets` (uncorrected / in-image / drift / stripe drift
 corrected: merged contacts, RANSAC, moving window), the drift curves and the run's log; after an image
 run also the tiles with their images, the design polygons and the merged errors per placement
@@ -972,6 +975,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D63 | 2026-10-08 | **Results file**: an `AnalysisResult` saved as one compressed `.npz` of named plain arrays plus a JSON `info` text (`results_file.py`), with a format number; no pickle; images not saved. | User: results should be saved and loaded later instead of living only in notebook memory. Pickle would be shorter but runs code on load and breaks silently when the result classes change; named arrays stay readable with numpy alone. Compression halves the file (114 → 51 MB on the test data) for ~6 s of saving, done in the background by the app. |
 | D64 | 2026-10-08 | **Standalone analyzer app** (`app.py`): open a contour-CSV or image folder (settings dialog per kind, background run with a log), open / save results, load external measurements; the image metadata reader is imported only when an image folder is opened. | User: the analysis UI of the notebooks as the first version of a standalone UI where folders are loaded for analysis; both kinds of folder (user's choice); results saved and reloaded; external measurements overlaid. A daemon thread rather than a QThread, so quitting during a run cannot crash on a running thread. |
 | D65 | 2026-10-08 | External reference on the error maps: a hollow ring in the error's colour around the contact at each site, white edges, growing with the zoom like the contact disks, replacing the filled markers of D61. | Seen on the local test data (a field of 16 × 650 µm): zoomed out, 12 px filled markers hid the whole contact column; zoomed in, a marker was the size of a contact disk and could not be found. A ring keeps our contact visible inside the reference colour. |
+| D66 | 2026-10-08 | Stitching residuals of **both corrections before stitching**: the in-image corrected points, stitched in measurement order, their own drift per stripe measured and removed (D57), then stitched over all overlaps; translation and translation + rotation (`stitchings["in-image + stripe drift corrected"]`, both notebooks and `analysis._analyse`; only for the stitching residuals, no registration set). The *Stitching residuals* tab's check boxes are laid out two per row. | User asked for the cases "in-image correction, drift correction, translation" and "... translation + rotation". The drift is the drift per stripe: the global drift curve (D54) is applied after stitching and has no stitching of its own. The drift is measured again on the corrected points, since the in-image correction changes what the stitching in measurement order sees. Two per row because eight boxes in one row needed ~2000 px with Windows fonts, wider than a full-HD screen, and the tab sets the whole window's minimum width. On the local test data the run takes ~8 s longer (43 → 51 s); the other results are unchanged (bit-identical). |
 
 ---
 

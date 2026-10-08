@@ -4,9 +4,11 @@ For every stitching (a name, e.g. "raw input, translation"): the tie residual T_
 tie contact of its used overlaps (pipeline.pair_residuals), summarised per overlap as the RMS length
 and plotted against the overlap's y (relative to the reference point, µm). Overlaps within a stripe
 (one image above the other) and between stripes (side by side) are in two plots; corner overlaps
-are left out of the plots. A check box per stitching shows or hides it; the label gives per stitching
-the RMS over all tie contacts of each kind and the largest residual (pipeline.residual_summary). A
-correction made before stitching that is right makes the tiles agree better than the raw input.
+are left out of the plots. A check box per stitching shows or hides it, two per row (give the
+stitchings in pairs: an input with translation, then with translation + rotation); the label gives per
+stitching the RMS over all tie contacts of each kind and the largest residual
+(pipeline.residual_summary). A correction made before stitching that is right makes the tiles agree
+better than the raw input.
 """
 
 import numpy as np
@@ -15,7 +17,7 @@ from pyqtgraph.Qt import QtGui, QtWidgets
 
 from affine_ransac.pipeline import pair_kind, pair_residuals, residual_summary
 
-COLORS = ["#ff6040", "#40a0ff", "#e0c040", "#40d040", "#ff60ff", "#40e0e0", "#c080ff", "#a0ff60"]
+COLORS = ["#ff6040", "#40a0ff", "#e0c040", "#40d040", "#ff60ff", "#40e0e0", "#c080ff", "#ffffff"]
 
 
 class StitchResidualView(QtWidgets.QWidget):
@@ -40,8 +42,8 @@ class StitchResidualView(QtWidgets.QWidget):
                 plot.setXLink(next(iter(self.plots.values())))
             self.plots[kind] = plot
 
-        bar = QtWidgets.QHBoxLayout()
-        bar.addWidget(QtWidgets.QLabel("Show:"))
+        bar = QtWidgets.QGridLayout()  # two boxes per row (an input's two tile models): more inputs add rows, not width
+        bar.addWidget(QtWidgets.QLabel("Show:"), 0, 0)
         self.items, self.boxes, self.summary, lines = {}, {}, {}, []
         for k, (name, (points, stitch, corrections)) in enumerate(stitchings.items()):
             color = COLORS[k % len(COLORS)]
@@ -60,14 +62,14 @@ class StitchResidualView(QtWidgets.QWidget):
             box.setIcon(QtGui.QIcon(swatch))
             box.setChecked(True)
             box.toggled.connect(lambda shown, name=name: self.show_stitching(name, shown))
-            bar.addWidget(box)
+            bar.addWidget(box, k // 2, 1 + k % 2)
             self.boxes[name] = box
             s = residual_summary(points, stitch, corrections, centers)
             self.summary[name] = s
             lines.append(f"{name}: within stripes {s['within stripes RMS (nm)']:.3f} nm, between stripes "
                          f"{s['between stripes RMS (nm)']:.3f} nm, all {s['all overlaps RMS (nm)']:.3f} nm, "
                          f"largest {s['largest (nm)']:.3f} nm")
-        bar.addStretch(1)
+        bar.setColumnStretch(3, 1)
 
         self.label = QtWidgets.QLabel("RMS tie residual after stitching:\n" + "\n".join(lines))
         self.label.setWordWrap(True)

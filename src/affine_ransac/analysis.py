@@ -7,7 +7,8 @@ Two kinds of folder (docs/SPEC.md §4):
   machine, so the caller passes them in).
 Both run the same steps on the tiles' points (_analyse): stitching (translation, all overlaps), errors
 per placement and merged contacts, the in-image map, the drift curve, the drift per stripe in
-measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals.
+measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals
+(also of the in-image corrected points with their drift per stripe removed).
 The AnalysisResult holds what the analysis window shows (view_analysis.analysis_window). No UI code.
 `log` receives what the notebooks print (counts, failures).
 """
@@ -123,7 +124,8 @@ class AnalysisResult:
     sizes: np.ndarray                  # (n_tiles, 2) tile box sizes, nm (images: FOV)
     design_points: list[np.ndarray]    # per tile, design centres at the nominal placement, mask nm
     design_stitch: StitchResult
-    stitchings: dict[str, Stitching]   # "raw", "in-image corrected", "stripe drift corrected"
+    stitchings: dict[str, Stitching]   # "raw", "in-image corrected", "stripe drift corrected",
+                                       # "in-image + stripe drift corrected" (both, in that order)
     sets: dict[str, ContactSet]        # "uncorrected" (translation stitching), then the corrected sets
     drift: DriftCurve                  # its bend was subtracted from the "drift corrected" set
     stripe_drift: StripeDrift          # its curves were subtracted from the "stripe drift corrected" set
@@ -242,6 +244,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     stitchings = {"raw": (sem_points, raw_stitch)}
 
     # In-image map, from the matched contacts at the nominal placement, relative to each image centre.
+    ic_points = None
     if np.isnan(image_centers).any():
         log("!! No image centres (contour CSVs without DesignX, DesignY): the in-image correction is left out")
     else:
@@ -264,19 +267,29 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
 
     # Drift per stripe: stitch in measurement order, subtract each stripe's curve, stitch everything.
     stripe = tile_stripes(centers, sizes)
-    first_stitch = stitch(sem_points, only_pairs=measurement_pairs(centers, stripe, s.first_stripe_upward))
-    log(f"{stripe.max() + 1} stripes of {np.bincount(stripe).tolist()} tiles; stitched in measurement order: "
-        f"{len(first_stitch.pairs)} pairs used, {len(first_stitch.unplaced)} tile(s) not stitched")
-    first = errors(sem_points, first_stitch.corrections, design_stitch.corrections)
-    stripe_drifts = stripe_drift(first.design_nm[:, 1], first.error_nm, stripe[first.tile], s.drift_window_um * 1000,
-                                 s.row_gap_nm)
-    placed = np.nan_to_num(first_stitch.corrections)  # a tile not stitched in measurement order stays nominal
-    sd_points = [p + placed[k] - stripe_drifts.correction(stripe[k], p[:, 1] + placed[k, 1])
-                 for k, p in enumerate(sem_points)]
+    order_pairs = measurement_pairs(centers, stripe, s.first_stripe_upward)
+    log(f"{stripe.max() + 1} stripes of {np.bincount(stripe).tolist()} tiles")
+
+    def without_stripe_drift(points, name):
+        """points minus each stripe's drift curve, measured after stitching them in measurement order; and
+        the drift."""
+        first_stitch = stitch(points, only_pairs=order_pairs)
+        log(f"{name} stitched in measurement order: {len(first_stitch.pairs)} pairs used, "
+            f"{len(first_stitch.unplaced)} tile(s) not stitched")
+        first = errors(points, first_stitch.corrections, design_stitch.corrections)
+        drifts = stripe_drift(first.design_nm[:, 1], first.error_nm, stripe[first.tile], s.drift_window_um * 1000,
+                              s.row_gap_nm)
+        placed = np.nan_to_num(first_stitch.corrections)  # a tile not stitched in measurement order stays nominal
+        return [p + placed[k] - drifts.correction(stripe[k], p[:, 1] + placed[k, 1]) for k, p in enumerate(points)], drifts
+
+    sd_points, stripe_drifts = without_stripe_drift(sem_points, "SEM points")
     sd_stitch = stitch(sd_points)
     sd = merged_contacts(sd_points, sd_stitch)
     sets["stripe drift corrected"] = _fitted(sd.sem_nm, sd.design_nm, s, log, "stripe drift corrected")
     stitchings["stripe drift corrected"] = (sd_points, sd_stitch)
+    if ic_points is not None:  # both corrections before stitching, in that order: for the stitching residuals
+        icsd_points, _ = without_stripe_drift(ic_points, "In-image corrected points")
+        stitchings["in-image + stripe drift corrected"] = (icsd_points, stitch(icsd_points))
 
     result = AnalysisResult(
         folder=folder, kind=kind, settings=s, tile_ids=list(tile_ids), centers=centers, sizes=sizes,

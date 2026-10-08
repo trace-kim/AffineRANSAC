@@ -49,6 +49,20 @@ def test_summary_per_stitching_and_one_point_per_overlap():
     view.close()
 
 
+def test_more_inputs_add_rows_of_check_boxes_not_width():
+    points = rotated_tiles()
+    stitch = stitch_tiles(points, NOMINAL, np.full((4, 2), FOV))
+    pg.mkQApp()
+    widths = []
+    for inputs in ("ab", "abcd"):
+        stitchings = {f"{name}, {model}": (points, stitch, stitch.corrections)
+                      for name in inputs for model in ("translation", "translation + rotation")}
+        view = StitchResidualView(stitchings, NOMINAL, NOMINAL.mean(axis=0), use_opengl=False)
+        widths.append(view.minimumSizeHint().width())
+        view.close()
+    assert widths[0] == widths[1]
+
+
 def test_a_stitching_can_be_hidden():
     view, _ = make_view()
     view.boxes["translation"].setChecked(False)

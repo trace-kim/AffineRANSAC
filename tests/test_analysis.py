@@ -11,6 +11,7 @@ import pyqtgraph as pg
 import pytest
 
 from affine_ransac.analysis import Settings, analyse_contour_folder, analyse_images, settings_for
+from affine_ransac.pipeline import residual_summary
 from affine_ransac.view_analysis import analysis_window
 from affine_ransac.view_points import PointsStitchView
 from affine_ransac.view_stitch import StitchViewer
@@ -25,16 +26,20 @@ TABS = ["Stitching", "RANSAC monitor", "Registration, RANSAC", "Registration, mo
         "Stitching residuals"]
 
 
-def write_contour_folder(folder, local_columns=True, noise_nm=0.1, seed=0):
+def write_contour_folder(folder, local_columns=True, noise_nm=0.1, seed=0, sem_error=None):
     """One CSV per tile (real column names): the contacts inside its FOV, design as stored in its file,
     SEM as measured (the tile sits at nominal + STAGE[k]); DesignX, DesignY relative to the image centre.
-    Plus a summary table of the measuring tool, which must be left out."""
+    sem_error(k, local_nm, mask_nm): optional (N, 2) nm added to tile k's SEM centres, from the contacts'
+    positions relative to the image centre and on the mask. Plus a summary table of the measuring tool,
+    which must be left out."""
     rng = np.random.default_rng(seed)
     lattice = np.array([(x, y) for x in np.arange(-1500, 4200, PITCH) for y in np.arange(-1500, 6800, PITCH)])
     for k, nominal in enumerate(NOMINAL):
         contacts = lattice[np.all(np.abs(lattice - nominal) < FOV / 2 - 30, axis=1)]
         design = contacts - FILES[k]
         sem = contacts - STAGE[k] + rng.normal(0, noise_nm, contacts.shape)
+        if sem_error is not None:
+            sem += sem_error(k, contacts - nominal, contacts)
         header = "DesignX,DesignY,DesignX_Add,DesignY_Add,SEMX_Add,SEMY_Add" if local_columns else \
             "DesignX_Add,DesignY_Add,SEMX_Add,SEMY_Add"
         rows = [",".join(f"{float(v)!r}" for v in ((*(d - nominal), *d, *m) if local_columns else (*d, *m)))
@@ -51,7 +56,8 @@ def test_contour_folder_runs_the_notebook_flow(tmp_path):
 
     assert result.kind == "contour CSV" and result.tile_ids == [f"CD{k:06d}" for k in range(6)]
     assert list(result.sets) == ["uncorrected", "in-image corrected", "drift corrected", "stripe drift corrected"]
-    assert list(result.stitchings) == ["raw", "in-image corrected", "stripe drift corrected"]
+    assert list(result.stitchings) == ["raw", "in-image corrected", "stripe drift corrected",
+                                       "in-image + stripe drift corrected"]
     np.testing.assert_allclose(result.stitchings["raw"].stitch.corrections, STAGE - STAGE.mean(axis=0), atol=0.1)
     np.testing.assert_allclose(result.design_stitch.corrections, FILES - FILES.mean(axis=0), atol=1e-6)
     main = result.sets["uncorrected"]
@@ -75,12 +81,31 @@ def test_without_image_centres_the_in_image_correction_is_left_out(tmp_path):
     lines = []
     with pytest.warns(UserWarning, match="AffineCoefficients_Summary.csv"):
         result = analyse_contour_folder(tmp_path, Settings(), log=lines.append)
-    assert "in-image corrected" not in result.sets and "in-image corrected" not in result.stitchings
+    assert "in-image corrected" not in result.sets
+    assert list(result.stitchings) == ["raw", "stripe drift corrected"]
     assert any("in-image correction is left out" in line for line in lines)
     pg.mkQApp()
     window = analysis_window(result, use_opengl=False)
     assert "In-image corrected" not in [window.tabText(i) for i in range(window.count())]
     window.close()
+
+
+def test_in_image_and_stripe_drift_corrections_together_leave_only_the_noise_in_the_overlaps(tmp_path):
+    """A distortion shared by all images and a drift along y that differs between the two stripes (both
+    exaggerated): each correction removes its own part of the tie residuals, both together nearly all."""
+    def sem_error(k, local, mask):
+        twist = 1.2e-6 * local[:, 0] * local[:, 1]  # up to 2 nm at the image corners; not affine: in the map
+        drift = (1 if k < 3 else -1) * 1e-3 * (mask[:, 1] - 2600)  # dy, opposite in the two stripes
+        return np.column_stack([twist, twist + drift])
+
+    write_contour_folder(tmp_path, sem_error=sem_error)
+    with pytest.warns(UserWarning):  # the summary table left out; few RANSAC inliers with these errors
+        result = analyse_contour_folder(tmp_path, Settings(), log=lambda line: None)
+    rms = {name: residual_summary(st.points, st.stitch, st.stitch.corrections, result.centers)["all overlaps RMS (nm)"]
+           for name, st in result.stitchings.items()}
+    both = rms["in-image + stripe drift corrected"]
+    assert both < 0.3 and both < 0.25 * min(rms["in-image corrected"], rms["stripe drift corrected"]), rms
+    assert max(rms["in-image corrected"], rms["stripe drift corrected"]) < rms["raw"], rms
 
 
 def test_settings_for_each_kind_of_folder():
@@ -104,6 +129,8 @@ def test_image_folder_runs_the_notebook_flow(tmp_path):
     assert result.kind == "images" and result.tile_ids == ["T0", "T1", "T2", "T3"]
     np.testing.assert_allclose(result.stitchings["raw"].stitch.corrections, ERRORS - ERRORS.mean(axis=0), atol=0.3)
     assert list(result.sets) == ["uncorrected", "in-image corrected", "drift corrected", "stripe drift corrected"]
+    assert list(result.stitchings) == ["raw", "in-image corrected", "stripe drift corrected",
+                                       "in-image + stripe drift corrected"]
     assert len(result.images.tiles) == 4 and set(result.images.merged) == {"nominal", "mean", "first"}
     assert lines[3] == "4 of 4 tiles loaded and detected"
 
