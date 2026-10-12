@@ -21,9 +21,12 @@ def outward_normals(contour: np.ndarray, span: int = 3) -> np.ndarray:
 
     The tangent at point k is taken from point k - span to point k + span, which smooths
     the pixel staircase of an Otsu contour. Works for either point order.
+    Where the two points coincide (the tip of a 1 px wide spur, which the contour runs out
+    and back along), there is no tangent: the normal is (0, 0), so the point is not moved.
     """
     tangent = np.roll(contour, -span, axis=0) - np.roll(contour, span, axis=0)
-    tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
+    length = np.linalg.norm(tangent, axis=1, keepdims=True)
+    tangent = np.divide(tangent, length, out=np.zeros_like(tangent), where=length > 0)
     x, y = contour[:, 0], contour[:, 1]
     signed_area = (x * np.roll(y, -1) - np.roll(x, -1) * y).sum() / 2
     # For a positive signed area the inside is to the left of the tangent, so the outside

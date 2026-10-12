@@ -16,6 +16,20 @@ def test_outward_normals_point_outwards_for_either_order():
         np.testing.assert_allclose((normals * radial).sum(axis=1), 1, atol=0.01)
 
 
+
+def test_spur_tip_is_kept_in_place_not_nan():
+    # A dark disk with a 1 px wide spur: at the spur tip the contour points k - 3 and k + 3
+    # coincide, so there is no tangent. That point must stay put, not turn the centre into NaN.
+    image = np.full((60, 60), 200, np.uint8)
+    yy, xx = np.mgrid[:60, :60]
+    image[(xx - 30) ** 2 + (yy - 30) ** 2 <= 64] = 40
+    image[30, 38:46] = 40
+    found = detect_contacts(image, blur_sigma=0)
+    refined = refine_edges(image, found)
+    assert np.isfinite(refined.centers).all()
+    assert all(np.isfinite(c).all() for c in refined.contours)
+
+
 def test_sample_profiles_follows_each_direction():
     image = np.zeros((50, 50), dtype=np.uint8)
     image[20, 30] = 100  # 10 px right of (20, 20)
