@@ -62,12 +62,16 @@ class Job(QtCore.QObject):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("always")
-                warnings.showwarning = lambda message, *_: self.message.emit(f"Warning: {message}")
+                warnings.showwarning = self._warning
                 result = work(self.message.emit)
         except Exception:
             self.failed.emit(traceback.format_exc())
         else:
             self.done.emit(result)
+
+    def _warning(self, message, category, filename, lineno, *_):
+        """Log a warning with the source line that raised it (for numpy's, the library line that divided)."""
+        self.message.emit(f"Warning: {message} ({Path(filename).name}:{lineno})")
 
 
 def editor(value, choices=None) -> QtWidgets.QWidget:
