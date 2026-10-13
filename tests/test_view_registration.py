@@ -6,10 +6,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt s
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.fitting.ransac import ransac_affine
-from affine_ransac.view_registration import RegistrationView, colorize, rasterize
+from affine_ransac.view_registration import RegistrationView, colorize, rasterize, table_text
 from test_ransac import synthetic
 
 
@@ -184,4 +184,37 @@ def test_external_reference_adds_row_lines_and_rings_in_the_colour_scale():
 
     view.line_boxes["tool A", "dx"].setChecked(False)  # hides its dx line and dx rings, not dy
     assert not row_dx.isVisible() and not ring_dx.isVisible() and not outline_dx.isVisible() and ring_dy.isVisible()
+    view.close()
+
+
+def test_row_table_lists_the_shown_row_lines_per_set_and_plot():
+    sem, design, *_ = synthetic(n=600)
+    rows_y = design[:, 1].min() + 4000.0 * np.arange(5)
+    design[:, 1] = rows_y[np.arange(len(design)) % 5]
+    pg.mkQApp()
+    view = RegistrationView(design, np.zeros_like(design), design.mean(axis=0), use_opengl=False,
+                            raw_error_nm=np.ones_like(design), name="uncorrected")
+    other = design[design[:, 1] <= rows_y[1]]  # two rows only
+    error = np.zeros_like(other)
+    error[:, 0] = 1.5
+    view.add_rows(other, error, "corrected, set")  # a comma in the name: quoted in the CSV
+    view.add_external("ext", design[:3], np.ones((3, 2)))  # its map rings are not row lines
+    view.line_boxes["corrected, set", "dy"].setChecked(False)  # hidden: not exported
+
+    header, *rows = view.row_table()
+    assert header == ["uncorrected, after affine: row y - y_ref (µm)", "uncorrected, after affine: dx (nm)",
+                      "uncorrected, after affine: dy (nm)", "corrected, set, after affine: row y - y_ref (µm)",
+                      "corrected, set, after affine: dx (nm)", "ext, after affine: row y - y_ref (µm)",
+                      "ext, after affine: dx (nm)", "ext, after affine: dy (nm)",
+                      "uncorrected, no affine: row y - y_ref (µm)", "uncorrected, no affine: dx (nm)",
+                      "uncorrected, no affine: dy (nm)"]
+    assert len(rows) == 5
+    np.testing.assert_allclose([float(r[0]) for r in rows], (rows_y - design[:, 1].mean()) / 1000, atol=1e-6)
+    assert [r[4] for r in rows] == ["1.500000", "1.500000", "", "", ""]  # 2 rows, then blanks
+    assert all(r[9] == "1.000000" for r in rows)  # the no-affine plot
+
+    text = table_text(view.row_table(), ",")
+    assert text.splitlines()[0].startswith('"uncorrected, after affine: row y - y_ref (µm)",')
+    view.copy_rows()
+    assert QtWidgets.QApplication.clipboard().text() == table_text(view.row_table(), "\t")
     view.close()

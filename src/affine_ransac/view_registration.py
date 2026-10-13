@@ -25,7 +25,14 @@ reference point (design centroid), in µm; errors in nm.
   every site in the colour of its error (maps' colour scale, white edges), sized to enclose the contact
   disk there: the contact inside shows our error, the ring the reference, so the same colour means
   agreement (hover a ring for its values). Its dx / dy box also shows or hides its rings on that map.
+- Copy rows / Export rows CSV (buttons beside the summary): the row-profile lines that are shown
+  (Show bar), as a table (row_table): per set and plot its row y (µm), dx and dy (nm) columns; sets
+  have their own rows, so shorter columns end in blanks. Copy puts it on the clipboard tab-separated
+  (pastes into Excel), Export writes a CSV (UTF-8 with BOM, so Excel reads the µ).
 """
+
+import csv
+import io
 
 import numpy as np
 import pyqtgraph as pg
@@ -73,6 +80,13 @@ def summary_text(error_nm: np.ndarray, what: str = "contacts") -> str:
     s = error_summary(error_nm)
     return (f"{s['count']} {what}, mean ({s.get('mean_x_nm', 0):+.3f}, {s.get('mean_y_nm', 0):+.3f}) nm, "
             f"3σ ({s.get('3sigma_x_nm', 0):.3f}, {s.get('3sigma_y_nm', 0):.3f}) nm, max {s.get('max_nm', 0):.3f} nm")
+
+
+def table_text(table: list[list[str]], delimiter: str) -> str:
+    """The table's rows as delimited text (csv quoting, so a comma in a set name is safe)."""
+    out = io.StringIO()
+    csv.writer(out, delimiter=delimiter, lineterminator="\n").writerows(table)
+    return out.getvalue()
 
 
 def colorize(grid: np.ndarray, levels) -> np.ndarray:
@@ -171,8 +185,18 @@ class RegistrationView(QtWidgets.QWidget):
         self.label = QtWidgets.QLabel()
         self.label.setWordWrap(True)
         self.summary, self.extra_summaries = "", []  # label lines: this view's errors, then add_rows sets
+        copy_button = QtWidgets.QPushButton("Copy rows")
+        copy_button.setToolTip("Copy the shown row-profile lines (y µm, dx, dy nm) to the clipboard, tab-separated")
+        copy_button.clicked.connect(self.copy_rows)
+        export_button = QtWidgets.QPushButton("Export rows CSV...")
+        export_button.setToolTip("Save the shown row-profile lines (y µm, dx, dy nm) as a CSV file")
+        export_button.clicked.connect(self.export_rows)
+        top = QtWidgets.QHBoxLayout()
+        top.addWidget(self.label, stretch=1)
+        top.addWidget(copy_button, alignment=QtCore.Qt.AlignmentFlag.AlignTop)
+        top.addWidget(export_button, alignment=QtCore.Qt.AlignmentFlag.AlignTop)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self.label)
+        layout.addLayout(top)
         layout.addLayout(self.show_bar)
         layout.addWidget(self.graphics, stretch=1)
         self.resize(1500, 1000)
@@ -294,6 +318,44 @@ class RegistrationView(QtWidgets.QWidget):
             self.line_boxes[key], self.line_items[key] = box, []
         self.line_items[key].append(line)
         line.setVisible(self.line_boxes[key].isChecked())
+
+    def row_table(self) -> list[list[str]]:
+        """The row-profile lines whose Show box is checked, as a header row and data rows: per set
+        and plot (after the affine, then without affine) its row y − y_ref (µm), dx and dy (nm).
+        Blank where a set has fewer rows than the longest, or a component is hidden or NaN."""
+        plots = [(self.row_plot, "after affine"), (self.raw_plot, "no affine")]
+        groups = {}  # (plot name, set name) -> {"y": row y µm, "dx": nm, "dy": nm}
+        for plot, plot_name in plots:
+            if plot is None:
+                continue
+            items = plot.listDataItems()
+            for (name, axis), lines in self.line_items.items():
+                if not self.line_boxes[name, axis].isChecked():
+                    continue
+                for line in lines:
+                    if line in items:  # not an external set's rings on a map
+                        x, y = line.getData()
+                        group = groups.setdefault((plot_name, name), {"y": x})
+                        group[axis] = y
+        columns = []  # (header, values)
+        for (plot_name, name), group in groups.items():
+            columns.append((f"{name}, {plot_name}: row y - y_ref (µm)", group["y"]))
+            columns += [(f"{name}, {plot_name}: {axis} (nm)", group[axis]) for axis in ("dx", "dy") if axis in group]
+        length = max((len(values) for _, values in columns), default=0)
+        rows = [[f"{values[k]:.6f}" if k < len(values) and np.isfinite(values[k]) else "" for _, values in columns]
+                for k in range(length)]
+        return [[header for header, _ in columns]] + rows
+
+    def copy_rows(self):
+        """Put row_table on the clipboard, tab-separated."""
+        QtWidgets.QApplication.clipboard().setText(table_text(self.row_table(), "\t"))
+
+    def export_rows(self):
+        """Ask for a file name and write row_table there as CSV."""
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export row profile", "row_profile.csv", "CSV (*.csv)")
+        if path:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                f.write(table_text(self.row_table(), ","))
 
     def show_cell(self, name: str, offset: int) -> tuple[int, int]:
         """(row, column) in the Show bar of set `name`'s name (offset 0), dx box (1) or dy box (2)."""
