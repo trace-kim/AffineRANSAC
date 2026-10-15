@@ -13,6 +13,7 @@ import pytest
 from affine_ransac.analysis import Settings, analyse_contour_folder, analyse_images, settings_for
 from affine_ransac.pipeline import residual_summary
 from affine_ransac.view_analysis import analysis_window
+from affine_ransac.view_contact_size import ContactSizeView
 from affine_ransac.view_points import PointsStitchView
 from affine_ransac.view_stitch import StitchViewer
 
@@ -25,7 +26,7 @@ BOTH = "in-image + stripe drift corrected, translation + rotation"  # the set pl
 SETS = ["uncorrected", "in-image corrected", "drift corrected", "stripe drift corrected", BOTH]
 TABS = ["Stitching", "RANSAC monitor", "Registration, RANSAC", "Registration, moving window", "Moving-window tuner",
         "Row pitch", "In-image corrected", "Drift corrected", "Stripe drift corrected", BOTH[0].upper() + BOTH[1:],
-        "Stripe drift curves", "Stitching residuals"]
+        "Stripe drift curves", "Stitching residuals", "Contact size"]
 
 
 def write_contour_folder(folder, local_columns=True, noise_nm=0.1, seed=0, sem_error=None):
@@ -76,6 +77,7 @@ def test_contour_folder_runs_the_notebook_flow(tmp_path):
     assert [window.tabText(i) for i in range(window.count())] == TABS
     assert isinstance(window.widget(0), PointsStitchView)
     assert ("drift correction applied", "dx") in window.extra_views["drift corrected"].line_boxes
+    assert result.contact_sizes is None and window.widget(window.count() - 1).text().startswith("N/A")
     window.close()
 
 
@@ -153,10 +155,16 @@ def test_image_folder_runs_the_notebook_flow(tmp_path):
                                        "in-image + stripe drift corrected"]
     assert len(result.images.tiles) == 4 and set(result.images.merged) == {"nominal", "mean", "first"}
     assert lines[3] == "4 of 4 tiles loaded and detected"
+    # Contact sizes, one row per contact of the uncorrected set: SEM discs of 40 nm, design squares of 40 nm.
+    sizes = result.contact_sizes
+    assert sizes.sem.shape == sizes.design.shape == (len(result.sets["uncorrected"].design_nm), 3)
+    np.testing.assert_allclose(sizes.design, np.tile([1600.0, 40.0, 40.0], (len(sizes.design), 1)))
+    np.testing.assert_allclose(np.median(sizes.sem, axis=0), [np.pi * 20 ** 2, 40, 40], rtol=0.1)
 
     pg.mkQApp()
     window = analysis_window(result, use_opengl=False)
     assert isinstance(window.widget(0), StitchViewer)
+    assert isinstance(window.widget(window.count() - 1), ContactSizeView)
     result.images = None  # e.g. a saved result: the points view instead
     other = analysis_window(result, use_opengl=False)
     assert isinstance(other.widget(0), PointsStitchView)

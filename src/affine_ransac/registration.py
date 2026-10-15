@@ -45,6 +45,10 @@ class DesignErrors:
     # Points without a partner at the chosen shift, where both sets are complete (NaN if not
     # matched): ~0 = the tile matched its design exactly; more = failed detections or a wrong row.
     match_mismatches: np.ndarray | None = None    # (n_tiles,)
+    # Per observation, its row in its tile's SEM / design points (as passed in), e.g. to look up values
+    # measured per tile (merge_values).
+    sem_index: np.ndarray | None = None     # (N,)
+    design_index: np.ndarray | None = None  # (N,)
 
 
 @dataclass
@@ -123,7 +127,7 @@ def design_errors(
     else:
         choice = [choose_shift(c, min_extra)[0] if c else -1 for c in candidates]
 
-    tiles, designs, nominals, sems = [], [], [], []
+    tiles, designs, nominals, sems, indices = [], [], [], [], []
     match_shift = np.full((n, 2), np.nan)
     mismatches = np.full(n, np.nan)
     for k in range(n):
@@ -136,8 +140,9 @@ def design_errors(
         designs.append(stitched_design[match.ia])
         nominals.append(design_points[k][match.ia])
         sems.append(stitched_sem[match.ib])
+        indices.append((match.ib, match.ia))
 
-    errors = _collect(tiles, designs, nominals, sems, skipped)
+    errors = _collect(tiles, designs, nominals, sems, indices, skipped)
     errors.match_shift_nm, errors.ambiguous = match_shift, ambiguous
     errors.neighbour_jump_nm = neighbour_jumps(match_shift, neighbours or [])
     errors.match_mismatches = mismatches
@@ -171,7 +176,7 @@ def paired_errors(
     sem_points[t] is the same contact as row k of design_points[t] (e.g. read_contour_csv).
     No matching and no tone check; tiles not stitched or without contacts are skipped (warned).
     Corrections: shifts or affines, as for design_errors."""
-    tiles, designs, nominals, sems, skipped = [], [], [], [], {}
+    tiles, designs, nominals, sems, indices, skipped = [], [], [], [], [], {}
     for k, (sem, design) in enumerate(zip(sem_points, design_points)):
         if len(design) == 0:
             skipped[k] = "no contacts"
@@ -184,11 +189,13 @@ def paired_errors(
             designs.append(apply_correction(design, design_corrections[k]))
             nominals.append(design)
             sems.append(apply_correction(sem, sem_corrections[k]))
-    return _collect(tiles, designs, nominals, sems, skipped)
+            indices.append((np.arange(len(sem)), np.arange(len(design))))
+    return _collect(tiles, designs, nominals, sems, indices, skipped)
 
 
-def _collect(tiles, designs, nominals, sems, skipped) -> DesignErrors:
-    """DesignErrors from per-tile lists of observations; warns about the skipped tiles."""
+def _collect(tiles, designs, nominals, sems, indices, skipped) -> DesignErrors:
+    """DesignErrors from per-tile lists of observations and their (SEM, design) rows; warns about the
+    skipped tiles."""
     if skipped:
         warnings.warn(f"{len(skipped)} tile(s) not measured (no error computed): {skipped}", stacklevel=3)
 
@@ -203,6 +210,8 @@ def _collect(tiles, designs, nominals, sems, skipped) -> DesignErrors:
         error_nm=registration_error(sem_nm, design_nm),
         design_nominal_nm=join(nominals),
         skipped=skipped,
+        sem_index=np.concatenate([i for i, _ in indices]).astype(int) if indices else np.empty(0, int),
+        design_index=np.concatenate([j for _, j in indices]).astype(int) if indices else np.empty(0, int),
     )
 
 
@@ -255,6 +264,29 @@ def merge_observations(errors: DesignErrors, design_corrections: np.ndarray, rad
         skipped=errors.skipped,
     )
 
+
+def merge_values(merged: MergedErrors, errors: DesignErrors, sem_values: list[np.ndarray],
+                 design_values: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Per merged contact, the mean of values measured per tile (e.g. contact sizes) over its
+    observations: sem_values[t] (n_t, k) has a row per SEM point of tile t, design_values[t] per design
+    point, in the order passed to design_errors / paired_errors. NaN values are left out of a mean
+    (NaN if all are). merged must be merge_observations(errors, ...). Returns (M, k) SEM and design."""
+    labels = np.repeat(np.arange(len(merged.members)), [len(m) for m in merged.members])
+    rows = np.concatenate(merged.members) if merged.members else np.empty(0, int)
+
+    def mean(values, index):
+        starts = np.concatenate([[0], np.cumsum([len(v) for v in values])[:-1]])
+        flat = np.concatenate(values)
+        observed = flat[starts[errors.tile[rows]] + index[rows]]
+        found = np.isfinite(observed)
+        total = np.zeros((len(merged.members), flat.shape[1]))
+        count = np.zeros_like(total)
+        np.add.at(total, labels, np.where(found, observed, 0))
+        np.add.at(count, labels, found)
+        with np.errstate(invalid="ignore"):
+            return np.where(count > 0, total / count, np.nan)
+
+    return mean(sem_values, errors.sem_index), mean(design_values, errors.design_index)
 
 
 def group_rows(design_y: np.ndarray, gap_nm: float = 10.0) -> np.ndarray:

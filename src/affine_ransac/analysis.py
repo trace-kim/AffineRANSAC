@@ -8,6 +8,8 @@ Two kinds of folder (docs/SPEC.md §4):
 Both run the same steps on the tiles' points (_analyse): stitching (translation, all overlaps), errors
 per placement and merged contacts, the in-image map, the drift curve, the drift per stripe in
 measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals.
+Image folders also measure every contact's area, xCD and yCD on the SEM contour and on its .oas outline
+(ContactSizes; contour CSVs have no outlines).
 Both corrections together (the in-image corrected points with their drift per stripe removed) are
 stitched for the residuals and, placed with translation + rotation per tile, are one more set.
 The AnalysisResult holds what the analysis window shows (view_analysis.analysis_window). No UI code.
@@ -28,7 +30,7 @@ from affine_ransac.io.design import load_layout, read_polygons
 from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, process_tile, stitch_design,
                                     stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points, tile_neighbours,
                                     tile_stripes)
-from affine_ransac.registration import MergedErrors, design_errors, merge_observations, paired_errors
+from affine_ransac.registration import MergedErrors, design_errors, merge_observations, merge_values, paired_errors
 from affine_ransac.stitching import placement_corrections
 
 
@@ -74,13 +76,15 @@ class Settings:
     min_match_fraction: float = setting(0.5, "A design tone is accepted if at least this fraction of the SEM "
                                              "contacts match it")
     stitch_refined: bool = setting(True, "Stitch with the refined centres (off: Otsu centres)")
+    cd_roi_width_nm: float = setting(0.0, "Contact xCD / yCD: mean of the chords, one per pixel, in a band this wide "
+                                          "through the contact centre (0: the single chord through the centre)")
     spread_flag_nm: float = setting(2.0, "Stitch viewer: ring merged contacts whose SEM observations differ by more")
     arrow_scale: float = setting(10.0, "Stitch viewer: error lines are drawn this many times longer than the error")
 
 
 CSV_ONLY = {"tile_margin_nm"}
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "design_search_nm", "design_tolerance_nm",
-               "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale"}
+               "min_match_fraction", "stitch_refined", "cd_roi_width_nm", "spread_flag_nm", "arrow_scale"}
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band")}
 
 
@@ -97,6 +101,14 @@ class ContactSet:
     design_nm: np.ndarray              # (M, 2) stitched design centres, mask nm
     ransac: RansacResult
     moving: MovingWindowResult | None  # None: no moving-window fit for this set
+
+
+@dataclass
+class ContactSizes:
+    """Area (nm²), xCD and yCD (nm) of every contact of the "uncorrected" set (same rows), the mean over
+    the tiles that saw it; NaN where no chord crossed the outline."""
+    sem: np.ndarray     # (M, 3) measured on the SEM contour (TileResult.contact_sizes)
+    design: np.ndarray  # (M, 3) measured on the .oas outline
 
 
 @dataclass
@@ -132,6 +144,7 @@ class AnalysisResult:
     drift: DriftCurve                  # its bend was subtracted from the "drift corrected" set
     stripe_drift: StripeDrift          # its curves were subtracted from the "stripe drift corrected" set
     log: list[str]                     # what the run reported
+    contact_sizes: ContactSizes | None = None  # images only (contour CSVs have no outlines)
     images: ImageTiles | None = None   # images only, in memory after a run
 
 
@@ -156,7 +169,7 @@ def analyse_contour_folder(folder, settings: Settings, log: Callable[[str], None
         return paired_errors(points, design_points, sem_corrections, design_corrections)
 
     image_centers = np.array([t.center_nm for t in tiles])  # NaN without the DesignX, DesignY columns
-    result, _ = _analyse(str(folder), "contour CSV", s, log, [t.name for t in tiles], sem_points, design_points,
+    result, _, _ = _analyse(str(folder), "contour CSV", s, log, [t.name for t in tiles], sem_points, design_points,
                          centers, sizes, image_centers, design_stitch, errors)
     result.log = lines
     return result
@@ -192,8 +205,14 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
         return design_errors(points, design_points, sem_corrections, design_corrections, design_ok,
                              s.design_search_nm, s.design_tolerance_nm, neighbours)
 
-    result, merged = _analyse(str(folder), "images", s, log, tile_ids, sem_points, design_points, centers, fovs,
-                              centers, design_stitch, errors)
+    result, observations, merged = _analyse(str(folder), "images", s, log, tile_ids, sem_points, design_points,
+                                            centers, fovs, centers, design_stitch, errors)
+    sizes = [t.contact_sizes(s.cd_roi_width_nm, s.stitch_refined) for t in tiles]
+    sem_sizes, design_sizes = merge_values(merged[s.ransac_placement], observations[s.ransac_placement],
+                                           [sem for sem, _ in sizes], [design for _, design in sizes])
+    result.contact_sizes = ContactSizes(sem_sizes, design_sizes)
+    median = np.nanmedian(sem_sizes, axis=0)
+    log(f"Contact sizes (SEM, median): area {median[0]:.1f} nm², xCD {median[1]:.2f} nm, yCD {median[2]:.2f} nm")
     polygons = [read_polygons(load_layout(r.oas_path), *layer) if r.oas_path else [] for r in records]
     result.images = ImageTiles(tiles, polygons, merged)
     result.log = lines
@@ -211,11 +230,11 @@ def _recording(log):
 
 
 def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points, centers, sizes, image_centers,
-             design_stitch, errors) -> tuple[AnalysisResult, dict]:
+             design_stitch, errors) -> tuple[AnalysisResult, dict, dict]:
     """The steps both kinds share, on the tiles' points at the nominal placement (mask nm). sizes: tile
     boxes (FOVs); image_centers: (n_tiles, 2) image centres for the in-image map (NaN: no map);
     errors(points, sem_corrections, design_corrections) -> DesignErrors of the SEM points against the
-    design. Returns the result and the merged contacts of every placement."""
+    design. Returns the result, and the observations and merged contacts of every placement."""
     def stitch(points, only_pairs=None):
         return stitch_tiles(points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
                             only_pairs=only_pairs)
@@ -306,7 +325,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
         folder=folder, kind=kind, settings=s, tile_ids=list(tile_ids), centers=centers, sizes=sizes,
         design_points=design_points, design_stitch=design_stitch, stitchings=stitchings,
         sets=sets, drift=drift, stripe_drift=stripe_drifts, log=[])
-    return result, merged
+    return result, observations, merged
 
 
 def _fitted(sem_nm, design_nm, s: Settings, log, name: str, moving: bool = True) -> ContactSet:

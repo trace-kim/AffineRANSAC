@@ -29,7 +29,8 @@ import numpy as np
 from affine_ransac.features.contact import DetectedContacts, detect_contacts
 from affine_ransac.features.edges import refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
-from affine_ransac.io.design import load_layout, read_contacts, read_contacts_tone_reversed
+from affine_ransac.geometry.polygon import contact_sizes
+from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.matching import match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
@@ -48,6 +49,7 @@ class DesignContacts:
     # the smallest was taken (matching.match_with_shift).
     shift_nm: np.ndarray = field(default_factory=lambda: np.full(2, np.nan))
     ambiguous: bool = False
+    outlines: list = field(default_factory=list)  # (M, 2) tile-local nm per contact, in the order of centers
 
 
 def matched_fraction(design: np.ndarray, sem: np.ndarray, search_nm: float, tolerance_nm: float):
@@ -87,10 +89,15 @@ def choose_design_contacts(
     """
     def result(centers, reversed_tone, fraction, match, ok):
         shift_match, tied = match
-        return DesignContacts(centers, reversed_tone, fraction, ok, shift_match.shift, tied)
+        if reversed_tone:
+            outlines = contact_outlines(layout, *layer, tone_reversed=True, frame_nm=tuple(fov_nm))
+        else:
+            outlines = [o for o, keep in zip(contact_outlines(layout, *layer), inside) if keep]
+        return DesignContacts(centers, reversed_tone, fraction, ok, shift_match.shift, tied, outlines)
 
     normal, sizes = read_contacts(layout, *layer)
-    normal = normal[inside_frame(normal, sizes, fov_nm)]
+    inside = inside_frame(normal, sizes, fov_nm)
+    normal = normal[inside]
     normal_fraction, normal_match = matched_fraction(normal, sem_local, search_nm, tolerance_nm)
     if normal_fraction >= min_fraction:
         return result(normal, False, normal_fraction, normal_match, ok=True)
@@ -122,6 +129,17 @@ class TileResult:
     def design_points_nm(self) -> np.ndarray:
         """Design contact centres in mask nm (tile-local + nominal centre; the design never moves)."""
         return self.design.centers + self.center_nm
+
+    def contact_sizes(self, roi_width_nm: float, refined: bool = True) -> tuple[np.ndarray, np.ndarray]:
+        """(N, 3) area (nm²), xCD and yCD (nm) of the SEM contacts, in the order of sem_points_nm, and
+        (K, 3) of the design contacts, in the order of design_points_nm (geometry.polygon.contact_sizes:
+        chords through the centre, averaged over a band roi_width_nm wide, one chord per SEM pixel)."""
+        found = self.refined if refined else self.otsu
+        outlines = [pixel_to_tile_nm(c, self.image.shape, self.pixel_size_nm) for c in found.contours]
+        centers = pixel_to_tile_nm(found.centers, self.image.shape, self.pixel_size_nm)
+        sem = contact_sizes(outlines, centers, roi_width_nm, self.pixel_size_nm)
+        design = contact_sizes(self.design.outlines, self.design.centers, roi_width_nm, self.pixel_size_nm)
+        return sem, design
 
 
 def process_tile(

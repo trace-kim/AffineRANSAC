@@ -5,7 +5,8 @@ Plain numpy arrays only, loaded with allow_pickle=False: the file opens without 
 "sets/uncorrected/ransac/residuals". A list of arrays (per tile, per overlap) is one concatenated
 array plus the length of each part ("<name>/data", "<name>/lengths"). The folder, kind, settings, tile
 ids and log are one JSON text, "info". The images of an image run (AnalysisResult.images) are not
-saved (gigabytes): a reopened result shows the points stitch view.
+saved (gigabytes): a reopened result shows the points stitch view. The contact sizes of an image run are
+optional arrays ("contact_sizes/sem", "contact_sizes/design"); a file without them loads with none.
 FORMAT changes whenever the layout does; a file of another format is refused with a message.
 """
 
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from affine_ransac.analysis import AnalysisResult, ContactSet, Settings, Stitching
+from affine_ransac.analysis import AnalysisResult, ContactSet, ContactSizes, Settings, Stitching
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift
 from affine_ransac.fitting.moving_window import MovingWindowResult
 from affine_ransac.fitting.ransac import RansacResult
@@ -38,6 +39,9 @@ def save_result(result: AnalysisResult, path: str | Path):
         _put_fields(arrays, f"sets/{name}/ransac", c.ransac)
         if c.moving is not None:
             _put_fields(arrays, f"sets/{name}/moving", c.moving)
+    if result.contact_sizes is not None:
+        arrays["contact_sizes/sem"] = result.contact_sizes.sem
+        arrays["contact_sizes/design"] = result.contact_sizes.design
     _put_fields(arrays, "drift", result.drift)
     _put_fields(arrays, "stripe_drift/common", result.stripe_drift.common)
     for stripe, curve in result.stripe_drift.stripes.items():
@@ -66,13 +70,17 @@ def load_result(path: str | Path) -> AnalysisResult:
                                  _get_fields(arrays, f"sets/{name}/ransac", RansacResult),
                                  _get_fields(arrays, f"sets/{name}/moving", MovingWindowResult) if moving else None)
                 for name, moving in info["sets"].items()}
+        contact_sizes = None
+        if "contact_sizes/sem" in arrays:  # an image run
+            contact_sizes = ContactSizes(arrays["contact_sizes/sem"], arrays["contact_sizes/design"])
         stripe_drift = StripeDrift({s: _get_fields(arrays, f"stripe_drift/stripes/{s}", DriftCurve) for s in info["stripes"]},
                                    _get_fields(arrays, "stripe_drift/common", DriftCurve))
         return AnalysisResult(
             folder=info["folder"], kind=info["kind"], settings=settings, tile_ids=info["tile_ids"],
             centers=arrays["centers"], sizes=arrays["sizes"], design_points=_get_parts(arrays, "design_points"),
             design_stitch=_get_stitch(arrays, "design_stitch"), stitchings=stitchings, sets=sets,
-            drift=_get_fields(arrays, "drift", DriftCurve), stripe_drift=stripe_drift, log=info["log"])
+            drift=_get_fields(arrays, "drift", DriftCurve), stripe_drift=stripe_drift, log=info["log"],
+            contact_sizes=contact_sizes)
 
 
 def _put_parts(arrays: dict, name: str, parts: list, empty: np.ndarray):

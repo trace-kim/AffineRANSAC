@@ -4,6 +4,7 @@ import pytest
 
 from affine_ransac.io.design import (
     contact_centers,
+    contact_outlines,
     list_layers,
     list_shapes,
     load_layout,
@@ -13,6 +14,7 @@ from affine_ransac.io.design import (
     read_contacts_tone_reversed,
     read_polygons,
 )
+from affine_ransac.geometry.polygon import contact_sizes
 from sample_design import write_contact_array
 
 # Expected centres of the default 3x2 array: pitch 200 nm in x, 300 nm in y.
@@ -160,6 +162,26 @@ def test_tone_reversed_separate_shapes_and_border(tmp_path):
 
     centers, _ = read_contacts_tone_reversed(layout, 1, 0, frame_nm=(1200, 1000), drop_border=False)
     assert len(centers) == 2  # the hole + the border region
+
+
+def test_contact_outlines_follow_the_order_of_the_centres_in_both_tones(tmp_path):
+    path = tmp_path / "array.oas"
+    write_contact_array(path, size_nm=100)  # 3 x 2 squares of 100 nm
+    layout = load_layout(path)
+    centers, _ = read_contacts(layout, 1, 0)
+    outlines = contact_outlines(layout, 1, 0)
+    np.testing.assert_allclose([polygon_centroid(o) for o in outlines], centers)
+    np.testing.assert_allclose(contact_sizes(outlines, centers, 0, 1), np.tile([10000, 100, 100], (6, 1)))
+
+    drawn = kdb.Polygon(kdb.Box(-500, -500, 500, 500))
+    drawn.insert_hole(kdb.Box(-300, -100, -100, 100))  # 200 x 200
+    drawn.insert_hole(kdb.Box(100, -50, 250, 100))  # 150 x 150
+    layout = write_tone_reversed(tmp_path / "rev.oas", [drawn])
+    centers, _ = read_contacts_tone_reversed(layout, 1, 0, frame_nm=(1000, 1000))
+    outlines = contact_outlines(layout, 1, 0, tone_reversed=True, frame_nm=(1000, 1000))
+    np.testing.assert_allclose([polygon_centroid(o) for o in outlines], centers)
+    sizes = contact_sizes(outlines, centers, 0, 1)
+    np.testing.assert_allclose(sizes[np.argsort(centers[:, 0])], [[40000, 200, 200], [22500, 150, 150]])
 
 
 def test_oasis_stores_holes_as_cut_lines(tmp_path):

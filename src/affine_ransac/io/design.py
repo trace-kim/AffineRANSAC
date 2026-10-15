@@ -126,8 +126,20 @@ def read_contacts_tone_reversed(
         centers: (N, 2) in nm; sizes: (N, 2) bounding-box width and height in nm.
     """
     nm_per_dbu = layout.dbu * 1000.0  # layout.dbu is in micrometres
-    drawn = kdb.Region(_shape_iterator(layout, layer, datatype, cell_name))  # flattened; texts ignored
+    regions = _reversed_regions(layout, layer, datatype, cell_name, frame_nm, drop_border)
+    if not regions:
+        return np.empty((0, 2)), np.empty((0, 2))
+    centers = [polygon_centroid(_polygon_vertices(region)) for region in regions]
+    sizes = [(region.bbox().width(), region.bbox().height()) for region in regions]
+    return np.array(centers) * nm_per_dbu, np.array(sizes, dtype=np.float64) * nm_per_dbu
 
+
+def _reversed_regions(layout: kdb.Layout, layer: int, datatype: int, cell_name: str | None,
+                      frame_nm: tuple[float, float] | None, drop_border: bool) -> list[kdb.Polygon]:
+    """The contacts of a tone-reversed file: frame minus the drawn shapes, one polygon per contact
+    (arguments as read_contacts_tone_reversed)."""
+    nm_per_dbu = layout.dbu * 1000.0
+    drawn = kdb.Region(_shape_iterator(layout, layer, datatype, cell_name))  # flattened; texts ignored
     if frame_nm is None:
         frame = drawn.bbox()
     else:
@@ -135,19 +147,33 @@ def read_contacts_tone_reversed(
         half_h = round(frame_nm[1] / 2 / nm_per_dbu)
         frame = kdb.Box(-half_w, -half_h, half_w, half_h)
 
-    centers, sizes = [], []
+    regions = []
     for region in (kdb.Region(frame) - drawn).each():
         box = region.bbox()
         on_border = (box.left <= frame.left or box.right >= frame.right
                      or box.bottom <= frame.bottom or box.top >= frame.top)
-        if drop_border and on_border:
-            continue
-        centers.append(polygon_centroid(_polygon_vertices(region)))
-        sizes.append((box.width(), box.height()))
+        if not (drop_border and on_border):
+            regions.append(region)
+    return regions
 
-    if not centers:
-        return np.empty((0, 2)), np.empty((0, 2))
-    return np.array(centers) * nm_per_dbu, np.array(sizes, dtype=np.float64) * nm_per_dbu
+
+def contact_outlines(
+    layout: kdb.Layout,
+    layer: int,
+    datatype: int,
+    tone_reversed: bool = False,
+    frame_nm: tuple[float, float] | None = None,
+) -> list[np.ndarray]:
+    """Outline of every contact, (M, 2) vertices in nm, in the order of the centres of read_contacts
+    (tone_reversed False) or read_contacts_tone_reversed (True, with frame_nm; border contacts
+    dropped). For measuring a contact's area and CDs (geometry.polygon.contact_sizes). The outer hull
+    only: a contact has no holes."""
+    nm_per_dbu = layout.dbu * 1000.0
+    if tone_reversed:
+        polygons = _reversed_regions(layout, layer, datatype, None, frame_nm, drop_border=True)
+    else:
+        polygons = _merged_polygons(layout, layer, datatype, None)
+    return [_polygon_vertices(p) * nm_per_dbu for p in polygons]
 
 
 def read_polygons(

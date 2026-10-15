@@ -101,6 +101,31 @@ def colorize(grid: np.ndarray, levels) -> np.ndarray:
     return rgb
 
 
+def draw_map(plot, image, position_um: np.ndarray, values: np.ndarray, levels, dot_um: float,
+             device_ratio: float) -> float | None:
+    """Draw the contacts in plot's view into image (rasterize, colorize), one image pixel per DEVICE
+    pixel (with Windows display scaling, e.g. 150 %, a logical pixel is 1.5 device pixels; an image made
+    per logical pixel would be enlarged and the contact lattice would alias). position_um (N, 2), values
+    (N,); each contact a disk of radius dot_um (at least one pixel, at most MAX_DOT_PX). Returns the disk
+    radius in logical px, None if the view has no size yet."""
+    view = plot.vb.viewRect()
+    pixel_um = np.array(plot.vb.viewPixelSize()) / device_ratio  # (x, y) µm per device pixel
+    if pixel_um[0] <= 0 or pixel_um[1] <= 0:
+        return None
+    cols = int(min(4000, max(1, np.ceil(view.width() / pixel_um[0]))))
+    rows = int(min(4000, max(1, np.ceil(view.height() / pixel_um[1]))))
+    radius_px = int(np.clip(round(dot_um / pixel_um[0]), 0, MAX_DOT_PX))
+    margin = (radius_px + 1) * max(pixel_um)
+    x, y = position_um[:, 0], position_um[:, 1]
+    near = ((x > view.left() - margin) & (x < view.right() + margin)
+            & (y > view.top() - margin) & (y < view.bottom() + margin))  # QRectF: top = smaller y
+    rect = (view.left(), view.top(), view.width(), view.height())
+    grid = rasterize(position_um[near], values[near], rect, (rows, cols), radius_px)
+    image.setImage(colorize(grid, levels), autoLevels=False)
+    image.setRect(QtCore.QRectF(*rect))
+    return radius_px / device_ratio
+
+
 class RegistrationView(QtWidgets.QWidget):
     def __init__(
         self,
@@ -387,25 +412,10 @@ class RegistrationView(QtWidgets.QWidget):
         follow(b, a)
 
     def rasterize_maps(self):
-        """Draw the contacts in view into each map's image, one image pixel per DEVICE pixel (with
-        Windows display scaling, e.g. 150 %, a logical pixel is 1.5 device pixels; an image made per
-        logical pixel would be enlarged and the contact lattice would alias)."""
-        scale = self.devicePixelRatioF()
+        """Draw the contacts in view into each map's image (draw_map)."""
         for plot, image, component in self.maps:
-            view = plot.vb.viewRect()
-            pixel_um = np.array(plot.vb.viewPixelSize()) / scale  # (x, y) µm per device pixel
-            if pixel_um[0] <= 0 or pixel_um[1] <= 0:
-                continue
-            cols = int(min(4000, max(1, np.ceil(view.width() / pixel_um[0]))))
-            rows = int(min(4000, max(1, np.ceil(view.height() / pixel_um[1]))))
-            radius_px = int(np.clip(round(self.dot_nm / 1000 / pixel_um[0]), 0, MAX_DOT_PX))
-            margin = (radius_px + 1) * max(pixel_um)
-            x, y = self.position_um[:, 0], self.position_um[:, 1]
-            near = ((x > view.left() - margin) & (x < view.right() + margin)
-                    & (y > view.top() - margin) & (y < view.bottom() + margin))  # QRectF: top = smaller y
-            rect = (view.left(), view.top(), view.width(), view.height())
-            grid = rasterize(self.position_um[near], self.error_nm[near, component], rect, (rows, cols), radius_px)
-            image.setImage(colorize(grid, self.color_bar.levels()), autoLevels=False)
-            image.setRect(QtCore.QRectF(*rect))
-            self.dot_radius_px = radius_px / scale  # both maps show the same area: the same radius
+            radius = draw_map(plot, image, self.position_um, self.error_nm[:, component], self.color_bar.levels(),
+                              self.dot_nm / 1000, self.devicePixelRatioF())
+            if radius is not None:
+                self.dot_radius_px = radius  # both maps show the same area: the same radius
         self.size_external()

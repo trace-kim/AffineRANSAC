@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from affine_ransac.registration import (design_errors, error_summary, group_rows, merge_observations, paired_errors,
-                                        row_means, row_pitch)
+from affine_ransac.registration import (design_errors, error_summary, group_rows, merge_observations, merge_values,
+                                        paired_errors, row_means, row_pitch)
 
 DESIGN = np.array([(x, y) for x in np.arange(0, 500, 100.0) for y in np.arange(0, 300, 100.0)])
 
@@ -146,6 +146,35 @@ def test_merge_never_joins_two_contacts_of_one_tile():
     errors = design_errors([design], [design], np.zeros((1, 2)), np.zeros((1, 2)), [True], tolerance_nm=1.0)
     assert len(merge_observations(errors, np.zeros((1, 2))).count) == 2
 
+
+
+# Two tiles sharing the contact at x = 200.
+TWO_TILES = [np.array([[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]]), np.array([[200.0, 0.0], [300.0, 0.0]])]
+
+
+def test_merge_values_follow_each_matched_observation_to_its_own_point():
+    sems = [TWO_TILES[0][::-1] + 0.5, TWO_TILES[1] + 0.5]  # tile 0 lists its SEM points in reverse order
+    sem_values = [s[:, :1] for s in sems]  # each SEM point's value: its own x
+    design_values = [d[:, :1] * 10 for d in TWO_TILES]
+    errors = design_errors(sems, TWO_TILES, np.zeros((2, 2)), np.zeros((2, 2)), [True, True])
+    merged = merge_observations(errors, np.zeros((2, 2)))
+
+    sem, design = merge_values(merged, errors, sem_values, design_values)
+
+    order = np.argsort(merged.design_nm[:, 0])
+    np.testing.assert_allclose(sem[order, 0], [0.5, 100.5, 200.5, 300.5])
+    np.testing.assert_allclose(design[order, 0], [0, 1000, 2000, 3000])
+
+
+def test_merge_values_average_a_shared_contact_and_leave_out_nan():
+    errors = paired_errors(TWO_TILES, TWO_TILES, np.zeros((2, 2)), np.zeros((2, 2)))
+    merged = merge_observations(errors, np.zeros((2, 2)))
+    values = [np.array([[1.0], [2.0], [3.0]]), np.array([[5.0], [np.nan]])]  # x = 300: its measurement failed
+
+    sem, _ = merge_values(merged, errors, values, values)
+
+    order = np.argsort(merged.design_nm[:, 0])
+    np.testing.assert_allclose(sem[order, 0], [1.0, 2.0, 4.0, np.nan])  # x = 200: mean of 3 and 5
 
 
 def test_group_rows_by_design_y():

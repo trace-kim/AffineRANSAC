@@ -68,6 +68,20 @@ def test_process_tile_finds_sem_and_design_contacts(tmp_path):
     assert nearest.max() < 1.0
 
 
+def test_tile_contact_sizes_of_sem_discs_and_design_squares(tmp_path):
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)  # discs of 40 nm diameter
+    write_design(tmp_path / "tile.oas", visible(LATTICE, margin=0))  # squares of 40 nm
+    tile = process_tile(tmp_path / "tile.jpg", tmp_path / "tile.oas", (0.0, 0.0), (FOV, FOV), layer=(1, 0))
+
+    sem, design = tile.contact_sizes(roi_width_nm=0.0)
+    assert sem.shape == (len(tile.refined.centers), 3) and design.shape == (len(tile.design.centers), 3)
+    np.testing.assert_allclose(design, np.tile([1600.0, 40.0, 40.0], (len(design), 1)))
+    contacts = tile.refined.areas > 200  # real contacts, not the background gaps (see above)
+    np.testing.assert_allclose(np.median(sem[contacts], axis=0), [np.pi * 20 ** 2, 40, 40], rtol=0.1)
+    banded, _ = tile.contact_sizes(roi_width_nm=10.0)  # chords off the centre of a disc are shorter
+    assert np.median(banded[contacts, 1]) < np.median(sem[contacts, 1])
+
+
 def test_process_tile_without_oas(tmp_path):
     write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
     tile = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0))
@@ -84,6 +98,8 @@ def test_design_tone_is_chosen_by_matching_the_sem(tmp_path, reversed):
 
     assert found.ok and found.reversed == reversed and found.match_fraction == 1.0
     np.testing.assert_allclose(sorted(map(tuple, found.centers)), sorted(map(tuple, design)), atol=1e-9)
+    assert len(found.outlines) == len(found.centers)  # one outline per centre, in the same order
+    np.testing.assert_allclose([o.mean(axis=0) for o in found.outlines], found.centers, atol=1e-9)
 
 
 def test_design_tone_flagged_when_neither_tone_matches(tmp_path):

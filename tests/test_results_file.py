@@ -12,7 +12,7 @@ import numpy as np
 import pyqtgraph as pg
 import pytest
 
-from affine_ransac.analysis import Settings, analyse_contour_folder
+from affine_ransac.analysis import ContactSizes, Settings, analyse_contour_folder
 from affine_ransac.results_file import FORMAT, load_result, save_result
 from affine_ransac.view_analysis import analysis_window
 from test_analysis import TABS, write_contour_folder
@@ -86,3 +86,16 @@ def test_another_format_is_refused_and_unknown_settings_are_ignored(tmp_path):
     np.savez(tmp_path / "newer.npz", **arrays)
     with pytest.raises(ValueError, match="Analyse the folder again"):
         load_result(tmp_path / "newer.npz")
+
+
+def test_contact_sizes_are_saved_when_present(tmp_path):
+    result = analysed(tmp_path)  # a contour CSV run: no sizes
+    save_result(result, tmp_path / "csv.npz")
+    assert load_result(tmp_path / "csv.npz").contact_sizes is None
+
+    n = len(result.sets["uncorrected"].design_nm)
+    rng = np.random.default_rng(0)
+    result.contact_sizes = ContactSizes(rng.uniform(1000, 2000, (n, 3)), np.full((n, 3), 1600.0))  # as an image run
+    result.contact_sizes.sem[0, 1] = np.nan
+    save_result(result, tmp_path / "sizes.npz")
+    assert_same(result, load_result(tmp_path / "sizes.npz"))
