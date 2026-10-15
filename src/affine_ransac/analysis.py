@@ -5,7 +5,8 @@ Two kinds of folder (docs/SPEC.md §4):
 - SEM images + .oas + metadata CSV (stitch_viewer.ipynb): analyse_images(folder, records, settings),
   with the records of the metadata reader (io/metadata.read_tile_index, which exists only on the data
   machine, so the caller passes them in).
-Both run the same steps on the tiles' points (_analyse): stitching (translation, all overlaps), errors
+Both run the same steps on the tiles' points (_analyse): stitching (translation; all overlaps at once, or
+guided by a first stitching in measurement order: settings.stitch_method), errors
 per placement and merged contacts, the in-image map, the drift curve, the drift per stripe in
 measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals.
 Before any work, the settings and (images) the records are checked and a few sample tiles are matched
@@ -14,11 +15,13 @@ On request after an image run, measure_contact_sizes measures every contact's ar
 SEM contour and on its .oas outline (ContactSizes; contour CSVs have no outlines).
 Both corrections together (the in-image corrected points with their drift per stripe removed) are
 stitched for the residuals and, placed with translation + rotation per tile, are one more set.
+restitch(result, method) computes the stitching and everything after it again with another stitching
+method, from what is in memory (contour CSVs: the folder is read again).
 The AnalysisResult holds what the analysis window shows (view_analysis.analysis_window). No UI code.
 `log` receives what the notebooks print (counts, failures).
 """
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Callable
 
@@ -30,9 +33,9 @@ from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import correct_points, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import list_layers, load_layout, read_polygons
-from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, process_tile, stitch_design,
-                                    stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points, tile_neighbours,
-                                    tile_stripes)
+from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, process_tile, slipped_pairs,
+                                    stitch_design, stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points,
+                                    tile_neighbours, tile_stripes)
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, merge_observations, merge_values,
                                         paired_errors)
 from affine_ransac.stitching import placement_corrections
@@ -66,6 +69,10 @@ class Settings:
     drift_window_um: float = setting(40.0, "Drift curve: height of the local straight-line fit along y")
     first_stripe_upward: bool = setting(True, "Serpentine scan: the first stripe (smallest x) was measured from its "
                                               "bottom up, then alternately")
+    stitch_method: str = setting("all overlaps", "all overlaps: every overlap paired at the nominal placement. "
+                                 "measurement order first: stitch the images taken one after the other first, then "
+                                 "pair every overlap at the offset that predicts (an offset near one pitch between "
+                                 "images taken far apart in time cannot pair contacts one row off)")
     # Contour CSVs only
     tile_margin_nm: float = setting(25.0, "Tile box = bounding box of its design centres grown by this")
     # Images only
@@ -87,7 +94,8 @@ class Settings:
 CSV_ONLY = {"tile_margin_nm"}
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale"}
-CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band")}
+STITCH_METHODS = ("all overlaps", "measurement order first")
+CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "stitch_method": STITCH_METHODS}
 
 
 POSITIVE = {"max_match_nm", "design_max_match_nm", "outlier_factor", "group_radius_nm", "ransac_threshold_nm",
@@ -206,6 +214,8 @@ def analyse_contour_folder(folder, settings: Settings, log: Callable[[str], None
     if empty:
         log(f"!! {len(empty)} file(s) without any contact, left out: {empty}")
     tiles = [t for t in all_tiles if len(t.design_nm)]
+    if not tiles:
+        raise ValueError(f"None of the {len(all_tiles)} contour CSV file(s) holds a contact")
     log(f"{len(tiles)} of {len(all_tiles)} files used, {sum(len(t.design_nm) for t in tiles)} contacts, "
         f"{sum(t.dropped for t in all_tiles)} rows left out (missing value)")
     sem_points = [t.sem_nm for t in tiles]
@@ -263,6 +273,15 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
         log(f"!! {len(flagged)} tile(s) FLAGGED: neither design tone matches the SEM (or no .oas): {flagged}")
     if len(flagged) == len(tiles):
         raise RuntimeError("No tile matched its design: nothing can be measured (see the flagged tiles above)")
+    polygons = [read_polygons(load_layout(r.oas_path), *layer) if r.oas_path else [] for r in records]
+    result = _analyse_tiles(str(folder), s, log, tile_ids, tiles, polygons)
+    result.log = lines
+    return result
+
+
+def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResult], polygons) -> AnalysisResult:
+    """The steps of an image run after its tiles are loaded (also restitch); polygons: per tile, its .oas
+    polygons for the viewer."""
     centers = np.array([t.center_nm for t in tiles])
     fovs = np.array([t.fov_nm for t in tiles])
     sem_points = [t.sem_points_nm(s.stitch_refined) for t in tiles]
@@ -275,12 +294,31 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
         return design_errors(points, design_points, sem_corrections, design_corrections, design_ok,
                              s.design_search_nm, s.design_tolerance_nm, neighbours)
 
-    result, observations, merged = _analyse(str(folder), "images", s, log, tile_ids, sem_points, design_points,
+    result, observations, merged = _analyse(folder, "images", s, log, tile_ids, sem_points, design_points,
                                             centers, fovs, centers, design_stitch, errors)
-    polygons = [read_polygons(load_layout(r.oas_path), *layer) if r.oas_path else [] for r in records]
     result.images = ImageTiles(tiles, polygons, merged, observations)
-    result.log = lines
     return result
+
+
+def restitch(result: AnalysisResult, method: str, log: Callable[[str], None] = print) -> AnalysisResult:
+    """A new result of the same folder with settings.stitch_method = method: the stitching and every step
+    after it (errors, corrections, RANSAC, moving window) computed again. Image runs reuse their tiles in
+    memory (result.images; a reopened image result cannot be restitched); contour CSVs read the folder
+    again. Contact sizes are not kept (their rows are the contacts of the new stitching). The new log
+    is the old one, a line naming the method, then what this run reported."""
+    if method not in STITCH_METHODS:
+        raise ValueError(f"Stitching method must be one of {STITCH_METHODS} (is {method!r})")
+    s = replace(result.settings, stitch_method=method)
+    log, lines = _recording(log)
+    log(f"=== Stitching method: {method}; the stitching and every step after it computed again")
+    if result.kind == "contour CSV":
+        new = analyse_contour_folder(result.folder, s, log)
+    elif result.images is None:
+        raise ValueError("Restitching an image run needs its tiles in memory: analyse the image folder again")
+    else:
+        new = _analyse_tiles(result.folder, s, log, result.tile_ids, result.images.tiles, result.images.design_polygons)
+    new.log = result.log + lines
+    return new
 
 
 def measure_contact_sizes(result: AnalysisResult, roi_width_nm: float = 0.0,
@@ -323,17 +361,35 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     boxes (FOVs); image_centers: (n_tiles, 2) image centres for the in-image map (NaN: no map);
     errors(points, sem_corrections, design_corrections) -> DesignErrors of the SEM points against the
     design. Returns the result, and the observations and merged contacts of every placement."""
-    def stitch(points, only_pairs=None):
+    stripe = tile_stripes(centers, sizes)
+    order_pairs = measurement_pairs(centers, stripe, s.first_stripe_upward)
+    guided = s.stitch_method == "measurement order first"
+
+    def stitch(points, only_pairs=None, guide=None):
+        """All overlaps (only_pairs None), or those pairs; with the chosen method, all overlaps are guided
+        by a first stitching in measurement order (stitch_tiles(guide=...))."""
+        if guided and only_pairs is None and guide is None:
+            guide = stitch(points, only_pairs=order_pairs).corrections
         return stitch_tiles(points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
-                            only_pairs=only_pairs)
+                            only_pairs=only_pairs, guide=guide)
 
     def merged_contacts(points, corrections):  # shifts (n, 2) or translation + rotation affines (n, 3, 3)
         return merge_observations(errors(points, corrections, design_stitch.corrections),
                                   design_stitch.corrections, s.group_radius_nm)
 
-    raw_stitch = stitch(sem_points)
+    order_stitch = stitch(sem_points, only_pairs=order_pairs)
+    raw_stitch = stitch(sem_points, guide=order_stitch.corrections if guided else None)
+    log(f"Stitching method: {s.stitch_method}" + (f" ({len(order_stitch.pairs)} pairs in measurement order, "
+                                                   f"{len(order_stitch.unplaced)} tile(s) not placed by them: "
+                                                   f"paired at their nominal position)" if guided else ""))
     for name, result in (("SEM", raw_stitch), ("Design", design_stitch)):
         _report_stitching(log, name, result, tile_ids)
+    slipped = slipped_pairs(raw_stitch, order_stitch.corrections, s.max_match_nm)
+    if slipped:
+        log(f"!! {len(slipped)} SEM overlap(s) fitted more than max_match_nm away from the shift the stitching in "
+            f"measurement order predicts (contacts paired one row off?): "
+            f"{[(tile_ids[i], tile_ids[j]) for i, j in slipped]}"
+            + ("" if guided else "; stitch_method 'measurement order first' avoids this"))
 
     # Raw errors per placement (no affine), one entry per physical contact.
     observations = {placement: errors(sem_points, sem_c, design_c) for placement, (sem_c, design_c)
@@ -375,8 +431,6 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     sets["drift corrected"] = _fitted(drift_sem, contacts.design_nm, s, log, "drift corrected", moving=False)
 
     # Drift per stripe: stitch in measurement order, subtract each stripe's curve, stitch everything.
-    stripe = tile_stripes(centers, sizes)
-    order_pairs = measurement_pairs(centers, stripe, s.first_stripe_upward)
     log(f"{stripe.max() + 1} stripes of {np.bincount(stripe).tolist()} tiles")
 
     def without_stripe_drift(points, name):

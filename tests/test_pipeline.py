@@ -7,9 +7,9 @@ from affine_ransac.io.design import load_layout
 from affine_ransac.features.contact import DetectedContacts
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, inside_frame,
-                                    measurement_pairs, pair_kind, pair_residuals, process_tile, stitch_design,
-                                    stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid, tie_residuals,
-                                    tile_stripes)
+                                    measurement_pairs, pair_kind, pair_residuals, process_tile, slipped_pairs,
+                                    stitch_design, stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid,
+                                    tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
 from test_stitching import about, rotation
@@ -240,6 +240,45 @@ def serpentine(stripes=3, per_stripe=4):
     centers = np.array([(s * 2000.0, k * 1800.0) for s in range(stripes) for k in range(per_stripe)])
     centers[:, 0] += np.random.default_rng(0).normal(0, 20, len(centers))
     return centers, np.full((len(centers), 2), 2500.0)
+
+
+from affine_ransac.overlap import overlapping_pairs as overlapping  # noqa: E402
+
+
+def drifting_serpentine(step_nm=17.0, pitch=100.0, fov=1200.0):
+    """2 stripes x 3 tiles of a contact grid (pitch 100 nm, 300 nm overlaps), measured as a serpentine
+    (stripe 0 upward: tiles 0, 1, 2; stripe 1 downward: 5, 4, 3); the stage drifts up by step_nm per image,
+    so the bottom tiles of the two stripes (0 and 3, five images apart) are 85 nm apart: within
+    max_match_nm (25) of one pitch. Returns the points at the nominal placement, centres, FOVs and the
+    true corrections (each tile's drift removed, mean 0)."""
+    centers = np.array([(x, y) for x in (0.0, 900.0) for y in (0.0, 900.0, 1800.0)])
+    drift = np.zeros((6, 2))
+    drift[[0, 1, 2, 5, 4, 3], 1] = step_nm * np.arange(6)  # in measurement order
+    grid = np.array([(x, y) for x in np.arange(-650, 1600, pitch) for y in np.arange(-650, 2500, pitch)])
+    rng = np.random.default_rng(0)
+    points = []
+    for center, d in zip(centers, drift):
+        seen = grid[np.all(np.abs(grid - center - d) < fov / 2 - 20, axis=1)]
+        points.append(seen - d + rng.normal(0, 0.3, seen.shape))  # placed at the nominal centre
+    return points, centers, np.full((6, 2), fov), drift - drift.mean(axis=0)
+
+
+def test_an_offset_near_one_pitch_slips_a_row_unless_guided_by_the_measurement_order():
+    points, centers, fovs, truth = drifting_serpentine()
+    order = measurement_pairs(centers, tile_stripes(centers, fovs))
+    first = stitch_tiles(points, centers, fovs, only_pairs=order)
+    np.testing.assert_allclose(first.corrections, truth, atol=0.5)  # 17 nm between consecutive images
+
+    with pytest.warns(UserWarning):  # the middle (51 nm) and corner pairs fail, the bottom one (85 nm) slips
+        plain = stitch_tiles(points, centers, fovs)
+    bottom = next(p for p in plain.pairs if (p.i, p.j) == (0, 3))
+    assert abs(bottom.fit.shift[1] - 15) < 1  # paired one row (100 nm) off: +15 nm instead of -85 nm
+    assert slipped_pairs(plain, first.corrections, 25.0) == [(0, 3)]
+
+    guided = stitch_tiles(points, centers, fovs, guide=first.corrections)  # every overlap pairs, no warning
+    assert sorted((p.i, p.j) for p in guided.pairs) == sorted((i, j) for i, j, _ in overlapping(centers, fovs))
+    np.testing.assert_allclose(guided.corrections, truth, atol=0.5)
+    assert slipped_pairs(guided, first.corrections, 25.0) == []
 
 
 def test_tiles_are_grouped_into_stripes_by_their_centre_x():

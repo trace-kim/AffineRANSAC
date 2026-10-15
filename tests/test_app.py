@@ -85,6 +85,37 @@ def test_analyse_a_folder_save_reopen_and_add_an_external_measurement(tmp_path):
     window.add_external(str(tmp_path / "tool.txt"), flip_sign=True)
     assert ("tool (sign flipped)", "dx") in window.analysis.ransac_view.line_boxes
     assert "3 sites, 3 inside the analysed field" in window.log_view.toPlainText()
+
+    # Stitching tab: another method computes the stitching and everything after it again.
+    before = window.result
+    assert window.analysis.stitching_tab.methods.isEnabled() and before.settings.stitch_method == "all overlaps"
+    window.analysis.stitching_tab.methods.setCurrentText("measurement order first")
+    wait(window)
+    assert window.result is not before and window.result.settings.stitch_method == "measurement order first"
+    assert window.analysis.stitching_tab.methods.currentText() == "measurement order first"
+    assert ("tool (sign flipped)", "dx") in window.analysis.ransac_view.line_boxes  # shown again
+    assert "Stitching method: measurement order first (" in window.log_view.toPlainText()
+    window.close()
+
+
+def test_a_failed_restitching_keeps_the_window_and_its_method(tmp_path, monkeypatch):
+    import affine_ransac.app as app
+
+    folder = tmp_path / "data"
+    folder.mkdir()
+    write_contour_folder(folder)
+    window = make_window(tmp_path)
+    window.analyse(str(folder), "contour CSV", Settings())
+    wait(window)
+    shown = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda parent, title, text: shown.append(text))
+    monkeypatch.setattr(app, "restitch", lambda result, method, log: 1 / 0)
+    analysis = window.analysis
+    analysis.stitching_tab.methods.setCurrentText("measurement order first")
+    assert not analysis.stitching_tab.methods.isEnabled()  # while it runs
+    wait(window)
+    assert shown and window.analysis is analysis
+    assert analysis.stitching_tab.methods.currentText() == "all overlaps" and analysis.stitching_tab.methods.isEnabled()
     window.close()
 
 

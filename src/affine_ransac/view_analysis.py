@@ -20,13 +20,15 @@ registration view: lines in the row profile after the affine, markers on the err
 
 analysis_window(result) builds the whole window of an analysis.AnalysisResult, with the tabs the
 notebooks add at the end (stitching, stripe drift curves, stitching residuals), and Contact size (area,
-xCD, yCD maps of an image run, measured on request; N/A for contour CSVs).
+xCD, yCD maps of an image run, measured on request; N/A for contour CSVs). Its Stitching tab
+(StitchingTab) has a Stitching method box: choosing another method calls on_restitch(method), e.g. the
+app's analysis.restitch in the background, which then shows the new result in a new window.
 """
 
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from affine_ransac.analysis import AnalysisResult, tile_edges_y
+from affine_ransac.analysis import STITCH_METHODS, AnalysisResult, tile_edges_y
 from affine_ransac.view_drift import StripeDriftView
 from affine_ransac.view_contact_size import ContactSizeTab
 from affine_ransac.view_moving_window import MovingWindowTuner
@@ -115,11 +117,54 @@ class AnalysisWindow(QtWidgets.QTabWidget):
             view.add_external(name, xy_nm, error_nm)
 
 
-def analysis_window(result: AnalysisResult, use_opengl: bool = True) -> AnalysisWindow:
+class StitchingTab(QtWidgets.QWidget):
+    def __init__(self, view: QtWidgets.QWidget, method: str, on_restitch=None, unavailable: str = ""):
+        """The stitch view (StitchViewer or PointsStitchView) under a Stitching method box set to `method`.
+        Choosing another method calls on_restitch(method); without on_restitch, or with an `unavailable`
+        reason, the box is disabled (its tooltip says why)."""
+        super().__init__()
+        self.view, self.method, self.on_restitch = view, method, on_restitch
+        self.methods = QtWidgets.QComboBox()
+        self.methods.addItems(STITCH_METHODS)
+        self.methods.setCurrentText(method)
+        self.methods.setToolTip("all overlaps: every overlap paired at the nominal placement.\n"
+                                "measurement order first: the images taken one after the other are stitched "
+                                "first; every overlap is then paired at the offset that predicts, so drift "
+                                "between images taken far apart cannot pair contacts one row off.\n"
+                                "Changing it computes the stitching and every result after it again.")
+        reason = unavailable or ("" if on_restitch is not None else "Change stitch_method in the settings")
+        if reason:
+            self.methods.setEnabled(False)
+            self.methods.setToolTip(reason)
+        self.methods.currentTextChanged.connect(self._chosen)
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(QtWidgets.QLabel("Stitching method:"))
+        bar.addWidget(self.methods)
+        bar.addStretch(1)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.addLayout(bar)
+        layout.addWidget(view, stretch=1)
+
+    def _chosen(self, method: str):
+        if method != self.method:
+            self.methods.setEnabled(False)  # until the new result is shown (a new window) or reset_method
+            self.on_restitch(method)
+
+    def reset_method(self):
+        """Back to the method this window shows (e.g. the restitching failed)."""
+        self.methods.blockSignals(True)
+        self.methods.setCurrentText(self.method)
+        self.methods.blockSignals(False)
+        self.methods.setEnabled(True)
+
+
+def analysis_window(result: AnalysisResult, use_opengl: bool = True, on_restitch=None) -> AnalysisWindow:
     """The analysis window of a result, as the notebooks' last cell builds it: Stitching tab (the image
     stitch viewer after an image run, else the points view), the AnalysisWindow tabs with the corrected
     sets as extra lines and tabs, the subtracted drift bend in its tab, Stripe drift curves, Stitching
-    residuals (translation and translation + rotation of every input)."""
+    residuals (translation and translation + rotation of every input). on_restitch(method): see StitchingTab;
+    window.stitching_tab is that tab."""
     s = result.settings
     main, raw = result.sets["uncorrected"], result.stitchings["raw"]
     if result.images is not None:
@@ -131,10 +176,14 @@ def analysis_window(result: AnalysisResult, use_opengl: bool = True) -> Analysis
         stitch_view = PointsStitchView(result.tile_ids, raw.points, result.design_points, result.centers, result.sizes,
                                        raw.stitch, result.design_stitch, use_opengl=use_opengl)
     extra = {name: (c.sem_nm, c.design_nm, c.ransac, c.moving) for name, c in result.sets.items() if name != "uncorrected"}
+    unavailable = ("Restitching needs the SEM images in memory: analyse the image folder again"
+                   if result.kind == "images" and result.images is None else "")
+    stitching_tab = StitchingTab(stitch_view, s.stitch_method, on_restitch, unavailable)
     window = AnalysisWindow(main.sem_nm, main.design_nm, main.ransac, main.moving, s.moving_window_um, s.moving_step_um,
                             s.ransac_threshold_nm, s.ransac_seed, s.ransac_delay_ms, s.row_gap_nm,
-                            tile_edges_y(result.centers, result.sizes), stitch_view=stitch_view, use_opengl=use_opengl,
+                            tile_edges_y(result.centers, result.sizes), stitch_view=stitching_tab, use_opengl=use_opengl,
                             extra=extra)
+    window.stitching_tab = stitching_tab
     window.extra_views["drift corrected"].add_rows(main.design_nm, result.drift.correction(main.design_nm[:, 1]),
                                                    "drift correction applied")  # the bend that was subtracted
     reference = main.ransac.reference

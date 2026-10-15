@@ -13,7 +13,7 @@ import pytest
 
 from affine_ransac import analysis
 from affine_ransac.analysis import (Settings, analyse_contour_folder, analyse_images, check_image_records,
-                                    check_settings, measure_contact_sizes, settings_for)
+                                    check_settings, measure_contact_sizes, restitch, settings_for)
 from affine_ransac.pipeline import residual_summary
 from affine_ransac.view_analysis import analysis_window
 from affine_ransac.view_contact_size import ContactSizeTab
@@ -78,7 +78,7 @@ def test_contour_folder_runs_the_notebook_flow(tmp_path):
     pg.mkQApp()
     window = analysis_window(result, use_opengl=False)
     assert [window.tabText(i) for i in range(window.count())] == TABS
-    assert isinstance(window.widget(0), PointsStitchView)
+    assert isinstance(window.widget(0).view, PointsStitchView)
     assert ("drift correction applied", "dx") in window.extra_views["drift corrected"].line_boxes
     assert result.contact_sizes is None and window.widget(window.count() - 1).text().startswith("N/A")
     window.close()
@@ -175,13 +175,38 @@ def test_image_folder_runs_the_notebook_flow(tmp_path):
 
     pg.mkQApp()
     window = analysis_window(result, use_opengl=False)
-    assert isinstance(window.widget(0), StitchViewer)
+    assert isinstance(window.widget(0).view, StitchViewer)
     assert isinstance(window.widget(window.count() - 1), ContactSizeTab)
     result.images = None  # e.g. a saved result: the points view instead
     other = analysis_window(result, use_opengl=False)
-    assert isinstance(other.widget(0), PointsStitchView)
+    assert isinstance(other.widget(0).view, PointsStitchView)
     window.close()
     other.close()
+
+
+def test_restitch_computes_the_stitching_and_every_result_after_it_again(tmp_path):
+    folder = tmp_path / "csv"
+    folder.mkdir()
+    write_contour_folder(folder)
+    first = analyse_contour_folder(folder, Settings(), log=lambda line: None)
+    lines = []
+    second = restitch(first, "measurement order first", log=lines.append)
+    assert second.settings.stitch_method == "measurement order first" and first.settings.stitch_method == "all overlaps"
+    assert second.log[:len(first.log)] == first.log and lines[0].startswith("=== Stitching method: measurement")
+    assert list(second.sets) == list(first.sets)
+    # No drift here: both methods find the same stage errors.
+    np.testing.assert_allclose(second.stitchings["raw"].stitch.corrections, first.stitchings["raw"].stitch.corrections,
+                               atol=0.05)
+    with pytest.raises(ValueError, match="must be one of"):
+        restitch(first, "fastest")
+
+    images = analyse_images(tmp_path, write_image_folder(tmp_path), IMAGE_SETTINGS, log=lambda line: None)
+    images.contact_sizes = measure_contact_sizes(images)
+    again = restitch(images, "measurement order first", log=lambda line: None)
+    assert again.images.tiles is images.images.tiles and again.contact_sizes is None  # tiles reused, sizes measured anew
+    images.images = None
+    with pytest.raises(ValueError, match="needs its tiles in memory"):
+        restitch(images, "all overlaps")
 
 
 def test_contact_sizes_are_measured_on_request(tmp_path):

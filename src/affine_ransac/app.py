@@ -9,6 +9,9 @@ File menu:
 - Open results / Save results: one .npz per analysis (results_file).
 - Load external measurement: a txt reference result (X, Y µm, dX, dY nm; io.external), shown in every
   registration view; the sign of dX, dY is chosen per file.
+Stitching tab, Stitching method: another method computes the stitching and every result after it again
+(analysis.restitch, in the background), then the new result replaces the window; the external
+measurements loaded are shown again.
 View menu: the log, and OpenGL drawing (switch it off if the plots stay black; used for the next window).
 """
 
@@ -24,7 +27,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import CHOICES, Settings, analyse_contour_folder, analyse_images, settings_for
+from affine_ransac.analysis import CHOICES, Settings, analyse_contour_folder, analyse_images, restitch, settings_for
 from affine_ransac.io.external import read_external
 from affine_ransac.results_file import load_result, save_result
 from affine_ransac.view_analysis import analysis_window
@@ -150,6 +153,7 @@ class AnalyzerWindow(QtWidgets.QMainWindow):
         self.preferences = preferences or QtCore.QSettings("AffineRANSAC", "Analyzer")
         self.result = None    # the AnalysisResult shown
         self.analysis = None  # its AnalysisWindow (not self.window: that is QWidget.window())
+        self.externals = []   # (name, xy_nm, error_nm) shown in it, shown again after a restitching
         self.busy = False
         self.setWindowTitle("AffineRANSAC analyzer")
         self.setCentralWidget(QtWidgets.QLabel("Open a data folder or saved results (File menu).",
@@ -236,6 +240,18 @@ class AnalyzerWindow(QtWidgets.QMainWindow):
                 return analyse_contour_folder(folder, settings, log)
         self.run(f"Analysing {Path(folder).name}...", work, self.show_result)
 
+    def restitch(self, method: str):
+        """The shown result with another stitching method (analysis.restitch), in the background."""
+        result, externals = self.result, list(self.externals)
+        self.log(f"=== Stitching again: {method}")
+
+        def shown(new):
+            self.show_result(new)
+            for external in externals:
+                self.show_external(*external)
+
+        self.run(f"Stitching again ({method})...", lambda log: restitch(result, method, log), shown)
+
     def open_results(self, path: str):
         self.log(f"=== Opening {path}")
 
@@ -264,21 +280,25 @@ class AnalyzerWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "External measurement", str(error))
             return
         name = Path(path).stem + (" (sign flipped)" if flip_sign else "")
-        self.analysis.add_external(name, xy_nm, error_nm)
+        self.show_external(name, xy_nm, error_nm)
         design = self.result.sets["uncorrected"].design_nm  # a check of the units and coordinates:
         inside = np.all((xy_nm > design.min(axis=0) - 1000) & (xy_nm < design.max(axis=0) + 1000), axis=1)  # ±1 µm
         self.log(f"External measurement '{name}': {len(xy_nm)} sites, {inside.sum()} inside the analysed field"
                  + ("" if inside.any() else " - check its units (X, Y in µm) and coordinates"))
+
+    def show_external(self, name: str, xy_nm: np.ndarray, error_nm: np.ndarray):
+        self.analysis.add_external(name, xy_nm, error_nm)
+        self.externals.append((name, xy_nm, error_nm))
 
     def show_result(self, result):
         """Build the analysis window of a result and show it in the main window."""
         self.statusBar().showMessage("Drawing...")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            window = analysis_window(result, use_opengl=self.opengl_action.isChecked())
+            window = analysis_window(result, use_opengl=self.opengl_action.isChecked(), on_restitch=self.restitch)
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
-        self.result, self.analysis = result, window
+        self.result, self.analysis, self.externals = result, window, []
         self.setCentralWidget(window)  # deletes the previous window
         self.setWindowTitle(f"AffineRANSAC analyzer - {Path(result.folder).name} ({result.kind} folder)")
         self.statusBar().showMessage(f"{len(result.tile_ids)} tiles, {len(result.sets['uncorrected'].design_nm)} "
@@ -300,6 +320,8 @@ class AnalyzerWindow(QtWidgets.QMainWindow):
 
     def _job_failed(self, text: str):
         self._finish()
+        if self.analysis is not None:
+            self.analysis.stitching_tab.reset_method()  # if a restitching failed, the window shows the old one
         self.log(text)
         QtWidgets.QMessageBox.critical(self, "AffineRANSAC analyzer", text.strip().splitlines()[-1])
 

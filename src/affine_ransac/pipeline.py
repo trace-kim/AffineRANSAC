@@ -250,6 +250,7 @@ def stitch_tiles(
     min_matched: int = 5,
     label: str = "SEM",
     only_pairs: set | None = None,
+    guide: np.ndarray | None = None,
 ) -> StitchResult:
     """Pairwise overlap fits and the per-tile translation corrections.
 
@@ -261,13 +262,19 @@ def stitch_tiles(
     `rejected`. Each used pair is weighted by its number of inlier contacts.
     only_pairs: if given, only these overlapping pairs (i, j), i < j, are stitched (e.g.
     measurement_pairs); the other overlaps are ignored.
+    guide: optional (n_tiles, 2) corrections of a first stitching (e.g. in measurement order): the contacts
+    of a pair are paired after moving tile j by the B − A shift it predicts (guide_i − guide_j), so an
+    offset of about one pitch (drift between images taken far apart in time) cannot pair them one contact
+    row off; the shift is then fitted on the paired contacts as they are. A pair with a tile the guide
+    did not place is paired as without a guide.
     Warns if a pair failed to match or a tile could not be stitched (see StitchResult).
     """
     pairs, rejected = [], []
     for i, j, box in overlapping_pairs(centers, fovs):
         if only_pairs is not None and (i, j) not in only_pairs:
             continue
-        ia, ib = match_overlap(points[i], points[j], box, max_match_nm)
+        predicted = predicted_shift(guide, i, j)
+        ia, ib = match_overlap(points[i], points[j] - predicted, box, max_match_nm)
         if len(ia) >= min_matched:
             fit = fit_overlap(points[i][ia], points[j][ib], outlier_factor=outlier_factor)
             pairs.append(PairResult(i, j, box, ia, ib, fit))
@@ -284,6 +291,23 @@ def stitch_tiles(
     result = StitchResult(pairs, rejected, corrections)
     _warn_about_failures(result, label)
     return result
+
+
+def predicted_shift(guide: np.ndarray | None, i: int, j: int) -> np.ndarray:
+    """(2,) the B − A shift of pair (i, j) that the corrections `guide` predict (guide_i − guide_j, from
+    t_i − t_j = d_ij), nm; 0 without a guide or if it did not place both tiles."""
+    if guide is None:
+        return np.zeros(2)
+    shift = guide[i] - guide[j]
+    return shift if np.isfinite(shift).all() else np.zeros(2)
+
+
+def slipped_pairs(stitch: StitchResult, guide: np.ndarray, tolerance_nm: float) -> list[tuple[int, int]]:
+    """Used pairs (i, j) of stitch whose fitted shift differs from the one `guide` predicts
+    (predicted_shift) by more than tolerance_nm, e.g. contacts paired one row off; pairs with a tile
+    the guide did not place are not checked."""
+    return [(p.i, p.j) for p in stitch.pairs if np.isfinite(guide[[p.i, p.j]]).all()
+            and np.linalg.norm(p.fit.shift - predicted_shift(guide, p.i, p.j)) > tolerance_nm]
 
 
 def stitch_ties(points: list[np.ndarray], stitch: StitchResult) -> list[tuple[np.ndarray, np.ndarray]]:
