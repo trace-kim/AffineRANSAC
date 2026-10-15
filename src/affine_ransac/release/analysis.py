@@ -7,7 +7,9 @@ at the stitched placement, merged over the overlaps, then the moving-window affi
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 """
 
+import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Callable
 
 import cv2
@@ -18,15 +20,17 @@ from affine_ransac.fitting.moving_window import MovingWindowResult, moving_windo
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, measurement_pairs, slipped_pairs, stitch_design, stitch_tiles,
+                                    stripe_directions,
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.registration import design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
-# contact layer is not one of them: it is detected in the .oas files (detect_layer).
+# contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
+# it is detected from the file numbers, which follow the measurement order (user; scan_direction).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
-          "moving_window_um", "moving_step_um", "stitch_method", "first_stripe_upward"]
+          "moving_window_um", "moving_step_um", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + ["detection", "search_px", "design_search_nm",
                                   "design_tolerance_nm", "min_match_fraction", "stitch_refined"]}
@@ -104,6 +108,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         def errors(sem_corrections, design_corrections):  # CSV rows are already paired
             return paired_errors(sem_points, design_points, sem_corrections, design_corrections)
 
+    names = [Path(r.image_path).stem for r in records] if kind == "images" else tile_ids
+    s = replace(s, first_stripe_upward=scan_direction(names, centers, sizes, s.first_stripe_upward, record))
     progress(LOAD_SHARE, "Stitching")
     stitch = stitch_sem(sem_points, centers, sizes, s, record, tile_ids)
     report_stitching(record, "Design", design_stitch, tile_ids)
@@ -126,6 +132,36 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), sem_points,
                          design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm, moving,
                          image_paths, lines)
+
+
+def file_numbers(names: list[str]) -> np.ndarray | None:
+    """The number at the end of every name (e.g. CD000123 -> 123); None if a name has none or two are equal."""
+    found = [re.search(r"(\d+)$", name) for name in names]
+    if not all(found):
+        return None
+    numbers = np.array([int(f.group(1)) for f in found])
+    return numbers if len(set(numbers.tolist())) == len(numbers) else None
+
+
+def scan_direction(names: list[str], centers, sizes, fallback: bool, log) -> bool:
+    """Whether the first stripe was measured upward, from the file numbers (measurement order); logged. If the
+    names have no distinct numbers, or the first stripe has one image, `fallback`. Stripes that do not alternate
+    (not a serpentine) are logged with !!: the pairs between stripes in measurement order are then wrong."""
+    numbers = file_numbers(names)
+    stripe = tile_stripes(centers, sizes)
+    directions = stripe_directions(centers, stripe, numbers) if numbers is not None else [None]
+    if directions[0] is None:
+        log(f"!! Scan direction not known from the file names: first stripe taken as measured "
+            f"{'upward' if fallback else 'downward'}")
+        return fallback
+    upward = directions[0]
+    log(f"Scan: first stripe measured {'upward' if upward else 'downward'} (file numbers)")
+    odd = [s + 1 for s, d in enumerate(directions) if d is not None and d != ((s % 2 == 0) == upward)]
+    if odd:
+        log(f"!! Stripe(s) {odd} do not alternate in direction: not a serpentine scan, so the pairs measured one after "
+            f"the other between stripes are not known (matters only for 'measurement order first' and the slipped-pair "
+            f"check)")
+    return upward
 
 
 def stitch_sem(sem_points, centers, sizes, s: Settings, log, tile_ids) -> StitchResult:

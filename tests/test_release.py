@@ -205,3 +205,35 @@ def test_release_defaults(tmp_path):
     window = make_window(tmp_path)
     assert window.settings().max_match_nm == 100.0
     assert "layer" not in PARAMETERS["images"] and "datatype" not in PARAMETERS["images"]  # detected
+
+
+def test_the_scan_direction_comes_from_the_file_numbers():
+    from affine_ransac.release.analysis import file_numbers, scan_direction
+    # 2 stripes x 3 images, serpentine: stripe 1 measured downward (CD1 at the top), stripe 2 upward.
+    centers = np.array([(0, 2), (0, 1), (0, 0), (1, 0), (1, 1), (1, 2)], dtype=float) * 2600
+    sizes = np.full((6, 2), 2880.0)
+    names = [f"CD{k:06d}" for k in range(1, 7)]
+    lines = []
+    assert scan_direction(names, centers, sizes, True, lines.append) is False
+    assert lines == ["Scan: first stripe measured downward (file numbers)"]
+
+    lines = []  # every stripe upward: a raster, not a serpentine
+    raster = np.array([(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)], dtype=float) * 2600
+    assert scan_direction(names, raster, sizes, False, lines.append) is True
+    assert lines[1].startswith("!! Stripe(s) [2] do not alternate")
+
+    assert file_numbers(["CD7", "CD10"]).tolist() == [7, 10]
+    assert file_numbers(["CD7", "tile"]) is None and file_numbers(["A1", "B1"]) is None
+    lines = []
+    assert scan_direction(["a", "b", "c", "d", "e", "f"], centers, sizes, True, lines.append) is True  # fallback
+    assert lines[0].startswith("!! Scan direction not known")
+
+
+def test_a_run_stores_the_detected_direction(tmp_path):
+    write_contour_folder(tmp_path)  # CD000000..: each stripe from its bottom up
+    lines = []
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(first_stripe_upward=False), log=lines.append)
+    assert result.settings.first_stripe_upward is True
+    assert "Scan: first stripe measured upward (file numbers)" in lines
+    assert "first_stripe_upward" not in PARAMETERS["images"] + PARAMETERS["contour CSV"]

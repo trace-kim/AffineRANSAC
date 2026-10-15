@@ -404,6 +404,20 @@ def measurement_pairs(centers: np.ndarray, stripe: np.ndarray, first_upward: boo
     return {(int(i), int(j)) for i, j in pairs}
 
 
+def stripe_directions(centers: np.ndarray, stripe: np.ndarray, order: np.ndarray) -> list[bool | None]:
+    """Per stripe, whether it was measured upward: its last image in measurement order (`order`, e.g. the file
+    numbers) lies higher than its first. None for a stripe of one image."""
+    directions = []
+    for s in range(stripe.max() + 1):
+        tiles = np.flatnonzero(stripe == s)
+        if len(tiles) < 2:
+            directions.append(None)
+            continue
+        first, last = tiles[np.argmin(order[tiles])], tiles[np.argmax(order[tiles])]
+        directions.append(bool(centers[last, 1] > centers[first, 1]))
+    return directions
+
+
 def tile_neighbours(centers: np.ndarray, fovs: np.ndarray) -> list[tuple[int, int]]:
     """(i, j) pairs of tiles whose fields of view overlap (corners included), for
     design_errors(neighbours=...)."""
