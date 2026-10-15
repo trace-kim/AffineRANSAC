@@ -7,6 +7,9 @@
   (also for SEM − design: a size bias between SEM and design is normal, a scale centred on 0 would hide
   the variation; drag the bar to change it); the maps share zoom and pan. Positions relative to the reference point, µm; area in nm², CDs in nm.
 - The summary gives per quantity the mean and 3σ of the SEM value, the design value and SEM − design.
+- Behind the map (image runs in memory, off at start): the SEM images and the design (.oas) outlines, each
+  tile placed like the contacts (the corrections of the run's placement); the map is then transparent
+  between the contacts.
 
 ContactSizeTab is the analysis window's tab: the measurement runs only when asked (Run measurement, with
 an ROI width), in a background thread (analysis.measure_contact_sizes needs the images of an image run in
@@ -18,13 +21,16 @@ import time
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import AnalysisResult, measure_contact_sizes
+from affine_ransac.stitching import placement_corrections
 from affine_ransac.view_registration import JET, draw_map
+from affine_ransac.view_stitch import COLORS, DESIGN, image_item, path_item
 
 QUANTITIES = (("Area", "nm²"), ("xCD", "nm"), ("yCD", "nm"))  # the columns of ContactSizes
+TO_UM = QtGui.QTransform.fromScale(1e-3, 1e-3)  # item nm -> map µm
 
 
 def value_levels(values: np.ndarray) -> tuple[float, float]:
@@ -48,12 +54,17 @@ def size_summary(name: str, unit: str, sem: np.ndarray, design: np.ndarray) -> s
 
 class ContactSizeView(QtWidgets.QWidget):
     def __init__(self, design_nm: np.ndarray, sem_sizes: np.ndarray, design_sizes: np.ndarray,
-                 reference_nm: np.ndarray, use_opengl: bool = True):
+                 reference_nm: np.ndarray, use_opengl: bool = True, sem_tiles: list | None = None,
+                 design_tiles: list | None = None):
         """design_nm: (N, 2) contact positions, mask nm; sem_sizes, design_sizes: (N, 3) area (nm²), xCD
         and yCD (nm) of the same contacts on the SEM and the design; reference_nm: (2,) the point the
-        positions are shown relative to (the RANSAC reference, as on the other maps)."""
+        positions are shown relative to (the RANSAC reference, as on the other maps).
+        sem_tiles: optional [(TileResult, centre_nm)], design_tiles: optional [(polygons, centre_nm)]: what
+        can be shown behind the map, each tile's image or .oas polygons (tile-local nm) placed at centre_nm
+        (2,), mask nm (tile_backgrounds); None: that box is disabled."""
         super().__init__()
         self.sem_sizes, self.design_sizes = sem_sizes, design_sizes
+        self.reference_nm = np.asarray(reference_nm, dtype=float)
         self.position_um = (design_nm - reference_nm) / 1000
         if len(design_nm) > 1:
             distance, _ = cKDTree(design_nm).query(design_nm, k=2)
@@ -78,6 +89,20 @@ class ContactSizeView(QtWidgets.QWidget):
         self.difference_button.toggled.connect(self.set_values)
         bar.addWidget(self.sem_button)
         bar.addWidget(self.difference_button)
+        bar.addSpacing(30)
+        bar.addWidget(QtWidgets.QLabel("Behind the map:"))
+        self.backgrounds = {}  # box -> (tiles, item maker, z); items made the first time the box is checked
+        self.background_items = {}  # box -> per map, its items
+        for name, tiles, make, z in (("SEM images", sem_tiles, self._image_item, -10),
+                                     ("Design", design_tiles, self._design_item, 10)):
+            box = QtWidgets.QCheckBox(name)
+            box.setEnabled(tiles is not None)
+            if tiles is None:
+                box.setToolTip("Needs the SEM images of an image run in memory: analyse the image folder again")
+            box.toggled.connect(self.show_backgrounds)
+            bar.addWidget(box)
+            self.backgrounds[box] = (tiles, make, z)
+        self.sem_box, self.design_box = self.backgrounds
         bar.addStretch(1)
 
         self.maps = []  # (widget, plot, image, colour bar) per quantity
@@ -147,10 +172,39 @@ class ContactSizeView(QtWidgets.QWidget):
         self.redraw_timer.start()
 
     def draw_maps(self):
+        transparent = self.sem_box.isChecked()  # black between the contacts would hide the images
         for k, (box, (_, plot, image, color_bar)) in enumerate(zip(self.show_boxes, self.maps)):
             if box.isChecked():  # a hidden map is drawn when it is shown (show_maps)
                 draw_map(plot, image, self.position_um, self.values(k), color_bar.levels(), self.dot_um,
-                         self.devicePixelRatioF())
+                         self.devicePixelRatioF(), transparent)
+
+    def show_backgrounds(self):
+        """Show the SEM images / design outlines whose box is checked (made on first use), then redraw."""
+        for box, (tiles, make, z) in self.backgrounds.items():
+            if box.isChecked() and box not in self.background_items:
+                self.background_items[box] = []
+                for _, plot, _, _ in self.maps:
+                    items = [make(thing, centre_nm) for thing, centre_nm in tiles]
+                    for item in items:
+                        item.setZValue(z)  # images below the map (z 0), outlines above it
+                        plot.addItem(item)
+                    self.background_items[box].append(items)
+            for items in self.background_items.get(box, []):
+                for item in items:
+                    item.setVisible(box.isChecked())
+        self.draw_maps()
+
+    def _image_item(self, tile, centre_nm):
+        item = image_item(tile)  # tile-local nm
+        item.setTransform(item.transform() * TO_UM)
+        item.setPos(*((centre_nm - self.reference_nm) / 1000))
+        return item
+
+    def _design_item(self, polygons, centre_nm):
+        item = path_item(polygons, COLORS[DESIGN])  # tile-local nm, cosmetic pen
+        item.setTransform(TO_UM)
+        item.setPos(*((centre_nm - self.reference_nm) / 1000))
+        return item
 
     def _link_maps(self):
         """Keep all maps on the same area (as RegistrationView._link_maps for its two)."""
@@ -168,6 +222,24 @@ class ContactSizeView(QtWidgets.QWidget):
 
         for _, plot, _, _ in self.maps:
             follow(plot)
+
+
+def tile_backgrounds(result: AnalysisResult) -> tuple[list, list] | tuple[None, None]:
+    """What ContactSizeView can show behind the maps of an image run in memory: [(TileResult, centre_nm)]
+    and [(.oas polygons, centre_nm)], each tile at its nominal centre plus the SEM / design correction of
+    the placement the contacts were merged with (settings.ransac_placement), like the contacts on the map.
+    Tiles not stitched are left out. (None, None) without the images."""
+    if result.images is None:
+        return None, None
+    sem_shift, design_shift = placement_corrections(result.stitchings["raw"].stitch.corrections,
+                                                    result.design_stitch.corrections)[result.settings.ransac_placement]
+    sem_tiles, design_tiles = [], []
+    for k, (tile, polygons) in enumerate(zip(result.images.tiles, result.images.design_polygons)):
+        if np.isfinite(sem_shift[k]).all():
+            sem_tiles.append((tile, tile.center_nm + sem_shift[k]))
+        if np.isfinite(design_shift[k]).all() and len(polygons):
+            design_tiles.append((polygons, tile.center_nm + design_shift[k]))
+    return sem_tiles, design_tiles
 
 
 class _Measurement(QtCore.QObject):
@@ -247,7 +319,8 @@ class ContactSizeTab(QtWidgets.QWidget):
         old = self.layout_.takeAt(1)
         if old.widget() is not None:
             old.widget().deleteLater()
-        self.view = ContactSizeView(main.design_nm, sizes.sem, sizes.design, main.ransac.reference, self.use_opengl)
+        self.view = ContactSizeView(main.design_nm, sizes.sem, sizes.design, main.ransac.reference, self.use_opengl,
+                                    *tile_backgrounds(self.result))
         band = "one chord" if sizes.roi_width_nm == 0 else f"a {sizes.roi_width_nm:g} nm band of chords"
         self.view.label.setText(f"xCD, yCD from {band} through the centre.\n" + self.view.label.text())
         self.layout_.addWidget(self.view, stretch=1)

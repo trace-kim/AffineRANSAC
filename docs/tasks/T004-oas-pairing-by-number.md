@@ -1,6 +1,6 @@
 # T004: Pair each image with the `SA…` `.oas` that has the same trailing number
 
-**Status: OPEN** (maintained by the local agent, from what the user reports back)
+**Status: DONE (fixed by the user directly, 2026-10-15; nothing left for the remote agent)** (maintained by the local agent, from what the user reports back)
 **For:** the remote agent, which has access to the real data
 **From:** the local agent (no data access), 2026-10-15
 

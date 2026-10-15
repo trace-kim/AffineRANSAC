@@ -207,12 +207,31 @@ def test_contact_sizes_are_measured_on_request(tmp_path):
         time.sleep(0.01)
     assert tab.view is not None and result.contact_sizes.roi_width_nm == 5.0
     assert tab.status.text().startswith(f"Measured {len(sizes.sem)} contacts")
+
+    # Behind the map: each tile's SEM image placed like its contacts; the map transparent between them.
+    view = tab.view
+    assert view.sem_box.isEnabled() and view.design_box.isEnabled() and not view.sem_box.isChecked()
+    view.sem_box.setChecked(True)
+    view.design_box.setChecked(True)
+    images = view.background_items[view.sem_box]
+    assert len(images) == 3 and all(len(items) == 4 for items in images)  # per map, one per tile
+    assert len(view.background_items[view.design_box][0]) == 4
+    tiles = [tile for tile, _ in view.backgrounds[view.sem_box][0]]
+    corner = images[0][0].mapToParent(pg.QtCore.QPointF(*(tiles[0].refined.centers[0] + 0.5)))
+    distance_nm = np.linalg.norm(view.position_um - [corner.x(), corner.y()], axis=1).min() * 1000
+    assert distance_nm < 2  # an SEM contact sits on its dot of the map
+    view.draw_maps()
+    assert view.maps[0][2].image.shape[-1] == 4  # RGBA
+    view.sem_box.setChecked(False)
+    assert not images[0][0].isVisible()
     tab.close()
 
     result.images = None  # a reopened result: no images to measure on
     with pytest.raises(ValueError, match="analyse the image folder again"):
         measure_contact_sizes(result)
-    assert not ContactSizeTab(result, use_opengl=False).run_button.isEnabled()
+    reopened = ContactSizeTab(result, use_opengl=False)
+    assert not reopened.run_button.isEnabled()
+    assert not reopened.view.sem_box.isEnabled() and not reopened.view.design_box.isEnabled()
 
 
 def test_invalid_settings_fail_before_any_work(tmp_path):

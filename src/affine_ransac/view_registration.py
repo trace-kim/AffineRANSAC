@@ -89,12 +89,12 @@ def table_text(table: list[list[str]], delimiter: str) -> str:
     return out.getvalue()
 
 
-def colorize(grid: np.ndarray, levels) -> np.ndarray:
+def colorize(grid: np.ndarray, levels, transparent: bool = False) -> np.ndarray:
     """RGB uint8 image of grid in the jet colour map between levels (low, high); NaN (no contact)
-    becomes black, the plot background. Opaque on purpose: ImageItem drew NaN and transparent
-    pixels as grey blocks."""
+    becomes black, the plot background. Opaque by default: ImageItem drew NaN and transparent
+    pixels as grey blocks. transparent: RGBA instead, NaN fully transparent (to see what lies beneath)."""
     low, high = levels
-    lut = JET.getLookupTable(nPts=256, alpha=False)
+    lut = JET.getLookupTable(nPts=256, alpha=transparent)
     scaled = (np.nan_to_num(grid) - low) / (high - low) if high > low else np.zeros(grid.shape)
     rgb = lut[np.clip((scaled * 255).astype(int), 0, 255)]
     rgb[np.isnan(grid)] = 0
@@ -102,12 +102,12 @@ def colorize(grid: np.ndarray, levels) -> np.ndarray:
 
 
 def draw_map(plot, image, position_um: np.ndarray, values: np.ndarray, levels, dot_um: float,
-             device_ratio: float) -> float | None:
+             device_ratio: float, transparent: bool = False) -> float | None:
     """Draw the contacts in plot's view into image (rasterize, colorize), one image pixel per DEVICE
     pixel (with Windows display scaling, e.g. 150 %, a logical pixel is 1.5 device pixels; an image made
     per logical pixel would be enlarged and the contact lattice would alias). position_um (N, 2), values
     (N,); each contact a disk of radius dot_um (at least one pixel, at most MAX_DOT_PX). Returns the disk
-    radius in logical px, None if the view has no size yet."""
+    radius in logical px, None if the view has no size yet. transparent: see colorize."""
     view = plot.vb.viewRect()
     pixel_um = np.array(plot.vb.viewPixelSize()) / device_ratio  # (x, y) µm per device pixel
     if pixel_um[0] <= 0 or pixel_um[1] <= 0:
@@ -121,7 +121,7 @@ def draw_map(plot, image, position_um: np.ndarray, values: np.ndarray, levels, d
             & (y > view.top() - margin) & (y < view.bottom() + margin))  # QRectF: top = smaller y
     rect = (view.left(), view.top(), view.width(), view.height())
     grid = rasterize(position_um[near], values[near], rect, (rows, cols), radius_px)
-    image.setImage(colorize(grid, levels), autoLevels=False)
+    image.setImage(colorize(grid, levels, transparent), autoLevels=False)
     image.setRect(QtCore.QRectF(*rect))
     return radius_px / device_ratio
 
