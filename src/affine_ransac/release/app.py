@@ -1,6 +1,7 @@
 """MaskReg: the minimal mask registration analyzer released to users (docs/SPEC.md D77).
 Start it with:  python -m affine_ransac.release.app
 
+- File > Browse FTP server: connect to an FTP server and walk through its folders (ftp_dialog.py).
 - File > Open folder: a folder of contour CSVs or of SEM images. If it holds a saved analysis (cache.py), that is
   shown at once; otherwise the folder is analysed (release/analysis.py) with the current parameters and the
   result saved there.
@@ -26,6 +27,7 @@ from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS, PARAMETERS, analyse_folder, read_display_images
 from affine_ransac.release.cache import load_cache, save_cache
+from affine_ransac.release.ftp_dialog import FtpDialog
 from affine_ransac.release.views import RegistrationView, StitchingView
 
 APP = "MaskReg"
@@ -144,6 +146,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.actions = {}
         file_menu = self.menuBar().addMenu("&File")
         self._action(file_menu, "open", "&Open folder...", "Ctrl+O", self.choose_folder)
+        self._action(file_menu, "ftp", "Browse &FTP server...", "Ctrl+Shift+O", self.browse_ftp)
         file_menu.addSeparator()
         file_menu.addAction("&Quit", self.close)
         analysis_menu = self.menuBar().addMenu("&Analysis")
@@ -187,6 +190,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         if folder:
             self.preferences.setValue("last_folder", folder)
             self.open_folder(folder)
+
+    def browse_ftp(self):
+        FtpDialog(self.preferences, self).exec()
 
     def open_folder(self, folder: str):
         """Show the folder's saved analysis, or analyse it (and save) if there is none."""
