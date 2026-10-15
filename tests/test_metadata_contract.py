@@ -2,7 +2,7 @@
 
 io/metadata.py is written by the remote agent and exists only on the machine with the
 real data, so these tests are skipped everywhere else. They check that its interface is
-exactly what docs/tasks/T001-tile-index-reader.md specifies (pairing updated in T002), because the rest of the
+exactly what docs/tasks/T001-tile-index-reader.md specifies (pairing updated in T002, several CSVs merged in T005), because the rest of the
 code is built against that interface without seeing the implementation.
 
 To also check the real data, set AFFINE_RANSAC_DATA_DIR to the data folder:
@@ -33,7 +33,7 @@ def test_tile_record_fields():
 
 
 def test_function_signatures():
-    for name in ("find_metadata_csv", "read_tile_index"):
+    for name in ("find_metadata_csvs", "read_tile_index"):
         params = list(inspect.signature(getattr(metadata, name)).parameters)
         assert params == ["data_dir"], f"{name} must take exactly one argument, data_dir"
 
