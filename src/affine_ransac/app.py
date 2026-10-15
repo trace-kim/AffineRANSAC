@@ -109,12 +109,14 @@ def editor_value(widget: QtWidgets.QWidget):
 class SettingsDialog(QtWidgets.QDialog):
     """The settings a folder of this kind uses: name (as in the notebooks), value, what it does."""
 
-    def __init__(self, settings: Settings, kind: str, parent=None):
+    def __init__(self, settings: Settings, kind: str, parent=None, names: list[str] | None = None):
+        """names: the settings shown (default: all that a folder of this kind uses)."""
         super().__init__(parent)
         self.setWindowTitle(f"Settings for a {kind} folder")
         self.settings, self.editors = settings, {}
+        shown = settings_for(kind) if names is None else names
         grid = QtWidgets.QGridLayout()
-        for row, f in enumerate(f for f in fields(Settings) if f.name in settings_for(kind)):
+        for row, f in enumerate(f for f in fields(Settings) if f.name in shown):
             widget = editor(getattr(settings, f.name), CHOICES.get(f.name))
             if f.name == "ransac_threshold_nm":
                 widget.setEnabled(False)  # fixed: the global affine is RANSAC with τ = 0.5 nm (user rule)

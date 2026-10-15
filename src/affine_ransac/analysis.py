@@ -239,10 +239,22 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
     TileRecord fields of io/metadata.read_tile_index (tile_id, image_path, oas_path, center_x_nm,
     center_y_nm, fov_x_nm, fov_y_nm)."""
     s = settings
+    log, lines = _recording(log)
+    tile_ids, tiles = load_image_tiles(records, s, log)
+    polygons = [read_polygons(load_layout(r.oas_path), s.layer, s.datatype) if r.oas_path else [] for r in records]
+    result = _analyse_tiles(str(folder), s, log, tile_ids, tiles, polygons)
+    result.log = lines
+    return result
+
+
+def load_image_tiles(records: list, settings: Settings, log: Callable[[str], None] = print,
+                     progress: Callable[[int, int], None] | None = None) -> tuple[list[str], list[TileResult]]:
+    """The tile ids and loaded tiles (process_tile) of an image folder's records, after the checks (settings,
+    records, sample tiles matched to their design). progress(done, total) after every tile."""
+    s = settings
     layer = (s.layer, s.datatype)
     check_settings(s, "images")
     check_image_records(records, layer)
-    log, lines = _recording(log)
     tile_ids = [r.tile_id for r in records]
     without_oas = [r.tile_id for r in records if r.oas_path is None]
     if without_oas:
@@ -266,6 +278,8 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
     tiles = []
     for k, r in enumerate(records):
         tiles.append(loaded[k] if k in loaded else load(r))
+        if progress is not None:
+            progress(k + 1, len(records))
         if (k + 1) % max(1, len(records) // 10) == 0 or k + 1 == len(records):
             log(f"{k + 1} of {len(records)} tiles loaded and detected")
     flagged = [tile_ids[k] for k, t in enumerate(tiles) if not t.design.ok]
@@ -273,10 +287,7 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
         log(f"!! {len(flagged)} tile(s) FLAGGED: neither design tone matches the SEM (or no .oas): {flagged}")
     if len(flagged) == len(tiles):
         raise RuntimeError("No tile matched its design: nothing can be measured (see the flagged tiles above)")
-    polygons = [read_polygons(load_layout(r.oas_path), *layer) if r.oas_path else [] for r in records]
-    result = _analyse_tiles(str(folder), s, log, tile_ids, tiles, polygons)
-    result.log = lines
-    return result
+    return tile_ids, tiles
 
 
 def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResult], polygons) -> AnalysisResult:
@@ -385,7 +396,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
                                                    f"{len(order_stitch.unplaced)} tile(s) not placed by them: "
                                                    f"paired at their nominal position)" if guided else ""))
     for name, result in (("SEM", raw_stitch), ("Design", design_stitch)):
-        _report_stitching(log, name, result, tile_ids)
+        report_stitching(log, name, result, tile_ids)
     slipped = slipped_pairs(raw_stitch, order_stitch.corrections, s.max_match_nm)
     if slipped:
         log(f"!! {len(slipped)} SEM overlap(s) fitted more than max_match_nm away from the shift the stitching in "
@@ -486,7 +497,7 @@ def _fitted(sem_nm, design_nm, s: Settings, log, name: str, moving: bool = True)
     return ContactSet(sem_nm, design_nm, ransac, window)
 
 
-def _report_stitching(log, name: str, result: StitchResult, tile_ids):
+def report_stitching(log, name: str, result: StitchResult, tile_ids):
     failed = [r for r in result.rejected if r.failed]
     log(f"{name} stitching: {len(result.pairs)} overlaps used, {len(failed)} not matched, "
         f"{len(result.rejected) - len(failed)} skipped (too few contacts)")
