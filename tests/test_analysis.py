@@ -1,6 +1,7 @@
 """End-to-end analysis of synthetic folders (analysis.py) and the window of its result, without a display."""
 
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
 
@@ -10,10 +11,12 @@ import numpy as np
 import pyqtgraph as pg
 import pytest
 
-from affine_ransac.analysis import Settings, analyse_contour_folder, analyse_images, settings_for
+from affine_ransac import analysis
+from affine_ransac.analysis import (Settings, analyse_contour_folder, analyse_images, check_image_records,
+                                    check_settings, measure_contact_sizes, settings_for)
 from affine_ransac.pipeline import residual_summary
 from affine_ransac.view_analysis import analysis_window
-from affine_ransac.view_contact_size import ContactSizeView
+from affine_ransac.view_contact_size import ContactSizeTab
 from affine_ransac.view_points import PointsStitchView
 from affine_ransac.view_stitch import StitchViewer
 
@@ -136,17 +139,29 @@ def test_settings_for_each_kind_of_folder():
     assert "max_match_nm" in settings_for("contour CSV") and "max_match_nm" in settings_for("images")
 
 
-def test_image_folder_runs_the_notebook_flow(tmp_path):
+def write_image_folder(folder, design=None):
+    """2 x 2 synthetic SEM tiles with their .oas files (test_pipeline), and their records as the metadata reader
+    returns them. design(k, nominal): optional tile-local design centres of tile k instead of the lattice."""
     from test_pipeline import ERRORS, FOV as IMAGE_FOV, LATTICE, NOMINAL as IMAGE_NOMINAL, visible, write_design, write_tile
     records = []
     for k, (nominal, error) in enumerate(zip(IMAGE_NOMINAL, ERRORS)):
-        write_tile(tmp_path / f"{k}.jpg", nominal + error, seed=k)
-        write_design(tmp_path / f"{k}.oas", visible(LATTICE - nominal, margin=0))
-        records.append(SimpleNamespace(tile_id=f"T{k}", image_path=tmp_path / f"{k}.jpg", oas_path=tmp_path / f"{k}.oas",
+        write_tile(folder / f"{k}.jpg", nominal + error, seed=k)
+        centres = visible(LATTICE - nominal, margin=0) if design is None else design(k, nominal)
+        write_design(folder / f"{k}.oas", centres)
+        records.append(SimpleNamespace(tile_id=f"T{k}", image_path=folder / f"{k}.jpg", oas_path=folder / f"{k}.oas",
                                        center_x_nm=nominal[0], center_y_nm=nominal[1], fov_x_nm=IMAGE_FOV,
                                        fov_y_nm=IMAGE_FOV))
+    return records
+
+
+IMAGE_SETTINGS = Settings(layer=1, datatype=0, detection="otsu")
+
+
+def test_image_folder_runs_the_notebook_flow(tmp_path):
+    from test_pipeline import ERRORS
+    records = write_image_folder(tmp_path)
     lines = []
-    result = analyse_images(tmp_path, records, Settings(layer=1, datatype=0, detection="otsu"), log=lines.append)
+    result = analyse_images(tmp_path, records, IMAGE_SETTINGS, log=lines.append)
 
     assert result.kind == "images" and result.tile_ids == ["T0", "T1", "T2", "T3"]
     np.testing.assert_allclose(result.stitchings["raw"].stitch.corrections, ERRORS - ERRORS.mean(axis=0), atol=0.3)
@@ -154,19 +169,82 @@ def test_image_folder_runs_the_notebook_flow(tmp_path):
     assert list(result.stitchings) == ["raw", "in-image corrected", "stripe drift corrected",
                                        "in-image + stripe drift corrected"]
     assert len(result.images.tiles) == 4 and set(result.images.merged) == {"nominal", "mean", "first"}
-    assert lines[3] == "4 of 4 tiles loaded and detected"
-    # Contact sizes, one row per contact of the uncorrected set: SEM discs of 40 nm, design squares of 40 nm.
-    sizes = result.contact_sizes
-    assert sizes.sem.shape == sizes.design.shape == (len(result.sets["uncorrected"].design_nm), 3)
-    np.testing.assert_allclose(sizes.design, np.tile([1600.0, 40.0, 40.0], (len(sizes.design), 1)))
-    np.testing.assert_allclose(np.median(sizes.sem, axis=0), [np.pi * 20 ** 2, 40, 40], rtol=0.1)
+    assert lines[0] == "Sample tiles matched to their design: 3 of 3"
+    assert "4 of 4 tiles loaded and detected" in lines
+    assert result.contact_sizes is None  # measured only on request
 
     pg.mkQApp()
     window = analysis_window(result, use_opengl=False)
     assert isinstance(window.widget(0), StitchViewer)
-    assert isinstance(window.widget(window.count() - 1), ContactSizeView)
+    assert isinstance(window.widget(window.count() - 1), ContactSizeTab)
     result.images = None  # e.g. a saved result: the points view instead
     other = analysis_window(result, use_opengl=False)
     assert isinstance(other.widget(0), PointsStitchView)
     window.close()
     other.close()
+
+
+def test_contact_sizes_are_measured_on_request(tmp_path):
+    result = analyse_images(tmp_path, write_image_folder(tmp_path), IMAGE_SETTINGS, log=lambda line: None)
+    steps = []
+
+    sizes = measure_contact_sizes(result, roi_width_nm=0.0, progress=lambda done, total: steps.append((done, total)))
+
+    # One row per contact of the uncorrected set: SEM discs of 40 nm, design squares of 40 nm.
+    assert steps == [(1, 4), (2, 4), (3, 4), (4, 4)] and sizes.roi_width_nm == 0.0
+    assert sizes.sem.shape == sizes.design.shape == (len(result.sets["uncorrected"].design_nm), 3)
+    np.testing.assert_allclose(sizes.design, np.tile([1600.0, 40.0, 40.0], (len(sizes.design), 1)))
+    np.testing.assert_allclose(np.median(sizes.sem, axis=0), [np.pi * 20 ** 2, 40, 40], rtol=0.1)
+
+    pg.mkQApp()
+    tab = ContactSizeTab(result, use_opengl=False)  # the window's tab: Run measurement in the background
+    assert tab.view is None
+    tab.roi.setValue(5.0)
+    tab.run()
+    deadline = time.time() + 60
+    while tab.view is None and time.time() < deadline:
+        pg.QtWidgets.QApplication.processEvents()
+        time.sleep(0.01)
+    assert tab.view is not None and result.contact_sizes.roi_width_nm == 5.0
+    assert tab.status.text().startswith(f"Measured {len(sizes.sem)} contacts")
+    tab.close()
+
+    result.images = None  # a reopened result: no images to measure on
+    with pytest.raises(ValueError, match="analyse the image folder again"):
+        measure_contact_sizes(result)
+    assert not ContactSizeTab(result, use_opengl=False).run_button.isEnabled()
+
+
+def test_invalid_settings_fail_before_any_work(tmp_path):
+    with pytest.raises(ValueError, match=r"max_match_nm must be > 0.*detection must be one of"):
+        analyse_images(tmp_path, [], Settings(max_match_nm=0.0, detection="otsu4"))
+    with pytest.raises(ValueError, match="min_match_fraction must be in"):
+        check_settings(Settings(min_match_fraction=1.5), "images")
+    check_settings(Settings(min_match_fraction=1.5), "contour CSV")  # not used for contour CSVs
+    with pytest.raises(ValueError, match="tile_margin_nm must be >= 0"):
+        analyse_contour_folder(tmp_path, Settings(tile_margin_nm=-1.0))
+
+
+def test_a_folder_that_cannot_be_analysed_fails_before_loading_the_tiles(tmp_path):
+    records = write_image_folder(tmp_path)
+    with pytest.raises(ValueError, match="lists no images"):
+        check_image_records([], (1, 0))
+    with pytest.raises(ValueError, match="No image has a paired .oas"):
+        check_image_records([SimpleNamespace(**{**vars(r), "oas_path": None}) for r in records], (1, 0))
+    with pytest.raises(ValueError, match="1 image file.s. not found"):
+        check_image_records([SimpleNamespace(**{**vars(records[0]), "image_path": tmp_path / "x.jpg"})] + records[1:],
+                            (1, 0))
+    with pytest.raises(ValueError, match=r"Layer 5/0 is not in 0.oas; its layers: \[\(1, 0\)\]"):
+        analyse_images(tmp_path, records, Settings(layer=5, datatype=0))
+
+
+def test_no_design_match_in_the_sample_tiles_stops_after_them(tmp_path, monkeypatch):
+    rng = np.random.default_rng(3)
+    records = write_image_folder(tmp_path, design=lambda k, nominal: rng.uniform(-300, 300, (60, 2)))  # no lattice
+    loaded = []
+    original = analysis.process_tile
+    monkeypatch.setattr(analysis, "process_tile", lambda *args, **kwargs: loaded.append(1) or original(*args, **kwargs))
+
+    with pytest.raises(ValueError, match="No design tone matched the SEM in the sample tiles"):
+        analyse_images(tmp_path, records, IMAGE_SETTINGS)
+    assert len(loaded) == 3  # the sample tiles only, not the whole folder

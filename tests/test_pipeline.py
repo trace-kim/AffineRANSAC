@@ -6,7 +6,7 @@ import pytest
 from affine_ransac.io.design import load_layout
 from affine_ransac.features.contact import DetectedContacts
 from affine_ransac.geometry.affine import apply_affine
-from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, inside_frame,
+from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, inside_frame,
                                     measurement_pairs, pair_kind, pair_residuals, process_tile, stitch_design,
                                     stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid, tie_residuals,
                                     tile_stripes)
@@ -73,12 +73,13 @@ def test_tile_contact_sizes_of_sem_discs_and_design_squares(tmp_path):
     write_design(tmp_path / "tile.oas", visible(LATTICE, margin=0))  # squares of 40 nm
     tile = process_tile(tmp_path / "tile.jpg", tmp_path / "tile.oas", (0.0, 0.0), (FOV, FOV), layer=(1, 0))
 
-    sem, design = tile.contact_sizes(roi_width_nm=0.0)
+    assert tile.oas_path == tmp_path / "tile.oas"
+    sem, design = tile.contact_sizes((1, 0), roi_width_nm=0.0)
     assert sem.shape == (len(tile.refined.centers), 3) and design.shape == (len(tile.design.centers), 3)
     np.testing.assert_allclose(design, np.tile([1600.0, 40.0, 40.0], (len(design), 1)))
     contacts = tile.refined.areas > 200  # real contacts, not the background gaps (see above)
     np.testing.assert_allclose(np.median(sem[contacts], axis=0), [np.pi * 20 ** 2, 40, 40], rtol=0.1)
-    banded, _ = tile.contact_sizes(roi_width_nm=10.0)  # chords off the centre of a disc are shorter
+    banded, _ = tile.contact_sizes((1, 0), roi_width_nm=10.0)  # chords off the centre of a disc are shorter
     assert np.median(banded[contacts, 1]) < np.median(sem[contacts, 1])
 
 
@@ -98,8 +99,8 @@ def test_design_tone_is_chosen_by_matching_the_sem(tmp_path, reversed):
 
     assert found.ok and found.reversed == reversed and found.match_fraction == 1.0
     np.testing.assert_allclose(sorted(map(tuple, found.centers)), sorted(map(tuple, design)), atol=1e-9)
-    assert len(found.outlines) == len(found.centers)  # one outline per centre, in the same order
-    np.testing.assert_allclose([o.mean(axis=0) for o in found.outlines], found.centers, atol=1e-9)
+    outlines = design_outlines(layout, (1, 0), (FOV, FOV), found.reversed)  # one per centre, same order
+    np.testing.assert_allclose([o.mean(axis=0) for o in outlines], found.centers, atol=1e-9)
 
 
 def test_design_tone_flagged_when_neither_tone_matches(tmp_path):

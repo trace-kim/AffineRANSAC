@@ -7,13 +7,21 @@
   (also for SEM − design: a size bias between SEM and design is normal, a scale centred on 0 would hide
   the variation; drag the bar to change it); the maps share zoom and pan. Positions relative to the reference point, µm; area in nm², CDs in nm.
 - The summary gives per quantity the mean and 3σ of the SEM value, the design value and SEM − design.
+
+ContactSizeTab is the analysis window's tab: the measurement runs only when asked (Run measurement, with
+an ROI width), in a background thread (analysis.measure_contact_sizes needs the images of an image run in
+memory); the maps (ContactSizeView) appear when it is done. Sizes saved with a result are shown at once.
 """
+
+import threading
+import time
 
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 from scipy.spatial import cKDTree
 
+from affine_ransac.analysis import AnalysisResult, measure_contact_sizes
 from affine_ransac.view_registration import JET, draw_map
 
 QUANTITIES = (("Area", "nm²"), ("xCD", "nm"), ("yCD", "nm"))  # the columns of ContactSizes
@@ -160,3 +168,86 @@ class ContactSizeView(QtWidgets.QWidget):
 
         for _, plot, _, _ in self.maps:
             follow(plot)
+
+
+class _Measurement(QtCore.QObject):
+    """measure_contact_sizes in a daemon thread; progress, the ContactSizes or the error arrive as signals
+    in the GUI thread (as app.Job)."""
+    progress = QtCore.Signal(int, int)
+    done = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+
+    def start(self, result: AnalysisResult, roi_width_nm: float):
+        threading.Thread(target=self._run, args=(result, roi_width_nm), daemon=True).start()
+
+    def _run(self, result, roi_width_nm):
+        try:
+            sizes = measure_contact_sizes(result, roi_width_nm, progress=self.progress.emit)
+        except Exception as error:
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        else:
+            self.done.emit(sizes)
+
+
+class ContactSizeTab(QtWidgets.QWidget):
+    def __init__(self, result: AnalysisResult, use_opengl: bool = True):
+        """The Contact size tab of an image run's result: ROI width, Run measurement, then the maps.
+        result.contact_sizes is set when a measurement is done (so Save results keeps it)."""
+        super().__init__()
+        self.result, self.use_opengl, self.view = result, use_opengl, None
+        self.roi = QtWidgets.QDoubleSpinBox(decimals=1, maximum=1000.0, suffix=" nm")
+        self.roi.setToolTip("xCD / yCD = mean of the chords, one per SEM pixel, in a band this wide through the "
+                            "contact centre (0: the single chord through the centre)")
+        self.run_button = QtWidgets.QPushButton("Run measurement")
+        self.run_button.clicked.connect(self.run)
+        self.status = QtWidgets.QLabel()
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(QtWidgets.QLabel("ROI width:"))
+        bar.addWidget(self.roi)
+        bar.addWidget(self.run_button)
+        bar.addWidget(self.status, stretch=1)
+        self.layout_ = QtWidgets.QVBoxLayout(self)
+        self.layout_.addLayout(bar)
+        self.layout_.addStretch(1)  # replaced by the maps
+
+        self.measurement = _Measurement()
+        self.measurement.progress.connect(lambda done, total: self.status.setText(f"Measuring: {done} of {total} tiles"))
+        self.measurement.done.connect(self._done)
+        self.measurement.failed.connect(self._failed)
+        if result.images is None:
+            self.run_button.setEnabled(False)
+            self.status.setText("Measuring needs the SEM images in memory: analyse the image folder again "
+                                "(sizes measured before a result was saved are shown)")
+        else:
+            self.status.setText("Area, xCD and yCD of every contact: press Run measurement")
+        if result.contact_sizes is not None:
+            self.roi.setValue(result.contact_sizes.roi_width_nm)
+            self._show(result.contact_sizes)
+
+    def run(self):
+        """Start the measurement with the ROI width in the box."""
+        self.run_button.setEnabled(False)
+        self.status.setText("Measuring...")
+        self.started = time.perf_counter()
+        self.measurement.start(self.result, self.roi.value())
+
+    def _done(self, sizes):
+        self.result.contact_sizes = sizes
+        self._show(sizes)
+        self.status.setText(f"Measured {len(sizes.sem)} contacts in {time.perf_counter() - self.started:.0f} s")
+        self.run_button.setEnabled(True)
+
+    def _failed(self, text: str):
+        self.status.setText(f"Measurement failed: {text}")
+        self.run_button.setEnabled(True)
+
+    def _show(self, sizes):
+        """Replace the maps (or the empty space) by a ContactSizeView of sizes."""
+        main = self.result.sets["uncorrected"]
+        old = self.layout_.takeAt(1)
+        if old.widget() is not None:
+            old.widget().deleteLater()
+        self.view = ContactSizeView(main.design_nm, sizes.sem, sizes.design, main.ransac.reference, self.use_opengl)
+        band = "one chord" if sizes.roi_width_nm == 0 else f"a {sizes.roi_width_nm:g} nm band of chords"
+        self.view.label.setText(f"xCD, yCD from {band} through the centre.\n" + self.view.label.text())
+        self.layout_.addWidget(self.view, stretch=1)

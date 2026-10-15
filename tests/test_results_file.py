@@ -95,7 +95,7 @@ def test_contact_sizes_are_saved_when_present(tmp_path):
 
     n = len(result.sets["uncorrected"].design_nm)
     rng = np.random.default_rng(0)
-    result.contact_sizes = ContactSizes(rng.uniform(1000, 2000, (n, 3)), np.full((n, 3), 1600.0))  # as an image run
+    result.contact_sizes = ContactSizes(rng.uniform(1000, 2000, (n, 3)), np.full((n, 3), 1600.0), 8.0)  # image run
     result.contact_sizes.sem[0, 1] = np.nan
     save_result(result, tmp_path / "sizes.npz")
     assert_same(result, load_result(tmp_path / "sizes.npz"))

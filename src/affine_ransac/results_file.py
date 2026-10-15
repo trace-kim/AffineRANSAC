@@ -6,7 +6,7 @@ Plain numpy arrays only, loaded with allow_pickle=False: the file opens without 
 array plus the length of each part ("<name>/data", "<name>/lengths"). The folder, kind, settings, tile
 ids and log are one JSON text, "info". The images of an image run (AnalysisResult.images) are not
 saved (gigabytes): a reopened result shows the points stitch view. The contact sizes of an image run are
-optional arrays ("contact_sizes/sem", "contact_sizes/design"); a file without them loads with none.
+optional arrays ("contact_sizes/sem", ".../design", ".../roi_width_nm"); a file without them loads with none.
 FORMAT changes whenever the layout does; a file of another format is refused with a message.
 """
 
@@ -42,6 +42,7 @@ def save_result(result: AnalysisResult, path: str | Path):
     if result.contact_sizes is not None:
         arrays["contact_sizes/sem"] = result.contact_sizes.sem
         arrays["contact_sizes/design"] = result.contact_sizes.design
+        arrays["contact_sizes/roi_width_nm"] = np.asarray(result.contact_sizes.roi_width_nm)
     _put_fields(arrays, "drift", result.drift)
     _put_fields(arrays, "stripe_drift/common", result.stripe_drift.common)
     for stripe, curve in result.stripe_drift.stripes.items():
@@ -72,7 +73,8 @@ def load_result(path: str | Path) -> AnalysisResult:
                 for name, moving in info["sets"].items()}
         contact_sizes = None
         if "contact_sizes/sem" in arrays:  # an image run
-            contact_sizes = ContactSizes(arrays["contact_sizes/sem"], arrays["contact_sizes/design"])
+            roi = arrays["contact_sizes/roi_width_nm"].item() if "contact_sizes/roi_width_nm" in arrays else 0.0
+            contact_sizes = ContactSizes(arrays["contact_sizes/sem"], arrays["contact_sizes/design"], roi)
         stripe_drift = StripeDrift({s: _get_fields(arrays, f"stripe_drift/stripes/{s}", DriftCurve) for s in info["stripes"]},
                                    _get_fields(arrays, "stripe_drift/common", DriftCurve))
         return AnalysisResult(

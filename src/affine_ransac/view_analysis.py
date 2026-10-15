@@ -20,7 +20,7 @@ registration view: lines in the row profile after the affine, markers on the err
 
 analysis_window(result) builds the whole window of an analysis.AnalysisResult, with the tabs the
 notebooks add at the end (stitching, stripe drift curves, stitching residuals), and Contact size (area,
-xCD, yCD maps of an image run; N/A for contour CSVs).
+xCD, yCD maps of an image run, measured on request; N/A for contour CSVs).
 """
 
 import numpy as np
@@ -28,7 +28,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.analysis import AnalysisResult, tile_edges_y
 from affine_ransac.view_drift import StripeDriftView
-from affine_ransac.view_contact_size import ContactSizeView
+from affine_ransac.view_contact_size import ContactSizeTab
 from affine_ransac.view_moving_window import MovingWindowTuner
 from affine_ransac.view_pitch import PitchView
 from affine_ransac.view_points import PointsStitchView
@@ -144,9 +144,8 @@ def analysis_window(result: AnalysisResult, use_opengl: bool = True) -> Analysis
         stitchings[f"{name}, translation"] = (st.points, st.stitch, st.stitch.corrections)
         stitchings[f"{name}, translation + rotation"] = (st.points, st.stitch, st.rigid)
     window.addTab(StitchResidualView(stitchings, result.centers, reference, use_opengl=use_opengl), "Stitching residuals")
-    if result.contact_sizes is not None:
-        sizes = ContactSizeView(main.design_nm, result.contact_sizes.sem, result.contact_sizes.design, reference,
-                                use_opengl=use_opengl)
+    if result.kind == "images":
+        sizes = ContactSizeTab(result, use_opengl=use_opengl)
     else:
         sizes = QtWidgets.QLabel("N/A: contour CSVs hold contact centres only. Area, xCD and yCD are measured on "
                                  "the SEM contours and .oas outlines of an image folder.")

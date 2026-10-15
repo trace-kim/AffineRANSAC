@@ -752,22 +752,36 @@ the sign of dX, dY. *View*: the log, and OpenGL drawing (off if the plots stay b
 window). On the local contour-CSV test data (1,494 files, 221k contacts) a run takes ~45 s, building
 the window ~9 s.
 
-**Contact size (D71).** Image runs measure every contact's **area, xCD and yCD** on its SEM contour (the
-refined contour if `stitch_refined`, else Otsu; pixel → tile nm via `frames.py`) and on its `.oas` outline
-(the merged pattern in the tone that matched, `io/design.contact_outlines`, same order as the design
-centres; `DesignContacts.outlines`). `geometry/polygon.contact_sizes`: area = shoelace; xCD = the length
-of the horizontal chord through the contact's centre (area centroid), between the outermost crossings
-of the outline; with `cd_roi_width_nm` > 0 (setting, images only, default 0) the mean of the chords one
-SEM pixel apart inside a band that wide centred on the centre (`roi // pixel + 1` chords; the design
-uses the same lines); yCD likewise with vertical chords; NaN where no chord crosses. Per tile
-(`TileResult.contact_sizes`), then averaged per merged contact over the tiles that saw it
-(`registration.merge_values`, following each observation's `sem_index` / `design_index` in the
-`DesignErrors`), NaN left out. `AnalysisResult.contact_sizes` (`sem`, `design`, (M, 3), rows of the
-"uncorrected" set; saved as optional arrays in the results file, no format change). Window: tab
-**Contact size** (`view_contact_size.ContactSizeView`): Show boxes Area / xCD / yCD (Area at start; any
-combination side by side, linked zoom), Value **SEM** or **SEM − design**, each map its own jet colour
-bar from the 1st to the 99th percentile; a summary line per quantity (mean, 3σ of SEM, design,
-SEM − design). Contour-CSV runs have no outlines: the tab says N/A.
+**Checks before the run (D73).** `analysis.check_settings(settings, kind)` (every setting of that kind
+of folder in range: `POSITIVE` ones > 0, `min_matched` ≥ 1, `intrafield_nodes` ≥ 2, `min_match_fraction`
+in (0, 1], choices) runs first in both flows; for images `check_image_records(records, layer)` (images
+listed and on disk, at least one image with an `.oas`, the `.oas` files on disk, the contact layer in the
+first `.oas`), then `SAMPLE_TILES` = 3 tiles (first, middle, last with an `.oas`) are loaded and matched
+to their design; if none matches, the run stops with their match fractions. After all tiles are loaded,
+the run stops at once if no tile matched its design (before stitching). Each failure names its cause.
+
+**Contact size (D71, D73).** Measured **on request** after an image run, not during it: the
+*Contact size* tab (`view_contact_size.ContactSizeTab`) has an **ROI width** (nm) and **Run measurement**,
+which runs `analysis.measure_contact_sizes(result, roi_width_nm, progress)` in a background thread and
+then shows the maps. It needs the run's tiles in memory (`AnalysisResult.images`, which keeps the
+observations of every placement); a reopened result shows sizes saved with it, and cannot measure. Per tile
+(`TileResult.contact_sizes(layer, roi, refined)`): area, xCD and yCD of the SEM contour (refined if
+`stitch_refined`, else Otsu; pixel → tile nm via `frames.py`) and of the `.oas` outline, read again from
+the tile's `oas_path` in the tone that matched (`pipeline.design_outlines`: one merge of the file; centre
+and bounding box from the outline, the same frame filter as `choose_design_contacts`, so the outlines
+follow the design centres; a count mismatch raises). `geometry/polygon.contact_sizes`: area = shoelace;
+xCD = the length of the horizontal chord through the contact's centre (area centroid), between the
+outermost crossings of the outline; with ROI width > 0 the mean of the chords one SEM pixel apart inside a
+band that wide centred on the centre (`roi // pixel + 1` chords; the design uses the same lines); yCD
+likewise with vertical chords; NaN where no chord crosses. Averaged per merged contact over the tiles
+that saw it (`registration.merge_values`, following each observation's `sem_index` / `design_index` in
+the `DesignErrors`), NaN left out. `AnalysisResult.contact_sizes` (`sem`, `design` (M, 3), rows of the
+"uncorrected" set, and `roi_width_nm`; saved as optional arrays in the results file, no format change).
+Maps (`ContactSizeView`): Show boxes Area / xCD / yCD (Area at start; any combination side by side, linked
+zoom), Value **SEM** or **SEM − design**, each map its own jet colour bar from the 1st to the 99th
+percentile; a summary line per quantity (mean, 3σ of SEM, design, SEM − design). Contour-CSV runs have
+no outlines: the tab says N/A. Cost (synthetic `.oas`, 400 contacts × 16 fractures): ~36 ms per tile, of
+which the KLayout merge ~28 ms, vertex copy ~8 ms, the chord arithmetic ~1–2 ms.
 
 - For every matched pair: `r = G(stitched SEM point) − design point` → `(dx, dy, |r|)`, plus
   the inlier/outlier flag, tile id(s) and quality metrics.
@@ -888,7 +902,7 @@ AffineRANSAC/
 │  ├─ analysis.py            # end-to-end flow of one folder (contour CSVs / images), D62
 │  ├─ results_file.py        # save / load an AnalysisResult (.npz), D63
 │  ├─ app.py                 # standalone analyzer: python -m affine_ransac.app, D64
-│  ├─ view_contact_size.py   # contact size maps (area / xCD / yCD), D71
+│  ├─ view_contact_size.py   # contact size tab: measure on request, maps (area / xCD / yCD), D71, D73
 │  └─ cli.py                 # `affine-ransac run config.yaml`
 └─ tests/
    ├─ synthetic/             # generators for layouts, SEM tiles, distortions
@@ -1013,6 +1027,7 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
 | D67 | 2026-10-08 | Set **in-image + stripe drift corrected, translation + rotation**: the stitching of D66 with each tile placed by its translation + rotation (`stitch_tiles_rigid` affines as the corrections of `paired_errors` / `design_errors`), merged, then RANSAC and the moving window; an extra set (lines, row pitch, own tab) in `analysis._analyse` and both notebooks (sections 11b / 12b). Window: a set has the same colours in every tab (`add_rows(colors=...)`, 4th pair red / blue); the `RegistrationView` Show bar holds three sets per row; `PitchView` cycles its colours (it dropped sets beyond its five). | User asked for the methods "in-image, stripe drift correction, translation + rotation" with the global RANSAC and with the moving-window affine (overriding D58's translation-only registration for this set). On the local test data the tile rotations are small (tens of µrad) but add up along the long stripes into a bow of the tile centres in x, the same in all stripes; the global RANSAC cannot remove it (its dx error about doubles against the translation sets), the moving window does (on par with them); dy improves slightly. The same integration made the per-tile affine stitching fail (D53). Colours were assigned per tab by order, so a set without a moving-window result shifted the colours of the next sets in the moving-window tab; a fourth set would have reused the first set's pair; five sets in one Show row needed 1431 px with Windows fonts. |
 | D68 | 2026-10-12 | Metadata CSV: read as `utf-8-sig`, then `cp949`, else `ValueError`; no lossy fallback. Done by the remote agent (task T003, `io/metadata.py`). 1024 × 1024 px images need no code change: the pixel size comes from FOV / image width. | User: a new folder failed with a UTF-8 decode error in the app; its images are 1024 px at the same FOV. A `latin-1` or `errors="replace"` fallback never fails, so it would garble non-ASCII file names silently. |
 | D69 | 2026-10-12 | `outward_normals`: where the tangent has length 0 the normal is (0, 0), so `refine_edges` leaves that contour point where Otsu put it. | User: "invalid value encountered in divide" at `edges.py:26` on a 1024 px dataset. Reproduced with a disk plus a 1 px wide spur: the contour runs out and back along the spur, so at its tip points k ± 3 coincide; the 0/0 normal made that point, and with it the contact's refined centre, NaN. The spur encloses no area, so keeping its tip unrefined does not move the centroid. |
+| D73 | 2026-10-15 | Contact sizes **measured on request** (tab *Contact size*: ROI width + *Run measurement*, background thread, `measure_contact_sizes`), no longer during the run; the `.oas` outlines are read only then, one merge per file (`pipeline.design_outlines`); `DesignContacts.outlines` and the `cd_roi_width_nm` setting are gone (the ROI width is chosen in the tab and stored in `ContactSizes`). **Checks before the run**: `check_settings`, `check_image_records`, 3 sample tiles matched first, and a stop right after loading if no tile matched. No GPU. | User: processing became much slower after D71, and a run that could not work (0 measured contacts) failed only after all tiles were loaded; asked for fast checks first, a faster measurement (GPU to be considered), and the measurement optional, run from the tab. Measured on a synthetic `.oas` (400 contacts × 16 fractures): D71 added a second merge plus a Python vertex copy to every tile load (~35 ms per tile, next to 57 ms for `read_contacts`); the chord arithmetic is ~1–2 ms per tile, so a GPU has nothing to speed up (the cost is in KLayout and in Python, not in the math). Threads gave no gain (1.02× with 4 or 8 threads: KLayout holds the GIL); processes might, not built. Measuring on request costs the run nothing; one merge per file instead of two. Not measured on the real data. |
 | D72 | 2026-10-15 | Image ↔ `.oas` pairing by the **trailing number**: the `.oas` in `ContourCAD/` whose name starts with `SA` and ends in the same number (as an integer) as the image key (`CD<number>`); several matches → `ValueError`, none → `None`. Replaces the "contains" rule of D41; `io/metadata.py`, task T004 (remote agent). | User: the analyzer failed because no `.oas` was found; in every folder the design files have the prefix `SA` and the same trailing number as the `CD` image name, so a name containing the image key never exists. The prefix is a constant in one place; the number is compared as an integer so a different zero padding cannot break the pairing (to be confirmed on the real data, T004 §4). |
 | D71 | 2026-10-15 | **Contact size** (area, xCD, yCD) for image runs (see "Contact size (D71)" in §6): SEM from the contacts' contours, design from the `.oas` outlines, chord CDs through the centre with an optional ROI band (`cd_roi_width_nm`, chords one SEM pixel apart, averaged); merged per contact through the overlaps; a *Contact size* tab with selectable maps and SEM / SEM − design; N/A for contour CSVs. `RegistrationView.rasterize_maps` drawing moved to `view_registration.draw_map`, shared by both views. | User asked for a contour area map in the analyzer UI, with a choice of area / xCD / yCD or all three. User answers: images and .oas compute the values, contour CSVs N/A; CDs as the chord through the centre with an optional ROI width and averaging (the proposed band of chords one pixel apart, 0 = single chord); both SEM value and SEM − design, switchable. Its own tab, since a map of another quantity cannot be a line on the existing plots. The colour scale is a percentile range in both modes: a size bias between SEM and design is expected (synthetic run: SEM disc 1279 nm² vs design square 1600 nm²) and a scale centred on 0 showed one uniform colour. Chord span between the outermost crossings, so a notch inside a contour does not shorten the CD (choice made here, not asked). All contours of a tile in one vectorised pass: ~3 ms per tile side (single chord), ~8 ms with a 10 nm band, for 400 contacts. |
 | D70 | 2026-10-13 | `RegistrationView` row profiles: **Copy rows** (clipboard, tab-separated) and **Export rows CSV...** (`row_table`): the lines whose Show box is checked, one y / dx / dy column trio per set and plot, blank below a set's last row; values from the plot items at export time. | User: needs to export the dX/dY line graphs, as CSV and to the clipboard. Wide columns because the sets (corrected subsets, external sites) have different rows; the Show bar picks what is exported; tabs paste into Excel as columns. |
