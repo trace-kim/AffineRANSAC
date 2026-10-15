@@ -81,8 +81,9 @@ class Settings:
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
     detection: str = setting("band", "otsu (plain), otsu3 (3 classes) or band (regions enclosed by the bright band)")
     search_px: float = setting(5.0, "Edge refinement searches this many pixels in/out along the contour normal")
-    design_search_nm: float = setting(100.0, "Design-SEM matching: largest expected shift of a tile's SEM contacts "
-                                             "against its design (> pitch / 2)")
+    design_search_nm: float = setting(100.0, "Design-SEM matching: largest offset of one image's SEM contacts "
+                                             "against its own .oas, before stitching (its stage error); for a "
+                                             "regular array also > pitch / 2")
     design_tolerance_nm: float = setting(10.0, "Design-SEM matching: pair contacts within this after removing the "
                                                "tile shift (< pitch / 2)")
     min_match_fraction: float = setting(0.5, "A design tone is accepted if at least this fraction of the SEM "
@@ -333,8 +334,9 @@ def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResu
     design_stitch = stitch_design(tiles, s.design_max_match_nm, s.outlier_factor, s.min_matched)
 
     def errors(points, sem_corrections, design_corrections):  # each tile matched to its own design
+        # Every set pairs on the nominal SEM points (D86): the same contacts, so the same pairs in every set.
         return design_errors(points, design_points, sem_corrections, design_corrections, design_ok,
-                             s.design_search_nm, s.design_tolerance_nm, neighbours)
+                             s.design_search_nm, s.design_tolerance_nm, neighbours, pair_points=sem_points)
 
     result, observations, merged = _analyse(folder, "images", s, log, tile_ids, sem_points, design_points,
                                             centers, fovs, centers, design_stitch, errors)

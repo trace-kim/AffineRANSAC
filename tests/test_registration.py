@@ -44,6 +44,33 @@ def test_large_tile_offset_is_matched_and_kept_in_the_error():
     assert errors.ambiguous.dtype == bool and len(errors.ambiguous) == 2
 
 
+def test_pairs_are_chosen_before_the_corrections_so_a_large_correction_keeps_them():
+    # Tile 1 is 3 nm from its design, but its stitching correction moves it 150 nm (more than search_nm,
+    # e.g. a scale error added up over many tiles): it keeps every pair, and the error keeps the 150 nm.
+    sem = [DESIGN + (1.0, 0.0), DESIGN + (3.0, 0.0)]
+    corrections = np.array([[0.0, 0.0], [150.0, 0.0]])
+
+    errors = design_errors(sem, [DESIGN, DESIGN], corrections, np.zeros((2, 2)), [True, True], search_nm=100)
+
+    assert errors.skipped == {}
+    np.testing.assert_allclose(errors.error_nm[errors.tile == 1], np.tile([153.0, 0.0], (len(DESIGN), 1)))
+    np.testing.assert_allclose(errors.match_shift_nm, [[1.0, 0.0], [3.0, 0.0]])  # at the nominal placement
+    np.testing.assert_array_equal(errors.sem_index[errors.tile == 1], errors.design_index[errors.tile == 1])
+
+
+def test_pair_points_choose_the_pairs_of_points_that_already_hold_a_placement():
+    # The points already hold a 150 nm placement (as the stripe drift corrected set does); the pairs come
+    # from the nominal points of the same contacts.
+    nominal = [DESIGN + (2.0, 0.0)]
+    placed = [nominal[0] + (150.0, 0.0)]
+
+    errors = design_errors(placed, [DESIGN], np.zeros((1, 2)), np.zeros((1, 2)), [True], search_nm=100,
+                           pair_points=nominal)
+
+    assert errors.skipped == {}
+    np.testing.assert_allclose(errors.error_nm, np.tile([152.0, 0.0], (len(DESIGN), 1)))
+
+
 def test_design_corrections_move_the_design():
     # The design file of tile 0 is drawn 2 nm too far left; its design correction fixes that.
     errors = design_errors([DESIGN], [DESIGN - (2.0, 0.0)], np.zeros((1, 2)), np.array([[2.0, 0.0]]), [True])

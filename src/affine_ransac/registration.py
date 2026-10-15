@@ -35,7 +35,7 @@ class DesignErrors:
     design_nominal_nm: np.ndarray  # (N, 2) design centre at the nominal placement (for grouping)
     skipped: dict                  # tile index -> reason why it was not measured (no error computed)
     # Per tile, from the matching (design_errors only; None for paired_errors): the SEM − design
-    # shift used to choose the pairs (NaN if not matched); whether other shifts matched equally well
+    # shift used to choose the pairs, at the nominal placement (D86; NaN if not matched); whether other shifts matched equally well
     # (tied: no missing contact or other feature decides, so the neighbours did); and the largest
     # difference from a neighbour's
     # shift (NaN without matched neighbours; about one pitch = paired one row off).
@@ -89,6 +89,7 @@ def design_errors(
     tolerance_nm: float = 10.0,
     neighbours: list[tuple[int, int]] | None = None,
     min_extra: float = 2.0,
+    pair_points: list[np.ndarray] | None = None,
 ) -> DesignErrors:
     """Raw registration error of every contact found in both the stitched SEM and the design.
 
@@ -98,8 +99,13 @@ def design_errors(
     (n_tiles, 3, 3), e.g. pipeline.stitch_tiles_affine (stitching.apply_correction; NaN = tile not
     stitched).
     design_ok: per tile, whether its design tone matched the SEM (DesignContacts.ok).
-    Matching: each tile's candidate shifts (matching.scored_shifts, up to search_nm, pairs within
-    tolerance_nm after the shift), scored by their mismatches (D50). A candidate with at least
+    Matching at the NOMINAL placement (D86): each tile's points before its corrections, so search_nm only
+    has to cover one tile's offset against its own design (its stage error), not what the stitching adds
+    far from the centre; the corrections then move the pairs. pair_points: per tile, the points the pairs
+    are chosen on, if not sem_points: the same contacts in the same order, e.g. the nominal SEM points of
+    a set whose points already hold a placement (stripe drift corrected). Each tile's candidate shifts
+    (matching.scored_shifts, up to search_nm, pairs within tolerance_nm after the shift), scored by their
+    mismatches (D50). A candidate with at least
     min_extra fewer mismatches than the others wins outright. Tied tiles: with neighbours ((i, j)
     pairs of overlapping tiles, e.g. pipeline.tile_neighbours) the one agreeing with the
     neighbours (matching.consistent_choice, D49); without, the smallest shift (choose_shift). The shift only chooses the pairs: each error is the full
@@ -117,7 +123,10 @@ def design_errors(
         else:
             stitched[k] = (apply_correction(sem, sem_corrections[k]),
                            apply_correction(design, design_corrections[k]))
-            candidates[k] = scored_shifts(stitched[k][1], stitched[k][0], search_nm, tolerance_nm)
+            # Pairs chosen at the nominal placement, where a tile is only its own stage error away
+            # from its design; the corrections move the pairs, they do not change them (D86).
+            candidates[k] = scored_shifts(design, sem if pair_points is None else pair_points[k], search_nm,
+                                          tolerance_nm)
             if not candidates[k]:
                 skipped[k] = "no SEM contact matched the design"
 
