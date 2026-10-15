@@ -9,6 +9,7 @@ in whole µm (the OpenGL viewport works in float32). Layers (click a legend entr
 - overlaps used (yellow), skipped (dashed grey: fewer than min_matched contacts matched), not
   matched (dashed magenta: SEM; dash-dot orange: design): enough contacts, but they did not pair;
 - tiles not stitched (thick magenta): NaN correction, SEM or design.
+The failure layers (not matched, not stitched) are hidden at start (D76); the status line gives their counts.
 Tile names are drawn on request (check box). The cursor position is shown in mask µm.
 """
 
@@ -81,6 +82,8 @@ class PointsStitchView(QtWidgets.QWidget):
                     pg.mkPen("#ffa500", style=DASH_DOT, width=2))
         unplaced = sorted(set(stitch.unplaced.tolist()) | set(design_stitch.unplaced.tolist()))
         self._boxes("Tiles not stitched", [rectangles[k] for k in unplaced], pg.mkPen("#ff00ff", width=3))
+        for name in ("SEM overlaps not matched", "Design overlaps not matched", "Tiles not stitched"):
+            self.items[name].setVisible(False)  # off at start: click the legend entry to show
 
         self.names = []
         for name, center in zip(tile_ids, centers):

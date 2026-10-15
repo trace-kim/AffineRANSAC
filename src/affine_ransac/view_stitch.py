@@ -67,10 +67,11 @@ COLORS = {
     SKIPPED: "#909090", UNSTITCHED: FAILURE_COLOR, ERRORS: "#ffffff", TILE_FRAMES: "#606060",
     NOT_MEASURED: FAILURE_COLOR, MERGED: "#ffa500", SPREAD: FAILURE_COLOR,
 }
-# Off at start: many items (slow to draw), and flags that are not failures (a large spread rings
-# nearly every overlap contact at the nominal placement); switch on in the panel. The failure
-# markers (not matched, not stitched, not measured) stay on.
-HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED, MERGED, SPREAD}
+# Off at start: many items (slow to draw), flags that are not failures (a large spread rings nearly
+# every overlap contact at the nominal placement), and the magenta failure markers too (user, D76): the
+# status line above the plot says in magenta when there are failures; switch them on in the panel.
+HIDDEN_AT_START = {DESIGN, OTSU, OTSU_CENTRES, REFINED, OUTLIERS, SKIPPED, MERGED, SPREAD, FAILED, DESIGN_FAILED,
+                   UNSTITCHED, NOT_MEASURED}
 SEM_LAYERS = {IMAGES, OTSU, OTSU_CENTRES, REFINED, REFINED_CENTRES, OUTLIERS}  # moved by SEM corrections
 DESIGN_LAYERS = {DESIGN, DESIGN_CENTRES}                                      # moved by design corrections
 PLACEMENTS = {"nominal": "Nominal (metadata centres)", "mean": "Stitched (corrections average 0)",
@@ -234,7 +235,8 @@ class StitchViewer(QtWidgets.QWidget):
             if unplaced or failed:
                 parts.append(f"{name}: {len(unplaced)} tile(s) not stitched, {failed} overlap(s) not matched")
         if parts:
-            return f"<b style='color:{FAILURE_COLOR}'>Stitching incomplete (magenta) - {'; '.join(parts)}</b>"
+            return (f"<b style='color:{FAILURE_COLOR}'>Stitching incomplete - {'; '.join(parts)} "
+                    f"(magenta layers, off at start)</b>")
         return f"All {len(self.tiles)} tiles stitched, SEM and design"
 
     def _add(self, layer, k, item, plot=None):

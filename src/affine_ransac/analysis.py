@@ -365,20 +365,22 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     order_pairs = measurement_pairs(centers, stripe, s.first_stripe_upward)
     guided = s.stitch_method == "measurement order first"
 
-    def stitch(points, only_pairs=None, guide=None):
+    def stitch(points, label, only_pairs=None, guide=None):
         """All overlaps (only_pairs None), or those pairs; with the chosen method, all overlaps are guided
-        by a first stitching in measurement order (stitch_tiles(guide=...))."""
+        by a first stitching in measurement order (stitch_tiles(guide=...)). label: which stitching, for
+        its warnings."""
         if guided and only_pairs is None and guide is None:
-            guide = stitch(points, only_pairs=order_pairs).corrections
+            guide = stitch(points, label.replace("all overlaps", "measurement order (guide)"),
+                           only_pairs=order_pairs).corrections
         return stitch_tiles(points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
-                            only_pairs=only_pairs, guide=guide)
+                            label=label, only_pairs=only_pairs, guide=guide)
 
     def merged_contacts(points, corrections):  # shifts (n, 2) or translation + rotation affines (n, 3, 3)
         return merge_observations(errors(points, corrections, design_stitch.corrections),
                                   design_stitch.corrections, s.group_radius_nm)
 
-    order_stitch = stitch(sem_points, only_pairs=order_pairs)
-    raw_stitch = stitch(sem_points, guide=order_stitch.corrections if guided else None)
+    order_stitch = stitch(sem_points, "SEM, measurement order", only_pairs=order_pairs)
+    raw_stitch = stitch(sem_points, "SEM, all overlaps", guide=order_stitch.corrections if guided else None)
     log(f"Stitching method: {s.stitch_method}" + (f" ({len(order_stitch.pairs)} pairs in measurement order, "
                                                    f"{len(order_stitch.unplaced)} tile(s) not placed by them: "
                                                    f"paired at their nominal position)" if guided else ""))
@@ -420,7 +422,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
         intrafield = estimate_map(design_local, sem_local, s.intrafield_nodes)
         log(f"In-image map from {intrafield.images} of {n} images, up to {np.abs(intrafield.shift_nm).max():.3f} nm")
         ic_points = [correct_points(p, c, intrafield) for p, c in zip(sem_points, image_centers)]
-        ic_stitch = stitch(ic_points)
+        ic_stitch = stitch(ic_points, "In-image corrected SEM, all overlaps")
         ic = merged_contacts(ic_points, ic_stitch.corrections)
         sets["in-image corrected"] = _fitted(ic.sem_nm, ic.design_nm, s, log, "in-image corrected")
         stitchings["in-image corrected"] = (ic_points, ic_stitch)
@@ -433,26 +435,30 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     # Drift per stripe: stitch in measurement order, subtract each stripe's curve, stitch everything.
     log(f"{stripe.max() + 1} stripes of {np.bincount(stripe).tolist()} tiles")
 
-    def without_stripe_drift(points, name):
-        """points minus each stripe's drift curve, measured after stitching them in measurement order; and
-        the drift."""
-        first_stitch = stitch(points, only_pairs=order_pairs)
-        log(f"{name} stitched in measurement order: {len(first_stitch.pairs)} pairs used, "
-            f"{len(first_stitch.unplaced)} tile(s) not stitched")
+    def without_stripe_drift(points, name, first_stitch=None):
+        """points minus each stripe's drift curve, measured after stitching them in measurement order
+        (first_stitch, if already done); and the drift."""
+        if first_stitch is None:
+            first_stitch = stitch(points, f"{name}, measurement order", only_pairs=order_pairs)
+        lost = len(first_stitch.unplaced)
+        log(("!! " if lost else "") + f"{name} stitched in measurement order: {len(first_stitch.pairs)} pairs used, "
+            f"{lost} tile(s) not stitched" + (" (the chain broke: these stay at their nominal position, and the "
+                                              "stripe drift is measured without them)" if lost else ""))
         first = errors(points, first_stitch.corrections, design_stitch.corrections)
         drifts = stripe_drift(first.design_nm[:, 1], first.error_nm, stripe[first.tile], s.drift_window_um * 1000,
                               s.row_gap_nm)
         placed = np.nan_to_num(first_stitch.corrections)  # a tile not stitched in measurement order stays nominal
         return [p + placed[k] - drifts.correction(stripe[k], p[:, 1] + placed[k, 1]) for k, p in enumerate(points)], drifts
 
-    sd_points, stripe_drifts = without_stripe_drift(sem_points, "SEM points")
-    sd_stitch = stitch(sd_points)
+    sd_points, stripe_drifts = without_stripe_drift(sem_points, "SEM points", order_stitch)
+    sd_stitch = stitch(sd_points, "Stripe drift corrected SEM, all overlaps")
     sd = merged_contacts(sd_points, sd_stitch.corrections)
     sets["stripe drift corrected"] = _fitted(sd.sem_nm, sd.design_nm, s, log, "stripe drift corrected")
     stitchings["stripe drift corrected"] = (sd_points, sd_stitch)
     if ic_points is not None:  # both corrections before stitching, in that order
         icsd_points, _ = without_stripe_drift(ic_points, "In-image corrected points")
-        stitchings["in-image + stripe drift corrected"] = (icsd_points, stitch(icsd_points))
+        stitchings["in-image + stripe drift corrected"] = (icsd_points, stitch(
+            icsd_points, "In-image + stripe drift corrected SEM, all overlaps"))
 
     # Translation + rotation per tile, from the ties of each translation stitching (stitching residuals).
     stitchings = {name: Stitching(points, st, stitch_tiles_rigid(points, centers, st))

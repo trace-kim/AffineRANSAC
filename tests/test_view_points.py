@@ -42,6 +42,9 @@ def test_shows_every_contact_and_the_overlaps_relative_to_a_whole_um_origin(tmp_
     assert np.isnan(x).sum() == len(stitch.pairs) == 4
     assert view.items["Tiles not stitched"].getData()[0] is None or len(view.items["Tiles not stitched"].getData()[0]) == 0
     assert "4 of 4 tiles stitched" in view.status.text()
+    failure_layers = ("SEM overlaps not matched", "Design overlaps not matched", "Tiles not stitched")
+    assert not any(view.items[name].isVisible() for name in failure_layers)  # off at start (D76)
+    assert view.items["Overlaps used (SEM)"].isVisible()
     view.close()
 
 

@@ -133,6 +133,8 @@ def test_error_lines_follow_the_selected_placement():
 
 def test_not_measured_frames_follow_the_placement():
     _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
+    assert not item(viewer, NOT_MEASURED, 1).isVisible()  # off at start, like every magenta layer
+    viewer.layer_boxes[NOT_MEASURED].setChecked(True)
     assert item(viewer, NOT_MEASURED, 1).isVisible() and not item(viewer, NOT_MEASURED, 2).isVisible()
     viewer.placement_buttons["mean"].setChecked(True)
     assert not item(viewer, NOT_MEASURED, 1).isVisible() and item(viewer, NOT_MEASURED, 2).isVisible()
@@ -148,11 +150,10 @@ def test_error_map_shares_zoom():
     viewer.close()
 
 
-def test_start_with_heavy_layers_and_non_failure_flags_off():
+def test_start_with_heavy_layers_and_all_flags_off():
     _, viewer = make_viewer(ERRORS_BY_PLACEMENT)
     shown = {layer for layer, box in viewer.layer_boxes.items() if box.isChecked()}
-    assert shown == {IMAGES, DESIGN_CENTRES, REFINED_CENTRES, BOXES, ERRORS, TILE_FRAMES,
-                     FAILED, DESIGN_FAILED, UNSTITCHED, NOT_MEASURED}
+    assert shown == {IMAGES, DESIGN_CENTRES, REFINED_CENTRES, BOXES, ERRORS, TILE_FRAMES}
     assert not viewer.spread_rings.isVisible()
     viewer.layer_boxes[SPREAD].setChecked(True)
     assert viewer.spread_rings.isVisible()
@@ -203,5 +204,6 @@ def test_opens_when_no_tile_was_measured():
     merged = merge_observations(empty, DESIGN_CORRECTIONS)
     _, viewer = make_viewer({"nominal": merged, "mean": merged, "first": merged})
     assert "0 contacts" in viewer.error_label.text() and "3 tile(s) not measured" in viewer.error_label.text()
+    viewer.layer_boxes[NOT_MEASURED].setChecked(True)  # off at start
     assert all(item(viewer, NOT_MEASURED, k).isVisible() for k in range(3))
     viewer.close()
