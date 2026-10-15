@@ -2,12 +2,13 @@
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
 placement; stitching failures (off at start, D76) and tile names on request; the SEM images on request
-(Load SEM images: the app reads them in the background and calls set_images).
+(Load SEM images: the app reads them in the background and calls set_images), with an opacity slider.
 
-RegistrationView: the error after the moving-window affine, measured (SEM) − design, of every contact: dx and
-dy maps (jet, shared colour scale, rasterized to the screen like the research view; draw_map), the mean per
-row after the affine and, as a reference, of the stitched contacts without any affine. Copy rows / Export CSV
-give the row profile as a table.
+RegistrationView: the error after the moving-window affine, measured (SEM) − design, of every contact, as colour
+maps of dx and dy (jet, shared colour scale, rasterized to the screen like the research view; draw_map) or as
+one arrow map. Every map has its profiles beside it (MarginalMap): the mean per row on its right, rotated so
+that y runs down the side like the map's y, and the mean per column below it; both follow the map's zoom and
+pan. Copy profiles / Export profiles CSV give both profiles as a table.
 
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
@@ -117,6 +118,14 @@ class StitchingView(QtWidgets.QWidget):
         self.images_box.setEnabled(False)
         self.images_box.toggled.connect(self.update_visibility)
         controls.addWidget(self.images_box)
+        self.opacity = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, minimum=0, maximum=100, value=100)
+        self.opacity.setFixedWidth(120)
+        self.opacity.setEnabled(False)
+        self.opacity.setToolTip("Opacity of the SEM images")
+        self.opacity.valueChanged.connect(self.set_opacity)
+        self.opacity_label = QtWidgets.QLabel("100 %")
+        controls.addWidget(self.opacity)
+        controls.addWidget(self.opacity_label)
         self.load_button = QtWidgets.QPushButton("Load SEM images")
         can_load = on_load_images is not None and bool(r.image_paths)
         self.load_button.setEnabled(can_load)
@@ -135,7 +144,7 @@ class StitchingView(QtWidgets.QWidget):
         self.plot.scene().sigMouseMoved.connect(self._show_cursor)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addLayout(style.figure_bar("Stitching", style.image_buttons(self.graphics, "stitching")))
+        layout.addLayout(style.figure_bar("Stitching", style.image_buttons(lambda: self.graphics, "stitching")))
         layout.addWidget(self.status)
         layout.addLayout(controls)
         layout.addWidget(self.graphics, stretch=1)
@@ -198,10 +207,18 @@ class StitchingView(QtWidgets.QWidget):
             self.plot.addItem(item)
             self.image_items.append(item)
         self.images_box.setEnabled(True)
+        self.opacity.setEnabled(True)
+        self.set_opacity(self.opacity.value())
         self.images_box.setChecked(True)
         self.load_button.setEnabled(False)
         self.update_positions()
         self.update_visibility()
+
+    def set_opacity(self, percent: int):
+        """Opacity of the SEM images, 0 (transparent) to 100 %."""
+        for item in self.image_items:
+            item.setOpacity(percent / 100)
+        self.opacity_label.setText(f"{percent} %")
 
     def _show_cursor(self, scene_pos):
         pos = self.plot.vb.mapSceneToView(scene_pos)
@@ -215,6 +232,68 @@ def summary_text(error_nm: np.ndarray) -> str:
             f"dy {s['3sigma_y_nm']:.2f} nm; max |error| {s['max_nm']:.2f} nm")
 
 
+def nice_number(value: float) -> float:
+    """The 1, 2 or 5 x 10^k nearest below value (value > 0)."""
+    exponent = np.floor(np.log10(value))
+    return max(m for m in (1, 2, 5) if m * 10 ** exponent <= value) * 10 ** exponent
+
+
+def arrow_segments(start: np.ndarray, vector: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """x, y of the line segments of arrows start -> start + vector: per arrow its shaft and two head strokes (30 %
+    of its length, 25° off the shaft), for PlotCurveItem(connect="pairs")."""
+    end = start + vector
+    angle = np.arctan2(vector[:, 1], vector[:, 0])
+    head = 0.3 * np.linalg.norm(vector, axis=1)
+    strokes = [start, end]
+    for turn in (np.pi - np.radians(25), np.pi + np.radians(25)):
+        tip = end + head[:, None] * np.column_stack([np.cos(angle + turn), np.sin(angle + turn)])
+        strokes += [end, tip]
+    points = np.stack(strokes, axis=1).reshape(-1, 2)
+    return points[:, 0], points[:, 1]
+
+
+class MarginalMap:
+    """A map with the mean per row on its right (rotated: the row's y runs down the side, aligned with the map's
+    y) and the mean per column below it (aligned with the map's x), in a GraphicsLayout at (row, col): the map
+    takes (row, col), the row profile (row, col + 1), the column profile (row + 1, col). The profiles follow the
+    map's zoom and pan. Positions in µm relative to origin_nm."""
+    AXIS_PX = 64  # left axis width of the map and of the column profile, so that their x line up
+
+    def __init__(self, layout: pg.GraphicsLayout, row: int, col: int, origin_nm, title: str):
+        self.map = mask_plot(origin_nm, title, data_unit_nm=1000)
+        self.rows = pg.PlotItem()
+        self.columns = pg.PlotItem(axisItems={"bottom": style.MaskAxis("bottom", origin_nm[0], 1000)})
+        layout.addItem(self.map, row=row, col=col)
+        layout.addItem(self.rows, row=row, col=col + 1)
+        layout.addItem(self.columns, row=row + 1, col=col)
+        style.style_plot(self.rows, "Mean per row", "error (nm)")
+        style.style_plot(self.columns, "Mean per column", "x (µm)", "error (nm)")
+        self.rows.getAxis("left").setStyle(showValues=False)  # the map's y axis is beside it
+        for plot in (self.map, self.columns):
+            plot.getAxis("left").setWidth(self.AXIS_PX)
+        self.rows.addLine(x=0, pen=pg.mkPen(style.MUTED, style=QtCore.Qt.PenStyle.DashLine))
+        style.zero_line(self.columns)
+        self.rows.setMouseEnabled(x=True, y=False)
+        self.columns.setMouseEnabled(x=False, y=True)
+        self.map.vb.sigRangeChanged.connect(self._follow)
+        grid = layout.layout
+        grid.setColumnStretchFactor(col, 4)
+        grid.setColumnStretchFactor(col + 1, 1)
+        grid.setRowStretchFactor(row, 3)
+        grid.setRowStretchFactor(row + 1, 1)
+
+    def add_profile(self, name: str, color: str, row_um, row_mean, column_um, column_mean):
+        """One line in each profile: row_mean (nm) at the rows' y (µm), column_mean at the columns' x (µm)."""
+        pen = pg.mkPen(color, width=2)
+        self.rows.plot(row_mean, row_um, pen=pen, name=name)
+        self.columns.plot(column_um, column_mean, pen=pen, name=name)
+
+    def _follow(self, *_):
+        (x0, x1), (y0, y1) = self.map.vb.viewRange()
+        self.rows.setYRange(y0, y1, padding=0)
+        self.columns.setXRange(x0, x1, padding=0)
+
+
 class RegistrationView(QtWidgets.QWidget):
     def __init__(self, result: ReleaseResult, use_opengl: bool = True):
         super().__init__()
@@ -224,17 +303,24 @@ class RegistrationView(QtWidgets.QWidget):
         self.origin = np.round(r.design_nm.mean(axis=0), -3)  # whole µm
         self.position_um = (r.design_nm - self.origin) / 1000
         distance, _ = cKDTree(r.design_nm).query(r.design_nm, k=2)
-        self.dot_um = 0.4 * np.median(distance[:, 1]) / 1000  # a disk of ~0.4 x the pitch when zoomed in
+        self.pitch_nm = float(np.median(distance[:, 1]))
+        self.dot_um = 0.4 * self.pitch_nm / 1000  # a disk of ~0.4 x the pitch when zoomed in
+        self.row_y, self.row_mean, _ = row_means(r.design_nm[:, 1], self.error_nm, s.row_gap_nm)
+        self.column_x, self.column_mean, _ = row_means(r.design_nm[:, 0], self.error_nm, s.row_gap_nm)
+        row_um, column_um = (self.row_y - self.origin[1]) / 1000, (self.column_x - self.origin[0]) / 1000
+        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
+        components = (("Δx", style.DX), ("Δy", style.DY))
 
-        # Maps: dx and dy with one colour bar.
+        # Colour maps: dx and dy, each with the profiles of its own component; one colour bar.
         self.maps_figure = figure(use_opengl)
-        self.maps = []
-        for component, name in enumerate(("Δx", "Δy")):
-            plot = mask_plot(self.origin, f"{name}: measured − design (nm)", data_unit_nm=1000)  # maps in µm
+        self.maps = []  # (MarginalMap, image, component)
+        for component, (name, color) in enumerate(components):
+            panel = MarginalMap(self.maps_figure.ci, 0, 2 * component, self.origin, f"{name}: measured − design (nm)")
+            panel.add_profile(name, color, row_um, self.row_mean[:, component], column_um,
+                              self.column_mean[:, component])
             image = pg.ImageItem(axisOrder="row-major")
-            plot.addItem(image)
-            self.maps_figure.addItem(plot, row=0, col=component)
-            self.maps.append((plot, image, component))
+            panel.map.addItem(image)
+            self.maps.append((panel, image, component))
         limit = float(np.percentile(np.abs(self.error_nm), 99)) or 1.0
         self.color_bar = pg.ColorBarItem(values=(-limit, limit), colorMap=JET, width=18)
         axis = self.color_bar.getAxis("right")
@@ -243,67 +329,89 @@ class RegistrationView(QtWidgets.QWidget):
         axis.enableAutoSIPrefix(False)
         axis.setLabel("error (nm)", color=style.TEXT, **{"font-size": f"{style.LABEL_PT}pt"})
         self.color_bar.sigLevelsChanged.connect(lambda *_: self.draw_maps())
-        self.maps_figure.addItem(self.color_bar, row=0, col=2)
+        self.maps_figure.addItem(self.color_bar, row=0, col=4)
         self._link_maps()
-        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
-        self.maps[0][0].vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
+        self.maps[0][0].map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
         self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
         self.redraw.timeout.connect(self.draw_maps)
-        for plot, _, _ in self.maps:
-            plot.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
-            plot.vb.sigResized.connect(lambda *_: self.redraw.start())
+        for panel, _, _ in self.maps:
+            panel.map.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
+            panel.map.vb.sigResized.connect(lambda *_: self.redraw.start())
 
-        # Row profiles: after the moving-window affine, and stitched without any affine (reference).
-        self.profile_figure = figure(use_opengl)
-        y = r.design_nm[:, 1]
-        self.row_y, self.row_mean, _ = row_means(y, self.error_nm, s.row_gap_nm)
-        _, self.raw_mean, _ = row_means(y, r.sem_nm - r.design_nm, s.row_gap_nm)
-        row_um = self.row_y / 1000
-        self.row_plot = self.profile_figure.addPlot(row=0, col=0)
-        self.raw_plot = self.profile_figure.addPlot(row=1, col=0)
-        for plot, mean, title in ((self.row_plot, self.row_mean, "Mean error per row, after the moving-window affine"),
-                                  (self.raw_plot, self.raw_mean, "Reference: mean error per row, stitched, no affine")):
-            style.style_plot(plot, title, "row y (µm)", "error (nm)")
-            style.legend(plot)
-            style.zero_line(plot)
-            for component, (name, color) in enumerate((("Δx", style.DX), ("Δy", style.DY))):
-                plot.plot(row_um, mean[:, component], pen=pg.mkPen(color, width=2), name=name)
-        self.raw_plot.setXLink(self.row_plot)
+        # Arrows: one map of the error vectors, both components in its profiles.
+        self.arrows_figure = figure(use_opengl)
+        self.arrow_panel = MarginalMap(self.arrows_figure.ci, 0, 0, self.origin, "Error vectors: measured − design")
+        style.legend(self.arrow_panel.rows)
+        for component, (name, color) in enumerate(components):
+            self.arrow_panel.add_profile(name, color, row_um, self.row_mean[:, component], column_um,
+                                         self.column_mean[:, component])
+        self.arrows = pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(style.TEXT, width=1), antialias=False)
+        self.arrow_panel.map.addItem(self.arrows)
+        self.arrow_panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
+        largest = float(np.percentile(np.linalg.norm(self.error_nm, axis=1), 99)) or 1.0
+        self.arrow_scale = QtWidgets.QDoubleSpinBox(decimals=0, minimum=1, maximum=1e7)
+        self.arrow_scale.setValue(nice_number(0.5 * self.pitch_nm / largest))  # the largest arrows ~ half a pitch
+        self.arrow_scale.setToolTip("Arrows are drawn this many times longer than the error")
+        self.arrow_scale.valueChanged.connect(self.draw_arrows)
+        self.arrow_key = QtWidgets.QLabel()
+        self.draw_arrows()
+
+        self.display = QtWidgets.QComboBox()
+        self.display.addItems(["Colour maps", "Arrows"])
+        self.figures = QtWidgets.QStackedWidget()
+        self.figures.addWidget(self.maps_figure)
+        self.figures.addWidget(self.arrows_figure)
+        self.display.currentIndexChanged.connect(self.show_display)
 
         window = f"moving-window affine: window {s.moving_window_um:g} µm, step {s.moving_step_um:g} µm"
-        summary = QtWidgets.QLabel(f"<b>{len(self.error_nm)} contacts</b>, {len(self.row_y)} rows. Error = measured "
-                                   f"(SEM) − design after the {window}: {summary_text(self.error_nm)}.")
+        summary = QtWidgets.QLabel(f"<b>{len(self.error_nm)} contacts</b>, {len(self.row_y)} rows, "
+                                   f"{len(self.column_x)} columns. Error = measured (SEM) − design after the {window}: "
+                                   f"{summary_text(self.error_nm)}.")
         summary.setWordWrap(True)
-        copy_rows = QtWidgets.QPushButton("Copy rows")
-        copy_rows.setToolTip("Copy the row profile (y µm; dx, dy nm) to the clipboard, tab-separated (pastes into Excel)")
-        copy_rows.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.rows_text("\t")))
-        export_rows = QtWidgets.QPushButton("Export rows CSV...")
-        export_rows.clicked.connect(self.export_rows)
+        copy_profiles = QtWidgets.QPushButton("Copy profiles")
+        copy_profiles.setToolTip("Copy the mean per row and per column (µm; dx, dy nm) to the clipboard, "
+                                 "tab-separated (pastes into Excel)")
+        copy_profiles.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.profiles_text("\t")))
+        export_profiles = QtWidgets.QPushButton("Export profiles CSV...")
+        export_profiles.clicked.connect(self.export_profiles)
 
-        maps_panel, profile_panel = QtWidgets.QWidget(), QtWidgets.QWidget()
-        maps_layout = QtWidgets.QVBoxLayout(maps_panel)
-        maps_layout.addLayout(style.figure_bar("Error maps", style.image_buttons(self.maps_figure, "error maps")))
-        maps_layout.addWidget(self.maps_figure)
-        profile_layout = QtWidgets.QVBoxLayout(profile_panel)
-        profile_layout.addLayout(style.figure_bar("Row profile", [copy_rows, export_rows] + style.image_buttons(
-            self.profile_figure, "row profile")))
-        profile_layout.addWidget(self.profile_figure)
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        splitter.addWidget(maps_panel)
-        splitter.addWidget(profile_panel)
-        splitter.setSizes([600, 500])
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Show:"))
+        controls.addWidget(self.display)
+        self.arrow_controls = QtWidgets.QWidget()
+        arrow_row = QtWidgets.QHBoxLayout(self.arrow_controls)
+        arrow_row.setContentsMargins(16, 0, 0, 0)
+        arrow_row.addWidget(QtWidgets.QLabel("Arrow scale ×"))
+        arrow_row.addWidget(self.arrow_scale)
+        arrow_row.addWidget(self.arrow_key)
+        controls.addWidget(self.arrow_controls)
+        controls.addStretch(1)
+        for button in [copy_profiles, export_profiles] + style.image_buttons(self.figures.currentWidget, "registration"):
+            controls.addWidget(button)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(summary)
-        layout.addWidget(splitter, stretch=1)
+        layout.addLayout(controls)
+        layout.addWidget(self.figures, stretch=1)
+        self.show_display(0)
         self.draw_maps()
 
+    def show_display(self, index: int):
+        """0: colour maps, 1: arrows."""
+        self.figures.setCurrentIndex(index)
+        self.arrow_controls.setVisible(index == 1)
+
     def draw_maps(self):
-        for plot, image, component in self.maps:
-            draw_map(plot, image, self.position_um, self.error_nm[:, component], self.color_bar.levels(), self.dot_um,
-                     self.devicePixelRatioF(), background=255)
+        for panel, image, component in self.maps:
+            draw_map(panel.map, image, self.position_um, self.error_nm[:, component], self.color_bar.levels(),
+                     self.dot_um, self.devicePixelRatioF(), background=255)
+
+    def draw_arrows(self):
+        scale = self.arrow_scale.value()
+        self.arrows.setData(*arrow_segments(self.position_um, self.error_nm * scale / 1000))
+        self.arrow_key.setText(f"(1 nm error = {scale / 1000:g} µm on the map)")
 
     def _link_maps(self):
-        """Both maps show the same area."""
+        """Both colour maps show the same area."""
         (a, _, _), (b, _, _) = self.maps
         busy = [False]
 
@@ -314,24 +422,28 @@ class RegistrationView(QtWidgets.QWidget):
                     target.vb.setRange(rect=source.vb.viewRect(), padding=0)
                     busy[0] = False
             source.vb.sigRangeChanged.connect(update)
-        follow(a, b)
-        follow(b, a)
+        follow(a.map, b.map)
+        follow(b.map, a.map)
 
-    def rows(self) -> list[list[str]]:
-        """The row profile as a table: header, then per row its y (mask µm) and mean dx, dy (nm) after the
-        moving-window affine and stitched without affine."""
-        header = ["row y (µm)", "dx after moving window (nm)", "dy after moving window (nm)",
-                  "dx no affine (nm)", "dy no affine (nm)"]
-        return [header] + [[f"{y / 1000:.4f}", *(f"{v:.4f}" for v in (*after, *raw))]
-                           for y, after, raw in zip(self.row_y, self.row_mean, self.raw_mean)]
+    def profiles(self) -> list[list[str]]:
+        """Both profiles as one table: header, then per line a row (y, mask µm; mean dx, dy, nm) and a column
+        (x, mask µm; mean dx, dy, nm), blank where one profile has fewer lines than the other."""
+        header = ["row y (µm)", "row mean dx (nm)", "row mean dy (nm)",
+                  "column x (µm)", "column mean dx (nm)", "column mean dy (nm)"]
 
-    def rows_text(self, delimiter: str) -> str:
+        def cells(position, mean, k):
+            return [f"{position[k] / 1000:.4f}", *(f"{v:.4f}" for v in mean[k])] if k < len(position) else [""] * 3
+        length = max(len(self.row_y), len(self.column_x))
+        return [header] + [cells(self.row_y, self.row_mean, k) + cells(self.column_x, self.column_mean, k)
+                           for k in range(length)]
+
+    def profiles_text(self, delimiter: str) -> str:
         out = io.StringIO()
-        csv.writer(out, delimiter=delimiter, lineterminator="\n").writerows(self.rows())
+        csv.writer(out, delimiter=delimiter, lineterminator="\n").writerows(self.profiles())
         return out.getvalue()
 
-    def export_rows(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export row profile", "row_profile.csv", "CSV (*.csv)")
+    def export_profiles(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export profiles", "profiles.csv", "CSV (*.csv)")
         if path:
             with open(path, "w", encoding="utf-8-sig", newline="") as f:  # BOM: Excel reads the µ
-                f.write(self.rows_text(","))
+                f.write(self.profiles_text(","))

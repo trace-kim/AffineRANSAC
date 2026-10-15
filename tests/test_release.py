@@ -92,10 +92,30 @@ def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     view.resize(1200, 900)
     view.show()
     QtWidgets.QApplication.processEvents()
-    image = style.render_image(view.profile_figure)
-    assert image.width() == 2 * view.profile_figure.viewport().width()
+    image = style.render_image(view.maps_figure)
+    assert image.width() == 2 * view.maps_figure.viewport().width()
     assert image.pixelColor(2, 2).name() == "#ffffff"
-    assert view.rows()[0][0] == "row y (µm)" and len(view.rows()) == len(view.row_y) + 1
+    table = view.profiles()
+    assert table[0][0] == "row y (µm)" and table[0][3] == "column x (µm)"
+    assert len(table) == max(len(view.row_y), len(view.column_x)) + 1
+
+    # The profiles beside a map follow it: the row profile its y, the column profile its x.
+    panel = view.maps[0][0]
+    panel.map.vb.setRange(xRange=(0.2, 0.8), yRange=(1.0, 3.0), padding=0)
+    QtWidgets.QApplication.processEvents()
+    assert np.allclose(panel.rows.vb.viewRange()[1], panel.map.vb.viewRange()[1])
+    assert np.allclose(panel.columns.vb.viewRange()[0], panel.map.vb.viewRange()[0])
+    rows_line = panel.rows.listDataItems()[0].getData()  # rotated: x = mean error, y = row position
+    np.testing.assert_allclose(rows_line[0], view.row_mean[:, 0])
+
+    # Arrows: one shaft and two head strokes per contact, scaled.
+    view.display.setCurrentIndex(1)
+    assert view.figures.currentWidget() is view.arrows_figure and view.arrow_controls.isVisibleTo(view)
+    x, y = view.arrows.getData()
+    assert len(x) == 6 * len(view.error_nm)
+    view.arrow_scale.setValue(1000)
+    x, y = view.arrows.getData()
+    np.testing.assert_allclose([x[1] - x[0], y[1] - y[0]], view.error_nm[0] * 1000 / 1000)  # nm x 1000 on the map, in µm
     stitching = StitchingView(result, use_opengl=False)
     assert not stitching.load_button.isEnabled()  # contour CSVs: no images
     view.close()
@@ -129,7 +149,7 @@ def test_opening_a_folder_analyses_it_once_then_opens_the_saved_result(tmp_path,
     wait(window)
     assert (data / CACHE_NAME).is_file() and "No saved analysis" in window.log_view.toPlainText()
     tabs = window.centralWidget()
-    assert [tabs.tabText(k) for k in range(tabs.count())] == ["Stitching", "Registration, moving window"]
+    assert [tabs.tabText(k) for k in range(tabs.count())] == ["Stitching", "Registration"]
     assert "contacts" in window.status.idle.text() and window.actions["restart"].isEnabled()
 
     analysed = window.result
@@ -158,6 +178,8 @@ def test_sem_images_are_loaded_on_request(tmp_path, monkeypatch):
     window.load_images()
     wait(window)
     assert len(view.image_items) == 4 and view.images_box.isChecked() and not view.load_button.isEnabled()
+    view.opacity.setValue(40)
+    assert view.image_items[0].opacity() == 0.4 and view.opacity_label.text() == "40 %"
     window.gpu_action.setChecked(False)
     window.set_gpu(False)  # rebuilt: the images loaded are kept
     assert len(window.stitching_view.image_items) == 4

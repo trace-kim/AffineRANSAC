@@ -79,18 +79,19 @@ def render_image(view: pg.GraphicsView, scale: int = EXPORT_SCALE) -> QtGui.QIma
     return image
 
 
-def image_buttons(view: pg.GraphicsView, name: str) -> list[QtWidgets.QPushButton]:
-    """Copy image (clipboard, for slides) and Save image... (PNG) buttons for a figure."""
+def image_buttons(figure, name: str) -> list[QtWidgets.QPushButton]:
+    """Copy image (clipboard, for slides) and Save image... (PNG) buttons for the figure (pg.GraphicsView) that
+    figure() returns when a button is pressed."""
     copy = QtWidgets.QPushButton("Copy image")
     copy.setToolTip(f"Copy the {name} figure to the clipboard (paste it into a slide)")
-    copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setImage(render_image(view)))
+    copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setImage(render_image(figure())))
     save = QtWidgets.QPushButton("Save image...")
     save.setToolTip(f"Save the {name} figure as a PNG file")
 
     def save_png():
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(view, "Save image", f"{name}.png", "PNG image (*.png)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(save, "Save image", f"{name}.png", "PNG image (*.png)")
         if path:
-            render_image(view).save(path)
+            render_image(figure()).save(path)
     save.clicked.connect(save_png)
     return [copy, save]
 

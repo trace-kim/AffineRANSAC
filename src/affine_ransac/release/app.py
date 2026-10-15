@@ -274,7 +274,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             self.stitching_view.set_images(self.images)
         self.registration_view = RegistrationView(result, use_opengl)
         tabs.addTab(self.stitching_view, "Stitching")
-        tabs.addTab(self.registration_view, "Registration, moving window")
+        tabs.addTab(self.registration_view, "Registration")
         tabs.setCurrentIndex(1)
         self.setCentralWidget(tabs)
         self.result = result
