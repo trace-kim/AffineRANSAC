@@ -259,3 +259,55 @@ def test_a_run_stores_the_detected_direction(tmp_path):
     assert result.settings.first_stripe_upward is True
     assert "Scan: first stripe measured upward (file numbers)" in lines
     assert "first_stripe_upward" not in PARAMETERS["images"] + PARAMETERS["contour CSV"]
+
+
+def test_grid_means_average_the_points_of_each_cell():
+    from affine_ransac.registration import grid_means
+    points = np.array([[0.0, 0.0], [5.0, 2.0], [12.0, 1.0], [1.0, 25.0]])
+    values = np.array([[1.0, 10.0], [3.0, 20.0], [5.0, 30.0], [7.0, 40.0]])
+    corner, mean, count = grid_means(points, values, 10.0)
+    assert corner.tolist() == [0.0, 0.0] and mean.shape == (3, 2, 2)
+    assert count.tolist() == [[2, 1], [0, 0], [1, 0]]
+    np.testing.assert_allclose(mean[0, 0], [2.0, 15.0])
+    np.testing.assert_allclose(mean[0, 1], [5.0, 30.0])
+    assert np.isnan(mean[1, 0]).all()
+
+
+def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
+    from affine_ransac.registration import grid_means
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    QtWidgets.QApplication.processEvents()
+
+    view.cell.setValue(0.5)
+    view.values.setCurrentIndex(1)  # grid average
+    _, mean, count = grid_means(result.design_nm, result.moving.residuals, 500.0)
+    assert view.maps[0][1].image.shape[:2] == mean.shape[:2]  # one image pixel per cell
+    view.display.setCurrentIndex(1)
+    x, _ = view.arrows.getData()
+    assert len(x) == 6 * (count > 0).sum()  # one arrow per cell with contacts
+    view.values.setCurrentIndex(0)
+    assert len(view.arrows.getData()[0]) == 6 * len(result.design_nm)
+    assert not view.cell.isEnabled()
+
+    view.display.setCurrentIndex(0)
+    view.grid_lines.setChecked(True)
+    assert view.maps[0][0].map.getAxis("bottom").grid
+
+    figure, graphs = view.shown_graphs()
+    names = [name for name, _ in graphs]
+    assert figure is view.maps_figure and names[:3] == ["dx map", "dx mean per row", "dx mean per column"]
+    map_items = dict(graphs)["dx map"]
+    assert map_items[-1] is view.color_bar  # a map comes with its colour bar
+    image = style.render_graph(figure, map_items)
+    on_screen = sum(figure.mapFromScene(item.sceneBoundingRect()).boundingRect().width() for item in map_items)
+    assert image.width() == 2 * on_screen
+    menu = [a.text() for a in view.maps[0][0].rows.vb.menu.actions()]
+    assert "Copy this graph" in menu and "Save this graph..." in menu
+    view.close()

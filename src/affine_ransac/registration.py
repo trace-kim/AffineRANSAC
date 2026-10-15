@@ -319,6 +319,23 @@ def row_means(design_y: np.ndarray, values: np.ndarray, gap_nm: float = 10.0):
     return row_y, mean, count
 
 
+def grid_means(points: np.ndarray, values: np.ndarray, cell_nm: float):
+    """Mean of values (N, k) over the points (N, 2) in each square cell of a grid of cell_nm, whose first cell
+    starts at the lowest x and y of the points.
+
+    Returns (corner, mean, count): the grid's lower-left corner (2,) nm, the mean values per cell
+    (rows, cols, k), NaN where a cell holds no point, and the points per cell (rows, cols); row 0 is the lowest.
+    """
+    corner = points.min(axis=0)
+    index = np.floor((points - corner) / cell_nm).astype(int)
+    cols, rows = index.max(axis=0) + 1
+    cell = index[:, 1] * cols + index[:, 0]
+    count = np.bincount(cell, minlength=rows * cols)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.column_stack([np.bincount(cell, weights=v, minlength=rows * cols) / count for v in values.T])
+    return corner, mean.reshape(rows, cols, -1), count.reshape(rows, cols)
+
+
 def row_pitch(design_y: np.ndarray, y: np.ndarray, gap_nm: float = 10.0):
     """Row-to-row pitch along y (nm) of one set of positions y (N,), rows grouped by design y.
 

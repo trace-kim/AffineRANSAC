@@ -96,6 +96,65 @@ def image_buttons(figure, name: str) -> list[QtWidgets.QPushButton]:
     return [copy, save]
 
 
+def render_graph(view: pg.GraphicsView, items: list, scale: int = EXPORT_SCALE) -> QtGui.QImage:
+    """Some graphs of a figure as shown (e.g. a map and its colour bar), side by side in one image, at `scale` x
+    their size on screen."""
+    # Cut from the whole figure rendered at that scale: rendering a part of the view alone misplaced the axis texts.
+    whole = render_image(view, scale)
+    sources = [view.mapFromScene(item.sceneBoundingRect()).boundingRect() for item in items]
+    sources = [QtCore.QRect(r.x() * scale, r.y() * scale, r.width() * scale, r.height() * scale) for r in sources]
+    image = QtGui.QImage(sum(r.width() for r in sources), max(r.height() for r in sources),
+                         QtGui.QImage.Format.Format_ARGB32)
+    image.fill(QtGui.QColor("white"))
+    painter = QtGui.QPainter(image)
+    left = 0
+    for source in sources:
+        painter.drawImage(left, 0, whole, source.x(), source.y(), source.width(), source.height())
+        left += source.width()
+    painter.end()
+    return image
+
+
+def save_png(parent, image: QtGui.QImage, name: str):
+    path, _ = QtWidgets.QFileDialog.getSaveFileName(parent, "Save image", f"{name}.png", "PNG image (*.png)")
+    if path:
+        image.save(path)
+
+
+def image_menus(graphs) -> list[QtWidgets.QPushButton]:
+    """Copy image and Save image buttons, each with a menu: the whole figure, or one graph of it. graphs() gives
+    (figure view, [(graph name, [its graphics items]), ...]) of what is shown when a menu opens."""
+    copy = menu_button("Copy image", graphs, lambda button, image, name: QtWidgets.QApplication.clipboard().setImage(image))
+    save = menu_button("Save image", graphs, save_png)
+    return [copy, save]
+
+
+def menu_button(text: str, graphs, use) -> QtWidgets.QPushButton:
+    """A button whose menu lists "Whole figure" and the graphs of graphs() (see image_menus); choosing one
+    renders it and calls use(button, image, name)."""
+    button = QtWidgets.QPushButton(text)
+    button.setToolTip(f"{text}: the whole figure or one graph, at twice the screen resolution")
+    menu = QtWidgets.QMenu(button)
+    button.setMenu(menu)
+
+    def fill():
+        menu.clear()
+        view, parts = graphs()
+        menu.addAction("Whole figure", lambda: use(button, render_image(view), "figure"))
+        for name, items in parts:
+            menu.addAction(name, lambda name=name, items=items: use(button, render_graph(view, items), name))
+    menu.aboutToShow.connect(fill)
+    return button
+
+
+def graph_actions(plot: pg.PlotItem, view: pg.GraphicsView, items: list, name: str):
+    """Copy this graph / Save this graph... in the plot's right-click menu."""
+    menu = plot.vb.menu
+    menu.addSeparator()
+    menu.addAction("Copy this graph", lambda: QtWidgets.QApplication.clipboard().setImage(render_graph(view, items)))
+    menu.addAction("Save this graph...", lambda: save_png(view, render_graph(view, items), name))
+
+
 def figure_bar(title: str, buttons: list[QtWidgets.QWidget]) -> QtWidgets.QHBoxLayout:
     """A row above a figure: its name in bold, buttons on the right."""
     bar = QtWidgets.QHBoxLayout()

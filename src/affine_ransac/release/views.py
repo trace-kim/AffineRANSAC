@@ -6,9 +6,10 @@ placement; stitching failures (off at start, D76) and tile names on request; the
 
 RegistrationView: the error after the moving-window affine, measured (SEM) − design, of every contact, as colour
 maps of dx and dy (jet, shared colour scale, rasterized to the screen like the research view; draw_map) or as
-one arrow map. Every map has its profiles beside it (MarginalMap): the mean per row on its right, rotated so
+one arrow map; values of every contact, or their mean per cell of a square grid (grid_means); grid lines on request. Every map has its profiles beside it (MarginalMap): the mean per row on its right, rotated so
 that y runs down the side like the map's y, and the mean per column below it; both follow the map's zoom and
-pan. Copy profiles / Export profiles CSV give both profiles as a table.
+pan. Copy profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure or one
+graph (also in each graph's right-click menu).
 
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
@@ -21,12 +22,12 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
-from affine_ransac.registration import error_summary, row_means
+from affine_ransac.registration import error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.stitching import placement_corrections
 from affine_ransac.view_points import box_outlines, tile_rectangles
-from affine_ransac.view_registration import JET, draw_map
+from affine_ransac.view_registration import JET, colorize, draw_map
 
 PLACEMENTS = {"stitched": "Stitched", "nominal": "Nominal"}
 
@@ -259,16 +260,17 @@ class MarginalMap:
     map's zoom and pan. Positions in µm relative to origin_nm."""
     AXIS_PX = 64  # left axis width of the map and of the column profile, so that their x line up
 
-    def __init__(self, layout: pg.GraphicsLayout, row: int, col: int, origin_nm, title: str):
+    def __init__(self, layout: pg.GraphicsLayout, row: int, col: int, origin_nm, title: str, name: str):
+        """name: what the map shows, for naming its graphs (e.g. "dx")."""
+        self.name = name
         self.map = mask_plot(origin_nm, title, data_unit_nm=1000)
-        self.rows = pg.PlotItem()
+        self.rows = pg.PlotItem(axisItems={"left": style.MaskAxis("left", origin_nm[1], 1000)})
         self.columns = pg.PlotItem(axisItems={"bottom": style.MaskAxis("bottom", origin_nm[0], 1000)})
         layout.addItem(self.map, row=row, col=col)
         layout.addItem(self.rows, row=row, col=col + 1)
         layout.addItem(self.columns, row=row + 1, col=col)
         style.style_plot(self.rows, "Mean per row", "error (nm)")
         style.style_plot(self.columns, "Mean per column", "x (µm)", "error (nm)")
-        self.rows.getAxis("left").setStyle(showValues=False)  # the map's y axis is beside it
         for plot in (self.map, self.columns):
             plot.getAxis("left").setWidth(self.AXIS_PX)
         self.rows.addLine(x=0, pen=pg.mkPen(style.MUTED, style=QtCore.Qt.PenStyle.DashLine))
@@ -315,10 +317,12 @@ class RegistrationView(QtWidgets.QWidget):
         self.maps_figure = figure(use_opengl)
         self.maps = []  # (MarginalMap, image, component)
         for component, (name, color) in enumerate(components):
-            panel = MarginalMap(self.maps_figure.ci, 0, 2 * component, self.origin, f"{name}: measured − design (nm)")
+            panel = MarginalMap(self.maps_figure.ci, 0, 2 * component, self.origin, f"{name}: measured − design (nm)",
+                                ("dx", "dy")[component])
             panel.add_profile(name, color, row_um, self.row_mean[:, component], column_um,
                               self.column_mean[:, component])
             image = pg.ImageItem(axisOrder="row-major")
+            image.setZValue(-100)  # under the grid lines
             panel.map.addItem(image)
             self.maps.append((panel, image, component))
         limit = float(np.percentile(np.abs(self.error_nm), 99)) or 1.0
@@ -340,7 +344,8 @@ class RegistrationView(QtWidgets.QWidget):
 
         # Arrows: one map of the error vectors, both components in its profiles.
         self.arrows_figure = figure(use_opengl)
-        self.arrow_panel = MarginalMap(self.arrows_figure.ci, 0, 0, self.origin, "Error vectors: measured − design")
+        self.arrow_panel = MarginalMap(self.arrows_figure.ci, 0, 0, self.origin, "Error vectors: measured − design",
+                                       "error vectors")
         style.legend(self.arrow_panel.rows)
         for component, (name, color) in enumerate(components):
             self.arrow_panel.add_profile(name, color, row_um, self.row_mean[:, component], column_um,
@@ -348,13 +353,22 @@ class RegistrationView(QtWidgets.QWidget):
         self.arrows = pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(style.TEXT, width=1), antialias=False)
         self.arrow_panel.map.addItem(self.arrows)
         self.arrow_panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
-        largest = float(np.percentile(np.linalg.norm(self.error_nm, axis=1), 99)) or 1.0
         self.arrow_scale = QtWidgets.QDoubleSpinBox(decimals=0, minimum=1, maximum=1e7)
-        self.arrow_scale.setValue(nice_number(0.5 * self.pitch_nm / largest))  # the largest arrows ~ half a pitch
         self.arrow_scale.setToolTip("Arrows are drawn this many times longer than the error")
         self.arrow_scale.valueChanged.connect(self.draw_arrows)
         self.arrow_key = QtWidgets.QLabel()
-        self.draw_arrows()
+
+        # Every contact, or the mean over the contacts in each cell of a square grid.
+        self.values = QtWidgets.QComboBox()
+        self.values.addItems(["Every contact", "Grid average"])
+        self.values.setToolTip("Grid average: one value per square cell, the mean of the contacts in it")
+        area = np.prod(np.maximum(high - low, 1e-3))  # µm²
+        self.cell = QtWidgets.QDoubleSpinBox(decimals=3, minimum=0.01, maximum=1e4, suffix=" µm", singleStep=0.1)
+        self.cell.setValue(max(nice_number(np.sqrt(area / 2000)), nice_number(self.pitch_nm / 1000) * 2))  # ~2000 cells
+        self.cell.setToolTip("Grid cell size (square)")
+        self.grid_lines = QtWidgets.QCheckBox("Grid lines")
+        self.grid_lines.setToolTip("Grid lines on the colour maps")
+        self.grid_lines.toggled.connect(self.show_grid_lines)
 
         self.display = QtWidgets.QComboBox()
         self.display.addItems(["Colour maps", "Arrows"])
@@ -374,41 +388,101 @@ class RegistrationView(QtWidgets.QWidget):
         copy_profiles.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.profiles_text("\t")))
         export_profiles = QtWidgets.QPushButton("Export profiles CSV...")
         export_profiles.clicked.connect(self.export_profiles)
+        for panel, _, _ in self.maps:
+            for plot, items, name in self.graphs_of(panel):
+                style.graph_actions(plot, self.maps_figure, items, name)
+        for plot, items, name in self.graphs_of(self.arrow_panel):
+            style.graph_actions(plot, self.arrows_figure, items, name)
 
         controls = QtWidgets.QHBoxLayout()
-        controls.addWidget(QtWidgets.QLabel("Show:"))
-        controls.addWidget(self.display)
         self.arrow_controls = QtWidgets.QWidget()
         arrow_row = QtWidgets.QHBoxLayout(self.arrow_controls)
-        arrow_row.setContentsMargins(16, 0, 0, 0)
-        arrow_row.addWidget(QtWidgets.QLabel("Arrow scale ×"))
-        arrow_row.addWidget(self.arrow_scale)
-        arrow_row.addWidget(self.arrow_key)
-        controls.addWidget(self.arrow_controls)
+        arrow_row.setContentsMargins(0, 0, 0, 0)
+        for widget in (QtWidgets.QLabel("Arrow scale ×"), self.arrow_scale, self.arrow_key):
+            arrow_row.addWidget(widget)
+        for widget in (QtWidgets.QLabel("Show:"), self.display, QtWidgets.QLabel("   Values:"), self.values,
+                       QtWidgets.QLabel("cell"), self.cell, QtWidgets.QLabel("  "), self.grid_lines, self.arrow_controls):
+            controls.addWidget(widget)
         controls.addStretch(1)
-        for button in [copy_profiles, export_profiles] + style.image_buttons(self.figures.currentWidget, "registration"):
+        for button in [copy_profiles, export_profiles] + style.image_menus(self.shown_graphs):
             controls.addWidget(button)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(summary)
         layout.addLayout(controls)
         layout.addWidget(self.figures, stretch=1)
+
+        self.values.currentIndexChanged.connect(self.set_values)
+        self.cell.valueChanged.connect(self.set_values)
+        self.set_values()
         self.show_display(0)
+
+    def grid_mode(self) -> bool:
+        return self.values.currentIndex() == 1
+
+    def set_values(self, *_):
+        """Every contact or the grid average: the grid computed again, the arrow scale reset, both displays drawn."""
+        self.cell.setEnabled(self.grid_mode())
+        corner, mean, _ = grid_means(self.result.design_nm, self.error_nm, self.cell.value() * 1000)
+        self.grid_corner_um, self.grid_mean = (corner - self.origin) / 1000, mean
+        vectors = self.arrow_vectors()[1]
+        largest = float(np.percentile(np.linalg.norm(vectors, axis=1), 99)) if len(vectors) else 1.0
+        spacing_nm = self.cell.value() * 1000 if self.grid_mode() else self.pitch_nm
+        self.arrow_scale.blockSignals(True)
+        self.arrow_scale.setValue(nice_number(0.5 * spacing_nm / (largest or 1.0)))  # largest arrows ~ half a spacing
+        self.arrow_scale.blockSignals(False)
+        self.draw_arrows()
         self.draw_maps()
+
+    def arrow_vectors(self) -> tuple[np.ndarray, np.ndarray]:
+        """Arrow starts (µm, relative to the origin) and errors (nm): every contact, or every cell's mean at its
+        centre."""
+        if not self.grid_mode():
+            return self.position_um, self.error_nm
+        rows, cols = np.nonzero(np.isfinite(self.grid_mean[:, :, 0]))
+        centres = self.grid_corner_um + (np.column_stack([cols, rows]) + 0.5) * self.cell.value()
+        return centres, self.grid_mean[rows, cols]
 
     def show_display(self, index: int):
         """0: colour maps, 1: arrows."""
         self.figures.setCurrentIndex(index)
         self.arrow_controls.setVisible(index == 1)
+        self.grid_lines.setVisible(index == 0)
+
+    def show_grid_lines(self, on: bool):
+        for panel, _, _ in self.maps:
+            panel.map.showGrid(x=on, y=on, alpha=0.35)
 
     def draw_maps(self):
         for panel, image, component in self.maps:
-            draw_map(panel.map, image, self.position_um, self.error_nm[:, component], self.color_bar.levels(),
-                     self.dot_um, self.devicePixelRatioF(), background=255)
+            if self.grid_mode():  # one square per cell, the same at every zoom
+                cell = self.cell.value()
+                rows, cols = self.grid_mean.shape[:2]
+                image.setImage(colorize(self.grid_mean[:, :, component], self.color_bar.levels(), background=255),
+                               autoLevels=False)
+                image.setRect(QtCore.QRectF(*self.grid_corner_um, cols * cell, rows * cell))
+            else:
+                draw_map(panel.map, image, self.position_um, self.error_nm[:, component], self.color_bar.levels(),
+                         self.dot_um, self.devicePixelRatioF(), background=255)
 
     def draw_arrows(self):
         scale = self.arrow_scale.value()
-        self.arrows.setData(*arrow_segments(self.position_um, self.error_nm * scale / 1000))
+        start, error = self.arrow_vectors()
+        self.arrows.setData(*arrow_segments(start, error * scale / 1000))
         self.arrow_key.setText(f"(1 nm error = {scale / 1000:g} µm on the map)")
+
+    def graphs_of(self, panel: MarginalMap) -> list[tuple[pg.PlotItem, list, str]]:
+        """(plot, items to render, name) of a panel's graphs; a colour map comes with the colour bar."""
+        bar = [] if panel is self.arrow_panel else [self.color_bar]
+        return [(panel.map, [panel.map] + bar, f"{panel.name} map"),
+                (panel.rows, [panel.rows], f"{panel.name} mean per row"),
+                (panel.columns, [panel.columns], f"{panel.name} mean per column")]
+
+    def shown_graphs(self):
+        """For the image menus: the figure shown and its graphs."""
+        if self.figures.currentIndex() == 1:
+            return self.arrows_figure, [(name, items) for _, items, name in self.graphs_of(self.arrow_panel)]
+        return self.maps_figure, [(name, items) for panel, _, _ in self.maps
+                                  for _, items, name in self.graphs_of(panel)] + [("colour bar", [self.color_bar])]
 
     def _link_maps(self):
         """Both colour maps show the same area."""
