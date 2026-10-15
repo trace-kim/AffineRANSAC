@@ -282,6 +282,20 @@ def test_a_folder_that_cannot_be_analysed_fails_before_loading_the_tiles(tmp_pat
         analyse_images(tmp_path, records, Settings(layer=5, datatype=0))
 
 
+def test_tiles_loaded_in_parallel_equal_tiles_loaded_one_by_one(tmp_path):
+    records = write_image_folder(tmp_path)
+    s = IMAGE_SETTINGS
+    tile_ids, tiles = analysis.load_image_tiles(records, s, log=lambda line: None)
+    assert tile_ids == [r.tile_id for r in records]
+    for r, tile in zip(records, tiles):
+        alone = analysis.process_tile(r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm),
+                                      (r.fov_x_nm, r.fov_y_nm), (s.layer, s.datatype), s.search_px,
+                                      s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm)
+        np.testing.assert_array_equal(tile.sem_points_nm(), alone.sem_points_nm())
+        np.testing.assert_array_equal(tile.design_points_nm(), alone.design_points_nm())
+        assert tile.design.ok == alone.design.ok
+
+
 def test_no_design_match_in_the_sample_tiles_stops_after_them(tmp_path, monkeypatch):
     rng = np.random.default_rng(3)
     records = write_image_folder(tmp_path, design=lambda k, nominal: rng.uniform(-300, 300, (60, 2)))  # no lattice

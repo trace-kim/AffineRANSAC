@@ -21,6 +21,7 @@ The AnalysisResult holds what the analysis window shows (view_analysis.analysis_
 `log` receives what the notebooks print (counts, failures).
 """
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Callable
@@ -263,6 +264,11 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
     return result
 
 
+def _process_tile(arguments: tuple) -> TileResult:
+    """process_tile(*arguments); at module level so that worker processes can run it."""
+    return process_tile(*arguments)
+
+
 def load_image_tiles(records: list, settings: Settings, log: Callable[[str], None] = print,
                      progress: Callable[[int, int], None] | None = None) -> tuple[list[str], list[TileResult]]:
     """The tile ids and loaded tiles (process_tile) of an image folder's records, after the checks (settings,
@@ -276,14 +282,18 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     if without_oas:
         log(f"!! {len(without_oas)} image(s) without an .oas: {without_oas}")
 
-    def load(r):
-        return process_tile(r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), layer,
-                            s.search_px, s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm)
+    def arguments(r):  # plain values only, so they can be sent to a worker process
+        return (r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), layer,
+                s.search_px, s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm)
 
     # A few tiles first: if none matches its design, the settings or the data are wrong; stop now.
     with_oas = [k for k, r in enumerate(records) if r.oas_path is not None]
     sample = sorted({with_oas[i] for i in np.linspace(0, len(with_oas) - 1, SAMPLE_TILES).round().astype(int)})
-    loaded = {k: load(records[k]) for k in sample}
+    loaded = {}
+    for k in sample:
+        loaded[k] = process_tile(*arguments(records[k]))
+        if progress is not None:
+            progress(len(loaded), len(records))
     if not any(t.design.ok for t in loaded.values()):
         fractions = {tile_ids[k]: round(t.design.match_fraction, 2) for k, t in loaded.items()}
         raise ValueError(f"No design tone matched the SEM in the sample tiles {fractions} (fraction of SEM contacts "
@@ -291,13 +301,18 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
                          f"design_search_nm and design_tolerance_nm")
     log(f"Sample tiles matched to their design: {sum(t.design.ok for t in loaded.values())} of {len(loaded)}")
 
-    tiles = []
-    for k, r in enumerate(records):
-        tiles.append(loaded[k] if k in loaded else load(r))
-        if progress is not None:
-            progress(k + 1, len(records))
-        if (k + 1) % max(1, len(records) // 10) == 0 or k + 1 == len(records):
-            log(f"{k + 1} of {len(records)} tiles loaded and detected")
+    # The other tiles in parallel, one per CPU core (each tile is independent); map keeps their order.
+    rest = [k for k in range(len(records)) if k not in loaded]
+    done = len(loaded)
+    with ProcessPoolExecutor() as pool:
+        for k, tile in zip(rest, pool.map(_process_tile, [arguments(records[k]) for k in rest])):
+            loaded[k] = tile
+            done += 1
+            if progress is not None:
+                progress(done, len(records))
+            if done % max(1, len(records) // 10) == 0 or done == len(records):
+                log(f"{done} of {len(records)} tiles loaded and detected")
+    tiles = [loaded[k] for k in range(len(records))]
     flagged = [tile_ids[k] for k, t in enumerate(tiles) if not t.design.ok]
     if flagged:
         log(f"!! {len(flagged)} tile(s) FLAGGED: neither design tone matches the SEM (or no .oas): {flagged}")
