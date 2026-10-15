@@ -7,13 +7,13 @@ at the stitched placement, merged over the overlaps, then the moving-window affi
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import cv2
 import numpy as np
 
-from affine_ransac.analysis import Settings, check_settings, load_image_tiles, report_stitching
+from affine_ransac.analysis import Settings, check_settings, detect_layer, load_image_tiles, report_stitching
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
@@ -22,11 +22,13 @@ from affine_ransac.pipeline import (StitchResult, measurement_pairs, slipped_pai
 from affine_ransac.registration import design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
-# The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults.
+DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
+# The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
+# contact layer is not one of them: it is detected in the .oas files (detect_layer).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
           "moving_window_um", "moving_step_um", "stitch_method", "first_stripe_upward"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
-              "images": COMMON + ["layer", "datatype", "detection", "search_px", "design_search_nm",
+              "images": COMMON + ["detection", "search_px", "design_search_nm",
                                   "design_tolerance_nm", "min_match_fraction", "stitch_refined"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
@@ -65,6 +67,10 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     check_settings(s, kind)
     progress(0.0, "Reading the tiles")
     if kind == "images":
+        progress(0.0, "Detecting the contact layer")
+        layer, datatype = detect_layer(records)
+        s = replace(s, layer=layer, datatype=datatype)
+        record(f"Contact layer {layer}/{datatype} (the only layer with shapes in the .oas files)")
         tile_ids, tiles = load_image_tiles(
             records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"))
         centers = np.array([t.center_nm for t in tiles])

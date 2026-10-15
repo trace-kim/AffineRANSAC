@@ -13,7 +13,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.analysis import Settings
 from affine_ransac.release import app as release_app, style
-from affine_ransac.release.analysis import analyse_folder, read_display_images
+from affine_ransac.release.analysis import PARAMETERS, analyse_folder, read_display_images
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import CACHE_NAME, cache_paths, load_cache, save_cache
 from affine_ransac.release.views import RegistrationView, StitchingView
@@ -161,3 +161,47 @@ def test_sem_images_are_loaded_on_request(tmp_path, monkeypatch):
     window.gpu_action.setChecked(False)
     window.set_gpu(False)  # rebuilt: the images loaded are kept
     assert len(window.stitching_view.image_items) == 4
+
+
+def write_layers(path, layers, empty=()):
+    """An .oas with one box on each (layer, datatype) of `layers`, and the layers `empty` defined without shapes."""
+    import klayout.db as kdb
+    layout = kdb.Layout()
+    top = layout.create_cell("TOP")
+    for layer, datatype in layers:
+        top.shapes(layout.layer(layer, datatype)).insert(kdb.Box(0, 0, 40, 40))
+    for layer, datatype in empty:
+        layout.layer(layer, datatype)
+    layout.write(str(path))
+
+
+def test_the_contact_layer_is_detected_in_the_oas_files(tmp_path):
+    from types import SimpleNamespace
+    from affine_ransac.analysis import detect_layer
+    def records(*paths):
+        return [SimpleNamespace(oas_path=p) for p in paths] + [SimpleNamespace(oas_path=None)]
+    write_layers(tmp_path / "a.oas", [(7, 0)], empty=[(1, 0)])  # an empty layer does not count
+    write_layers(tmp_path / "b.oas", [(7, 0)])
+    assert detect_layer(records(tmp_path / "a.oas", tmp_path / "b.oas")) == (7, 0)
+
+    write_layers(tmp_path / "c.oas", [(7, 0), (8, 1)])
+    with pytest.raises(ValueError, match=r"2 layers.*7/0 \(e.g. a.oas\), 8/1 \(e.g. c.oas\)"):
+        detect_layer(records(tmp_path / "a.oas", tmp_path / "c.oas"))
+    write_layers(tmp_path / "d.oas", [], empty=[(1, 0)])
+    with pytest.raises(ValueError, match="No .oas file holds any shape"):
+        detect_layer(records(tmp_path / "d.oas"))
+
+
+def test_an_image_run_uses_the_detected_layer_whatever_the_settings_say(tmp_path):
+    records = write_image_folder(tmp_path)  # contacts on layer 1/0
+    lines = []
+    result = analyse_folder(tmp_path, "images", Settings(layer=100, datatype=5, detection="otsu"), records,
+                            log=lines.append)
+    assert (result.settings.layer, result.settings.datatype) == (1, 0)
+    assert lines[0].startswith("Contact layer 1/0")
+
+
+def test_release_defaults(tmp_path):
+    window = make_window(tmp_path)
+    assert window.settings().max_match_nm == 100.0
+    assert "layer" not in PARAMETERS["images"] and "datatype" not in PARAMETERS["images"]  # detected

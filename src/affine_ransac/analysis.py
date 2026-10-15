@@ -32,7 +32,7 @@ from affine_ransac.fitting.moving_window import MovingWindowResult, moving_windo
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import correct_points, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
-from affine_ransac.io.design import list_layers, load_layout, read_polygons
+from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
 from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, process_tile, slipped_pairs,
                                     stitch_design, stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points,
                                     tile_neighbours, tile_stripes)
@@ -146,6 +146,22 @@ def check_image_records(records: list, layer: tuple[int, int]):
     if tuple(layer) not in layers:
         raise ValueError(f"Layer {layer[0]}/{layer[1]} is not in {Path(with_oas[0].oas_path).name}; "
                          f"its layers: {layers}")
+
+
+def detect_layer(records: list) -> tuple[int, int]:
+    """The one (layer, datatype) holding shapes in the .oas files of the records (every file is read). ValueError
+    if no file has shapes on any layer, or if they hold more than one (it names the layers and a file of each)."""
+    found = {}  # (layer, datatype) -> the first file that holds it
+    for r in records:
+        if r.oas_path is not None and Path(r.oas_path).is_file():
+            for layer in layers_with_shapes(load_layout(r.oas_path)):
+                found.setdefault(layer, Path(r.oas_path).name)
+    if not found:
+        raise ValueError("No .oas file holds any shape: no contact layer to use")
+    if len(found) > 1:
+        raise ValueError(f"The .oas files hold {len(found)} layers, so the contact layer is not known: "
+                         + ", ".join(f"{layer}/{datatype} (e.g. {name})" for (layer, datatype), name in sorted(found.items())))
+    return next(iter(found))
 
 
 @dataclass

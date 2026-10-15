@@ -29,6 +29,16 @@ def list_layers(layout: kdb.Layout) -> list[tuple[int, int]]:
     return sorted((info.layer, info.datatype) for info in layout.layer_infos())
 
 
+def layers_with_shapes(layout: kdb.Layout) -> list[tuple[int, int]]:
+    """The (layer, datatype) pairs that hold at least one polygon, box or path (texts do not count), sorted."""
+    found = []
+    for info in layout.layer_infos():
+        index = layout.find_layer(info.layer, info.datatype)
+        if any(not kdb.Region(top.begin_shapes_rec(index)).is_empty() for top in layout.top_cells()):
+            found.append((info.layer, info.datatype))
+    return sorted(found)
+
+
 def get_top_cell(layout: kdb.Layout, name: str | None = None) -> kdb.Cell:
     """Return the named cell, or the single top cell if no name is given."""
     if name is not None:
