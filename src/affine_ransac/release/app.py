@@ -1,7 +1,9 @@
 """MaskReg: the minimal mask registration analyzer released to users (docs/SPEC.md D77).
 Start it with:  python -m affine_ransac.release.app
 
-- File > Browse FTP server: connect to an FTP server and walk through its folders (ftp_dialog.py).
+- File > Browse FTP server: connect to an FTP server (pre-set in maskreg.ini, config.py), walk through its folders
+  and download one to analyse it: kept at <download folder>/<host>/<remote path>; only new or changed files are
+  fetched, then the folder is opened as above (analysed again if anything new arrived).
 - File > Open folder: a folder of contour CSVs or of SEM images. If it holds a saved analysis (cache.py), that is
   shown at once; otherwise the folder is analysed (release/analysis.py) with the current parameters and the
   result saved there.
@@ -11,6 +13,7 @@ Start it with:  python -m affine_ransac.release.app
 - Status bar: the step being done, a progress bar with its percentage, and the time so far.
 """
 
+import configparser
 import json
 import threading
 import time
@@ -24,9 +27,11 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.analysis import Settings
 from affine_ransac.app import SettingsDialog, folder_kind, image_records
+from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS, PARAMETERS, analyse_folder, read_display_images
 from affine_ransac.release.cache import load_cache, save_cache
+from affine_ransac.release.config import config_path, default_download_root, read_ftp_config
 from affine_ransac.release.ftp_dialog import FtpDialog
 from affine_ransac.release.views import RegistrationView, StitchingView
 
@@ -192,7 +197,39 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             self.open_folder(folder)
 
     def browse_ftp(self):
-        FtpDialog(self.preferences, self).exec()
+        path = config_path()
+        try:
+            config = read_ftp_config(path)
+        except configparser.Error as error:
+            QtWidgets.QMessageBox.warning(self, TITLE, f"{path} could not be read, so it is ignored:\n{error}")
+            config = {}
+        root = config.get("download_folder") or default_download_root()
+        dialog = FtpDialog(self.preferences, config, root, self)
+        if dialog.exec() and dialog.chosen:
+            self.download_and_open(dialog.login(), dialog.chosen, root)
+
+    def download_and_open(self, login, remote_path: str, root: str):
+        """Download the remote folder (new or changed files only), then open it; analyse it again if anything new
+        arrived, since a saved analysis would not hold it."""
+        host, port, user, password = login
+        folder = remote.local_folder(root, host, remote_path)
+        self.log(f"=== Downloading ftp://{host}{remote_path} to {folder}")
+
+        def work(log, progress):
+            ftp = remote.connect(host, port, user, password)
+            try:
+                return remote.download_folder(ftp, remote_path, folder, log, progress)
+            finally:
+                ftp.close()
+
+        def downloaded(count):
+            self.preferences.setValue("last_folder", str(folder))
+            if count:
+                self.folder = str(folder)
+                self.restart()
+            else:
+                self.open_folder(str(folder))
+        self.run(f"Downloading {remote_path}", work, downloaded)
 
     def open_folder(self, folder: str):
         """Show the folder's saved analysis, or analyse it (and save) if there is none."""
@@ -311,6 +348,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     def update_actions(self):
         self.actions["open"].setEnabled(not self.busy)
+        self.actions["ftp"].setEnabled(not self.busy)
         self.actions["restart"].setEnabled(not self.busy and self.folder is not None)
         self.actions["parameters"].setEnabled(not self.busy)
         if self.result is not None:
