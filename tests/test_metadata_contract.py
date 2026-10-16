@@ -2,7 +2,7 @@
 
 io/metadata.py is written by the remote agent and exists only on the machine with the
 real data, so these tests are skipped everywhere else. They check that its interface is
-exactly what docs/tasks/T001-tile-index-reader.md specifies (pairing updated in T002, several CSVs merged in T005), because the rest of the
+exactly what docs/tasks/T001-tile-index-reader.md specifies (pairing updated in T002, several CSVs merged in T005, one image per measure point in T007), because the rest of the
 code is built against that interface without seeing the implementation.
 
 To also check the real data, set AFFINE_RANSAC_DATA_DIR to the data folder:
@@ -63,6 +63,12 @@ def test_real_data_records(records):
             assert value is None or (isinstance(value, float) and math.isfinite(value))
         assert isinstance(r.image_width_px, int) and isinstance(r.image_height_px, int)
         assert isinstance(r.extra, dict)
+
+
+def test_real_data_one_image_per_position(records):
+    # A point measured twice (failed pattern matching) must give one record, the later image (task T007).
+    from affine_ransac.analysis import same_position_records
+    assert same_position_records(records) == [], "two records at the same position"
 
 
 def test_real_data_units_are_nm(records):

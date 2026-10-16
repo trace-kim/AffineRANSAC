@@ -297,6 +297,9 @@ def test_a_folder_that_cannot_be_analysed_fails_before_loading_the_tiles(tmp_pat
                             (1, 0))
     with pytest.raises(ValueError, match=r"Layer 5/0 is not in 0.oas; its layers: \[\(1, 0\)\]"):
         analyse_images(tmp_path, records, Settings(layer=5, datatype=0))
+    again = SimpleNamespace(**{**vars(records[2]), "tile_id": "T2b", "center_x_nm": records[2].center_x_nm + 0.4})
+    with pytest.raises(ValueError, match=r"1 pair\(s\) of images at the same position .*\('T2', 'T2b'\)"):
+        check_image_records(records + [again], (1, 0))  # the same point measured twice
 
 
 def test_tiles_loaded_in_parallel_equal_tiles_loaded_one_by_one(tmp_path):

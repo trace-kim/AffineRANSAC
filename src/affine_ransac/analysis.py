@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
@@ -156,10 +157,22 @@ def check_image_records(records: list, layer: tuple[int, int]):
     missing = [r.tile_id for r in with_oas if not Path(r.oas_path).is_file()]
     if missing:
         raise ValueError(f"{len(missing)} .oas file(s) not found, e.g. for {missing[:3]}")
+    same = same_position_records(records)
+    if same:
+        raise ValueError(f"{len(same)} pair(s) of images at the same position (the same point measured twice?), "
+                         f"e.g. {same[:3]}: the metadata reader must keep one image per measure point (task T007)")
     layers = list_layers(load_layout(with_oas[0].oas_path))
     if tuple(layer) not in layers:
         raise ValueError(f"Layer {layer[0]}/{layer[1]} is not in {Path(with_oas[0].oas_path).name}; "
                          f"its layers: {layers}")
+
+
+def same_position_records(records: list, tolerance_nm: float = 1.0) -> list[tuple[str, str]]:
+    """(tile_id, tile_id) of every two records whose image centres are closer than tolerance_nm. Two images of
+    one point (a measurement repeated after failed pattern matching) would be stitched as two tiles, D94."""
+    centers = np.array([(r.center_x_nm, r.center_y_nm) for r in records], dtype=float).reshape(-1, 2)
+    pairs = cKDTree(centers).query_pairs(tolerance_nm, output_type="ndarray")
+    return [(records[i].tile_id, records[j].tile_id) for i, j in sorted(pairs.tolist())]
 
 
 def detect_layer(records: list) -> tuple[int, int]:
