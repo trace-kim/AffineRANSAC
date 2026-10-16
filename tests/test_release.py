@@ -5,19 +5,21 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
 
 import time
+from dataclasses import replace
 
 import numpy as np
 import pyqtgraph as pg
 import pytest
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import Settings
+from affine_ransac.analysis import ContactSizes, Settings
 from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
-from affine_ransac.release.analysis import PARAMETERS, analyse_folder, read_display_images
+from affine_ransac.release.analysis import PARAMETERS, analyse_folder, measure_contact_sizes, read_display_images
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import CACHE_NAME, cache_paths, load_cache, save_cache
-from affine_ransac.release.views import RegistrationView, StitchingView
+from affine_ransac.release.views import (NEEDS_TILES, NOT_IMAGES, ContactSizeTab, ContactSizeView, RegistrationView,
+                                         StitchingView)
 from test_analysis import IMAGE_SETTINGS, STAGE, write_contour_folder, write_image_folder
 
 
@@ -74,6 +76,7 @@ def test_the_cache_is_saved_in_the_folder_or_else_in_the_user_cache(tmp_path):
     np.testing.assert_array_equal(loaded.moving.residuals, result.moving.residuals)
     np.testing.assert_array_equal(loaded.stitch.corrections, result.stitch.corrections)
     assert loaded.tile_ids == result.tile_ids and loaded.settings == result.settings and len(saved) == 16
+    assert loaded.contact_sizes is None  # none measured
 
     (data / CACHE_NAME).unlink()
     (data / CACHE_NAME).mkdir()  # the data folder's file cannot be written
@@ -386,3 +389,116 @@ def test_the_registration_tab_shows_the_stripes_ticked(tmp_path):
     view.stripes.set_selected(range(2))
     assert len(view.error_nm) == len(result.design_nm)
     view.close()
+
+
+def test_contact_sizes_are_measured_on_the_tiles_kept_and_saved_with_the_result(tmp_path):
+    records = write_image_folder(tmp_path)
+    result = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    assert result.tiles is None  # not kept unless asked
+    with pytest.raises(ValueError, match="Contact size tab on"):
+        measure_contact_sizes(result)
+
+    result = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None, keep_tiles=True)
+    steps = []
+    sizes = measure_contact_sizes(result, 0.0, lambda done, total: steps.append((done, total)))
+
+    # One row per contact: SEM discs of 40 nm, design squares of 40 nm (as in the research app's test).
+    assert steps == [(k, 4) for k in range(1, 5)]
+    assert sizes.sem.shape == sizes.design.shape == (len(result.design_nm), 3)
+    np.testing.assert_allclose(sizes.design, np.tile([1600.0, 40.0, 40.0], (len(sizes.design), 1)))
+    np.testing.assert_allclose(np.median(sizes.sem, axis=0), [np.pi * 20 ** 2, 40, 40], rtol=0.1)
+
+    save_cache(replace(result, contact_sizes=sizes), tmp_path / "user")
+    loaded, _ = load_cache(tmp_path, tmp_path / "user")
+    np.testing.assert_array_equal(loaded.contact_sizes.sem, sizes.sem)
+    np.testing.assert_array_equal(loaded.contact_sizes.design, sizes.design)
+    assert loaded.contact_sizes.roi_width_nm == 0.0 and loaded.tiles is None  # the tiles are never saved
+
+
+def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
+    style.setup()
+    pg.mkQApp()
+    design = np.array([(x, y) for x in np.arange(0, 20_000, 100.0) for y in np.arange(0, 10_000, 100.0)])
+    design_sizes = np.tile([1600.0, 40.0, 40.0], (len(design), 1))
+    sem_sizes = design_sizes + [100.0, 2.0, -1.0]
+    view = ContactSizeView(design, ContactSizes(sem_sizes, design_sizes, 5.0), use_opengl=False)
+    view.resize(1500, 700)
+    view.show()
+    QtWidgets.QApplication.processEvents()
+    plots = [plot for plot, _, _ in view.maps]
+    assert [plot.isVisible() for plot in plots] == [True, False, False]  # the area at start, alone
+    alone = plots[0].width()
+    y_span = np.ptp(plots[0].vb.viewRange()[1])
+    assert y_span < 1.2 * np.ptp(view.position_um[:, 1])  # on the contacts
+
+    for _ in range(3):  # the maps keep their scale, however often they are shown and hidden
+        view.show_boxes[1].setChecked(True)
+        QtWidgets.QApplication.processEvents()
+        view.show_boxes[1].setChecked(False)
+        QtWidgets.QApplication.processEvents()
+    view.show_boxes[1].setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    assert [plot.isVisible() for plot in plots] == [True, True, False]
+    assert plots[0].width() < 0.6 * alone  # side by side, no room left for the hidden one
+    for plot in plots[:2]:
+        assert np.ptp(plot.vb.viewRange()[1]) < 1.1 * y_span
+    np.testing.assert_allclose(view.values(1), sem_sizes[:, 1])
+    view.draw_maps()
+    image = view.maps[0][1].image
+    assert (image[..., :3] == 255).all(axis=-1).any()  # white between the contacts
+
+    view.difference_button.setChecked(True)
+    np.testing.assert_allclose(view.values(0), 100.0)
+    assert "Area, SEM − design" in plots[0].titleLabel.text
+    figure, graphs = view.shown_graphs()
+    assert figure is view.figure and [name for name, _ in graphs] == ["Area map", "xCD map"]
+    assert dict(graphs)["xCD map"] == [plots[1], view.maps[1][2]]  # a map comes with its colour bar
+    assert "a 5 nm band of chords" in view.summary.text()
+    view.close()
+
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    tab = ContactSizeTab(result, use_opengl=False)
+    assert tab.note.text() == NOT_IMAGES and not tab.run_button.isEnabled()
+
+
+def test_the_contact_size_tab_is_hidden_until_turned_on_and_measures_on_the_tiles_of_a_run(tmp_path, monkeypatch):
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    window.open_folder(str(tmp_path))
+    wait(window)
+    assert not window.size_action.isChecked() and window.centralWidget().count() == 2  # hidden by default
+    assert window.result.tiles is None  # so the run did not keep its tiles
+
+    window.size_action.setChecked(True)
+    tabs, tab = window.centralWidget(), window.size_tab
+    assert tabs.tabText(2) == "Contact size" and tabs.currentWidget() is tab
+    assert not tab.run_button.isEnabled() and tab.note.text() == NEEDS_TILES
+    assert MaskRegWindow(window.preferences, cache_dir=str(tmp_path / "user cache")).size_action.isChecked()  # kept
+
+    window.restart()  # with the tab on, the run keeps its tiles
+    wait(window)
+    tab = window.size_tab
+    assert window.result.tiles is not None and tab.run_button.isEnabled()
+    tab.roi.setValue(5.0)
+    tab.run_button.click()
+    assert window.busy and not window.size_action.isEnabled()
+    wait(window)
+    assert tab.view is not None and window.result.contact_sizes.roi_width_nm == 5.0
+    reopened, _ = load_cache(tmp_path, str(tmp_path / "user cache"))
+    np.testing.assert_array_equal(reopened.contact_sizes.sem, window.result.contact_sizes.sem)
+
+    measured = window.result
+    window.open_folder(str(tmp_path))  # the saved result, with its sizes; the last run's tiles let go first
+    assert measured.tiles is None
+    wait(window)
+    tab = window.size_tab
+    assert tab.view is not None and tab.roi.value() == 5.0 and not tab.run_button.isEnabled()
+
+    window.restart()
+    wait(window)
+    window.size_action.setChecked(False)  # hidden again: the tab goes, and the tiles with it
+    assert window.size_tab is None and window.centralWidget().count() == 2 and window.result.tiles is None

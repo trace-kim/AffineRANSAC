@@ -5,6 +5,9 @@ Steps: load the tiles (images: detection + design; contour CSVs: the paired cent
 design (translation per tile; settings.stitch_method), the error of every contact (measured SEM − design)
 at the stitched placement, merged over the overlaps, then the moving-window affine.
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
+
+On request (the Contact size tab, hidden unless turned on): an image run keeps its loaded tiles in memory
+(keep_tiles), and measure_contact_sizes measures the area, xCD and yCD of every contact on them.
 """
 
 import re
@@ -15,16 +18,17 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from affine_ransac.analysis import Settings, check_settings, detect_layer, load_image_tiles, report_stitching
+from affine_ransac.analysis import (ContactSizes, Settings, check_settings, detect_layer, load_image_tiles,
+                                   merged_contact_sizes, report_stitching)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.geometry.frames import tile_nm_to_pixel
 from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import (StitchResult, measurement_pairs, slipped_pairs, stitch_design, stitch_tiles,
-                                    stripe_directions,
+from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, slipped_pairs, stitch_design,
+                                    stitch_tiles, stripe_directions,
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
-from affine_ransac.registration import design_errors, merge_observations, paired_errors
+from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
@@ -38,6 +42,15 @@ PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
                                   "design_tolerance_nm", "min_match_fraction", "stitch_refined", "min_contrast", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
+
+
+@dataclass
+class LoadedTiles:
+    """What measuring the contact sizes needs from an image run: its loaded tiles and how their contacts were
+    merged. Kept in memory only when asked (analyse_folder keep_tiles; the tiles hold their images), never saved."""
+    tiles: list[TileResult]
+    observations: DesignErrors  # every tile's contacts paired with its design
+    contacts: MergedErrors      # the observations merged into the result's contacts (same rows)
 
 
 @dataclass
@@ -62,12 +75,16 @@ class ReleaseResult:
     # (n_tiles, 2) mask position of each .oas file's (0, 0) at the nominal placement: the tile centre, or for
     # realigned tiles (settings.realign) where the file itself sits, stitched (its contacts are not that tile's)
     oas_centers: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    contact_sizes: ContactSizes | None = None  # images, once measured (measure_contact_sizes); saved
+    tiles: LoadedTiles | None = None           # images run with keep_tiles; not saved
 
 
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,
                    log: Callable[[str], None] = print,
-                   progress: Callable[[float, str], None] = lambda fraction, stage: None) -> ReleaseResult:
-    """Analyse a folder of this kind. records: the image folder's tiles (io/metadata.read_tile_index)."""
+                   progress: Callable[[float, str], None] = lambda fraction, stage: None,
+                   keep_tiles: bool = False) -> ReleaseResult:
+    """Analyse a folder of this kind. records: the image folder's tiles (io/metadata.read_tile_index).
+    keep_tiles: an image folder's result keeps its tiles in memory (result.tiles), to measure the contact sizes."""
     s = settings
     lines = []
 
@@ -141,10 +158,23 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
                                   s.moving_step_um * 1000)
     progress(1.0, "Done")
+    kept = LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None
     return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
                          sem_points,
                          design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm, moving,
-                         image_paths, lines, oas_paths, oas_centers)
+                         image_paths, lines, oas_paths, oas_centers, tiles=kept)
+
+
+def measure_contact_sizes(result: ReleaseResult, roi_width_nm: float = 0.0,
+                          progress: Callable[[int, int], None] | None = None) -> ContactSizes:
+    """Area, xCD and yCD of every contact (rows as result.design_nm) on the SEM contours and the .oas outlines,
+    averaged over the tiles that saw it (analysis.merged_contact_sizes). Needs the run's tiles (keep_tiles).
+    progress(done, total) after every tile."""
+    if result.tiles is None:
+        raise ValueError("Measuring the contact sizes needs the tiles of an image run in memory: restart the "
+                         "analysis with the Contact size tab on")
+    kept = result.tiles
+    return merged_contact_sizes(kept.tiles, kept.contacts, kept.observations, result.settings, roi_width_nm, progress)
 
 
 def file_numbers(names: list[str]) -> np.ndarray | None:

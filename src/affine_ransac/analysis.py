@@ -445,10 +445,20 @@ def measure_contact_sizes(result: AnalysisResult, roi_width_nm: float = 0.0,
     tiles that saw each contact. roi_width_nm: see ContactSizes. progress(done, total) after every tile."""
     if result.images is None:
         raise ValueError("Contact sizes need the SEM images of an image run: analyse the image folder again")
+    placement = result.settings.ransac_placement
+    return merged_contact_sizes(result.images.tiles, result.images.merged[placement],
+                                result.images.observations[placement], result.settings, roi_width_nm, progress)
+
+
+def merged_contact_sizes(tiles: list[TileResult], merged: MergedErrors, observations: DesignErrors, s: Settings,
+                         roi_width_nm: float = 0.0, progress: Callable[[int, int], None] | None = None
+                         ) -> ContactSizes:
+    """Area, xCD and yCD of the merged contacts (rows as `merged`, merge_observations of `observations`) on
+    the loaded tiles' SEM contours and .oas outlines (read again, one merge per file), averaged over the tiles
+    that saw each contact. Also used by the release. roi_width_nm: see ContactSizes. progress(done, total)
+    after every tile."""
     if roi_width_nm < 0:
         raise ValueError(f"The ROI width must be >= 0 (is {roi_width_nm})")
-    s = result.settings
-    tiles = result.images.tiles
     sem_sizes, design_sizes = [], []
     for k, tile in enumerate(tiles):
         sem, design = tile.contact_sizes((s.layer, s.datatype), roi_width_nm, s.stitch_refined)
@@ -456,9 +466,7 @@ def measure_contact_sizes(result: AnalysisResult, roi_width_nm: float = 0.0,
         design_sizes.append(design)
         if progress is not None:
             progress(k + 1, len(tiles))
-    placement = s.ransac_placement
-    sem, design = merge_values(result.images.merged[placement], result.images.observations[placement],
-                               sem_sizes, design_sizes)
+    sem, design = merge_values(merged, observations, sem_sizes, design_sizes)
     return ContactSizes(sem, design, float(roi_width_nm))
 
 

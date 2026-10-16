@@ -9,7 +9,9 @@ Start it with:  python -m affine_ransac.release.app
   result saved there.
 - Analysis > Restart analysis: analyse the open folder again (current parameters) and save over the old result.
 - Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart.
-- View: the log, and GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU).
+- View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
+  Contact size tab (hidden unless turned on; remembered): area, xCD and yCD of every contact, measured on request
+  on the tiles of the run, which an image run keeps in memory only while the tab is on.
 - Status bar: the step being done, a progress bar with its percentage, and the time so far.
 """
 
@@ -29,12 +31,12 @@ from affine_ransac.analysis import Settings
 from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
-from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, analyse_folder, read_design_images,
-                                           read_display_images)
+from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, analyse_folder, measure_contact_sizes,
+                                           read_design_images, read_display_images)
 from affine_ransac.release.cache import load_cache, save_cache
 from affine_ransac.release.config import config_path, default_download_root, read_ftp_config
 from affine_ransac.release.ftp_dialog import FtpDialog
-from affine_ransac.release.views import RegistrationView, StitchingView
+from affine_ransac.release.views import ContactSizeTab, RegistrationView, StitchingView
 
 APP = "MaskReg"
 TITLE = "MaskReg - Mask Registration Analyzer"
@@ -137,6 +139,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.result = None   # its ReleaseResult
         self.images = None   # its SEM images, once loaded (kept when the tabs are rebuilt)
         self.design = None   # its design pattern masks, once loaded (the same)
+        self.size_tab = None  # the Contact size tab, when shown
         self.busy = False
         self.setWindowTitle(TITLE)
         self.welcome()
@@ -167,6 +170,10 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         saved = self.preferences.value("use_opengl", "")
         self.gpu_action.setChecked(saved == "true" if saved else opengl_works())
         self.gpu_action.toggled.connect(self.set_gpu)
+        self.size_action = view_menu.addAction("&Contact size tab")
+        self.size_action.setCheckable(True)
+        self.size_action.setChecked(self.preferences.value("contact_size_tab", "") == "true")  # hidden by default
+        self.size_action.toggled.connect(self.set_size_tab)
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction("&About MaskReg", self.about)
 
@@ -236,7 +243,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def open_folder(self, folder: str):
         """Show the folder's saved analysis, or analyse it (and save) if there is none."""
         self.log(f"=== Opening {folder}")
-        settings, cache_dir = self.settings(), self.cache_dir
+        settings, cache_dir, keep_tiles = self.settings(), self.cache_dir, self.size_action.isChecked()
+        self._release_tiles()
 
         def work(log, progress):
             progress(0.0, "Looking for a saved analysis")
@@ -246,22 +254,31 @@ class MaskRegWindow(QtWidgets.QMainWindow):
                 log(f"Saved analysis of {saved} opened (Analysis > Restart analysis runs it again)")
                 return result
             log("No saved analysis: analysing the folder")
-            return self._analyse_and_save(folder, settings, log, progress)
+            return self._analyse_and_save(folder, settings, keep_tiles, log, progress)
         self.folder = folder
         self.run(f"Opening {Path(folder).name}", work, self.show_new_result)
 
     def restart(self):
-        folder, settings = self.folder, self.settings()
+        folder, settings, keep_tiles = self.folder, self.settings(), self.size_action.isChecked()
         self.log(f"=== Restarting the analysis of {folder}")
+        self._release_tiles()
         self.run(f"Analysing {Path(folder).name}",
-                 lambda log, progress: self._analyse_and_save(folder, settings, log, progress), self.show_new_result)
+                 lambda log, progress: self._analyse_and_save(folder, settings, keep_tiles, log, progress),
+                 self.show_new_result)
 
-    def _analyse_and_save(self, folder, settings, log, progress):
-        """Analyse the folder (in the background thread) and save the result; a failed save is only logged."""
+    def _release_tiles(self):
+        """Let go of the tiles the shown result keeps before another run loads its own: both at once could exhaust
+        the memory."""
+        if self.result is not None:
+            self.result.tiles = None
+
+    def _analyse_and_save(self, folder, settings, keep_tiles, log, progress):
+        """Analyse the folder (in the background thread) and save the result; a failed save is only logged.
+        keep_tiles: an image folder's result keeps its tiles, to measure the contact sizes on."""
         kind = folder_kind(Path(folder))
         log(f"Analysing a {kind} folder")
         records = image_records(folder) if kind == "images" else None
-        result = analyse_folder(folder, kind, settings, records, log, progress)
+        result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles)
         progress(1.0, "Saving the result")
         try:
             log(f"Result saved: {save_cache(result, self.cache_dir)}")
@@ -299,6 +316,48 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.status.set_idle(f"Design of {sum(m is not None for m in masks)} tiles loaded (Stitching tab, "
                              f"Design pattern)")
 
+    def measure_sizes(self, roi_width_nm: float):
+        """Measure the contact sizes on the run's tiles in the background, then show them and save them with the
+        result (a reopened folder shows them)."""
+        result, cache_dir = self.result, self.cache_dir
+        self.log(f"=== Measuring the contact sizes (ROI width {roi_width_nm:g} nm)")
+
+        def work(log, progress):
+            sizes = measure_contact_sizes(result, roi_width_nm,
+                                          lambda done, total: progress(done / total, f"Measuring tile {done} of {total}"))
+            log(f"Contact sizes of {len(sizes.sem)} contacts measured")
+            progress(1.0, "Saving the result")
+            try:
+                log(f"Result saved with them: {save_cache(replace(result, contact_sizes=sizes), cache_dir)}")
+            except OSError as error:
+                log(f"!! {error}")
+            return sizes
+        self.run("Measuring contact sizes", work, self.show_sizes)
+
+    def show_sizes(self, sizes):
+        self.result.contact_sizes = sizes
+        self.size_tab.show_sizes(sizes)
+        self.status.set_idle(f"Contact sizes of {len(sizes.sem)} contacts measured (Contact size tab)")
+
+    def set_size_tab(self, on: bool):
+        """Show or hide the Contact size tab (remembered). Hidden, the shown result's tiles are let go (memory)."""
+        self.preferences.setValue("contact_size_tab", "true" if on else "false")
+        if self.result is None:
+            return
+        if on:
+            self._add_size_tab(self.result, self.gpu_action.isChecked())
+            self.tabs.setCurrentWidget(self.size_tab)
+        else:
+            self.tabs.removeTab(self.tabs.indexOf(self.size_tab))
+            self.size_tab.deleteLater()
+            self.size_tab = None
+            self._release_tiles()
+        self.update_actions()
+
+    def _add_size_tab(self, result, use_opengl: bool):
+        self.size_tab = ContactSizeTab(result, use_opengl, self.measure_sizes)
+        self.tabs.addTab(self.size_tab, "Contact size")
+
     def set_gpu(self, on: bool):
         self.preferences.setValue("use_opengl", "true" if on else "false")
         if self.result is not None:
@@ -333,6 +392,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.registration_view = RegistrationView(result, use_opengl)
         tabs.addTab(self.stitching_view, "Stitching")
         tabs.addTab(self.registration_view, "Registration")
+        self.tabs, self.size_tab = tabs, None
+        if self.size_action.isChecked():
+            self._add_size_tab(result, use_opengl)
         tabs.setCurrentIndex(1)
         self.setCentralWidget(tabs)
         self.result = result
@@ -366,6 +428,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.actions["ftp"].setEnabled(not self.busy)
         self.actions["restart"].setEnabled(not self.busy and self.folder is not None)
         self.actions["parameters"].setEnabled(not self.busy)
+        self.size_action.setEnabled(not self.busy)
+        if self.size_tab is not None:
+            self.size_tab.update_state(self.busy)
         if self.result is not None:
             self.stitching_view.load_button.setEnabled(
                 not self.busy and self.images is None and bool(self.result.image_paths))

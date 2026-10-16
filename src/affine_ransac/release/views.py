@@ -1,4 +1,4 @@
-"""The release's two tabs (docs/SPEC.md D77), pyqtgraph, presentation style (style.py).
+"""The release's tabs (docs/SPEC.md D77), pyqtgraph, presentation style (style.py).
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
 placement; stitching failures (off at start, D76) and tile names on request; the SEM images on request
@@ -16,6 +16,10 @@ both follow the map's zoom and pan. Stripes (StripeSelector): the maps and profi
 stripes ticked. Copy profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole
 figure or one graph (also in each graph's right-click menu).
 
+ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
+then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
+the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile.
+
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
 
@@ -27,11 +31,13 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
+from affine_ransac.analysis import ContactSizes
 from affine_ransac.pipeline import contact_stripes, stripe_ranges
 from affine_ransac.registration import error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.stitching import placement_corrections
+from affine_ransac.view_contact_size import QUANTITIES, size_summary, value_levels
 from affine_ransac.view_points import box_outlines, tile_rectangles
 from affine_ransac.view_registration import JET, colorize, draw_map
 
@@ -355,8 +361,8 @@ class MarginalMap:
 ARROW_COLOURS = 32  # arrows are coloured by their length in this many steps of the colour scale
 
 
-def error_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
-    """A jet colour bar over values (low, high) nm, in the figures' style."""
+def jet_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
+    """A jet colour bar over values (low, high) with this axis label, in the figures' style."""
     bar = pg.ColorBarItem(values=values, colorMap=JET, width=18)
     axis = bar.getAxis("right")
     axis.setTextPen(pg.mkPen(style.TEXT))
@@ -368,18 +374,18 @@ def error_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
 
 def link_views(plots: list[pg.PlotItem]):
     """The plots show the same area: a zoom or pan in one is copied to the others, as the same centre and the same
-    scale (µm per pixel), so plots of different widths still agree."""
+    scale (µm per pixel), so plots of different widths still agree. A hidden plot neither leads nor follows."""
     busy = [False]
 
     def follow(source):
         def update(*_):
-            if busy[0] or source.vb.width() <= 0:
+            if busy[0] or not source.isVisible() or source.vb.width() <= 0:
                 return
             busy[0] = True
             (x0, x1), y_range = source.vb.viewRange()
             per_pixel, centre = (x1 - x0) / source.vb.width(), (x0 + x1) / 2
             for target in plots:
-                if target is not source:
+                if target is not source and target.isVisible():
                     half = per_pixel * target.vb.width() / 2
                     target.vb.setRange(xRange=(centre - half, centre + half), yRange=y_range, padding=0)
             busy[0] = False
@@ -465,7 +471,7 @@ class RegistrationView(QtWidgets.QWidget):
                        for rgb in JET.getLookupTable(nPts=ARROW_COLOURS)]
         for item in self.arrows:
             self.arrow_panel.map.addItem(item)
-        self.dr_bar = error_bar((0.0, 1.0), "dr = |error| (nm)")
+        self.dr_bar = jet_bar((0.0, 1.0), "dr = |error| (nm)")
         self.dr_bar.sigLevelsChanged.connect(lambda *_: self.draw_arrows())
         grid.addItem(self.dr_bar, row=0, col=2)
         grid.layout.setColumnSpacing(2, 24)  # room between its axis label and the dx map's
@@ -479,7 +485,7 @@ class RegistrationView(QtWidgets.QWidget):
             image.setZValue(-100)  # under the grid lines
             panel.map.addItem(image)
             self.maps.append((panel, image, component))
-        self.color_bar = error_bar((-1.0, 1.0), "error (nm)")
+        self.color_bar = jet_bar((-1.0, 1.0), "error (nm)")
         self.color_bar.sigLevelsChanged.connect(lambda *_: self.draw_maps())
         grid.addItem(self.color_bar, row=0, col=7)
         self.panels = [self.arrow_panel] + [panel for panel, _, _ in self.maps]
@@ -659,3 +665,164 @@ class RegistrationView(QtWidgets.QWidget):
         if path:
             with open(path, "w", encoding="utf-8-sig", newline="") as f:  # BOM: Excel reads the µ
                 f.write(self.profiles_text(","))
+
+
+NOT_IMAGES = ("N/A: contour CSVs hold contact centres only. Area, xCD and yCD are measured on the SEM contours and "
+              "the .oas outlines of an image folder.")
+NEEDS_TILES = ("Measuring needs the tiles of the run in memory: restart the analysis (Analysis > Restart analysis, "
+               "F5). While this tab is on, a run keeps them.")
+
+
+class ContactSizeTab(QtWidgets.QWidget):
+    def __init__(self, result: ReleaseResult, use_opengl: bool = True, on_measure=None):
+        """The Contact size tab: ROI width, Run measurement, then the maps (ContactSizeView). on_measure(roi_width_nm)
+        is called by Run measurement: the app measures in the background, then calls show_sizes. Sizes measured
+        before (result.contact_sizes) are shown at once."""
+        super().__init__()
+        self.result, self.use_opengl, self.view = result, use_opengl, None
+        self.roi = QtWidgets.QDoubleSpinBox(decimals=1, maximum=1000.0, suffix=" nm")
+        self.roi.setToolTip("xCD / yCD = mean of the chords, one per SEM pixel, in a band this wide through the "
+                            "contact centre (0: the single chord through the centre)")
+        self.run_button = QtWidgets.QPushButton("Run measurement")
+        if on_measure is not None:
+            self.run_button.clicked.connect(lambda: on_measure(self.roi.value()))
+        self.note = QtWidgets.QLabel()
+        bar = QtWidgets.QHBoxLayout()
+        for widget in (QtWidgets.QLabel("ROI width:"), self.roi, self.run_button):
+            bar.addWidget(widget)
+        bar.addWidget(self.note, stretch=1)
+        self.layout_ = QtWidgets.QVBoxLayout(self)
+        self.layout_.addLayout(bar)
+        self.layout_.addStretch(1)  # replaced by the maps
+        if result.contact_sizes is not None:
+            self.roi.setValue(result.contact_sizes.roi_width_nm)
+            self.show_sizes(result.contact_sizes)
+        self.update_state(busy=False)
+
+    def update_state(self, busy: bool):
+        """Run measurement only with the run's tiles in memory and nothing else running; the note says why not."""
+        r = self.result
+        self.run_button.setEnabled(r.tiles is not None and not busy)
+        if r.kind != "images":
+            self.note.setText(NOT_IMAGES)
+        elif r.tiles is None:
+            self.note.setText(NEEDS_TILES)
+        else:
+            self.note.setText("" if self.view else "Area, xCD and yCD of every contact: press Run measurement")
+
+    def show_sizes(self, sizes: ContactSizes):
+        """Replace the maps (or the empty space) by those of sizes."""
+        old = self.layout_.takeAt(1)
+        if old.widget() is not None:
+            old.widget().deleteLater()
+        self.view = ContactSizeView(self.result.design_nm, sizes, self.use_opengl)
+        self.layout_.addWidget(self.view, stretch=1)
+
+
+class ContactSizeView(QtWidgets.QWidget):
+    def __init__(self, design_nm: np.ndarray, sizes: ContactSizes, use_opengl: bool = True):
+        """design_nm: (N, 2) contact positions, mask nm; sizes: their area (nm²), xCD and yCD (nm) on the SEM and
+        on the design, in the same rows."""
+        super().__init__()
+        self.sizes = sizes
+        self.origin = np.round(design_nm.mean(axis=0), -3)  # whole µm
+        self.position_um = (design_nm - self.origin) / 1000
+        distance, _ = cKDTree(design_nm).query(design_nm, k=2)
+        self.dot_um = 0.4 * float(np.median(distance[:, 1])) / 1000  # a disk of ~0.4 x the pitch when zoomed in
+
+        # One figure: per quantity a map and its colour bar; the maps not ticked are hidden (they leave no gap).
+        self.figure = figure(use_opengl)
+        self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
+        self.redraw.timeout.connect(self.draw_maps)
+        self.maps = []  # (plot, image, colour bar) per quantity
+        for k, (name, unit) in enumerate(QUANTITIES):
+            plot = mask_plot(self.origin, data_unit_nm=1000)
+            image = pg.ImageItem(axisOrder="row-major")
+            plot.addItem(image)
+            bar = jet_bar((0.0, 1.0), f"{name} ({unit})")
+            bar.sigLevelsChanged.connect(lambda *_: self.redraw.start())
+            self.figure.addItem(plot, row=0, col=2 * k)
+            self.figure.addItem(bar, row=0, col=2 * k + 1)
+            plot.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
+            plot.vb.sigResized.connect(lambda *_: self.redraw.start())
+            style.graph_actions(plot, self.figure, [plot, bar], f"{name} map")
+            self.maps.append((plot, image, bar))
+        link_views([plot for plot, _, _ in self.maps])
+
+        self.show_boxes = []
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Show:"))
+        for k, (name, _) in enumerate(QUANTITIES):
+            box = QtWidgets.QCheckBox(name)
+            box.setChecked(k == 0)  # the area at start
+            box.toggled.connect(self.show_maps)
+            controls.addWidget(box)
+            self.show_boxes.append(box)
+        controls.addWidget(QtWidgets.QLabel("   Value:"))
+        self.sem_button = QtWidgets.QRadioButton("SEM")
+        self.difference_button = QtWidgets.QRadioButton("SEM − design")
+        self.sem_button.setChecked(True)
+        self.difference_button.toggled.connect(self.set_values)
+        controls.addWidget(self.sem_button)
+        controls.addWidget(self.difference_button)
+        controls.addStretch(1)
+        for button in style.image_menus(self.shown_graphs):
+            controls.addWidget(button)
+
+        band = "one chord" if sizes.roi_width_nm == 0 else f"a {sizes.roi_width_nm:g} nm band of chords"
+        self.summary = QtWidgets.QLabel("\n".join(
+            [f"{len(design_nm)} contacts; xCD and yCD from {band} through the contact centre."]
+            + [size_summary(name, unit, sizes.sem[:, k], sizes.design[:, k]) for k, (name, unit) in enumerate(QUANTITIES)]))
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.summary)
+        layout.addLayout(controls)
+        layout.addWidget(self.figure, stretch=1)
+        self.show_maps()  # first: a hidden map would pass its range on while the figure is laid out
+        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
+        self.maps[0][0].vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))  # every contact
+        self.set_values()
+
+    def values(self, k: int) -> np.ndarray:
+        """(N,) what map k shows: the SEM value, or SEM − design."""
+        if self.difference_button.isChecked():
+            return self.sizes.sem[:, k] - self.sizes.design[:, k]
+        return self.sizes.sem[:, k]
+
+    def set_values(self):
+        """Titles and colour scales of the chosen value (SEM or SEM − design), then the maps drawn again."""
+        difference = self.difference_button.isChecked()
+        for k, ((name, unit), (plot, _, bar)) in enumerate(zip(QUANTITIES, self.maps)):
+            title = f"{name}, SEM − design ({unit})" if difference else f"{name}, SEM ({unit})"
+            plot.setTitle(title, color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
+            bar.blockSignals(True)  # one redraw below, not one per bar
+            bar.setLevels(value_levels(self.values(k)))
+            bar.blockSignals(False)
+        self.draw_maps()
+
+    def show_maps(self):
+        """Show the maps whose box is ticked, with their colour bars, at the centre and scale of a map shown before:
+        its y range, x as wide as each map now is. (Its area would not do: a map made narrower would zoom out to
+        fit it, more at every change.)"""
+        visible = [plot for plot, _, _ in self.maps if plot.isVisible()]
+        (x0, x1), (y0, y1) = visible[0].vb.viewRange() if visible else self.maps[0][0].vb.viewRange()
+        for box, (plot, _, bar) in zip(self.show_boxes, self.maps):
+            plot.setVisible(box.isChecked())
+            bar.setVisible(box.isChecked())
+        self.figure.ci.layout.activate()  # the maps' new widths, now
+        for box, (plot, _, _) in zip(self.show_boxes, self.maps):
+            if box.isChecked() and plot.vb.height() > 0:
+                half = (y1 - y0) * plot.vb.width() / plot.vb.height() / 2  # equal x and y scales
+                plot.vb.setRange(xRange=((x0 + x1) / 2 - half, (x0 + x1) / 2 + half), yRange=(y0, y1), padding=0)
+        self.redraw.start()
+
+    def draw_maps(self):
+        for k, (box, (plot, image, bar)) in enumerate(zip(self.show_boxes, self.maps)):
+            if box.isChecked():  # a hidden map is drawn when it is shown
+                draw_map(plot, image, self.position_um, self.values(k), bar.levels(), self.dot_um,
+                         self.devicePixelRatioF(), background=255)
+
+    def shown_graphs(self):
+        """For the image menus: the figure and the maps shown, each with its colour bar."""
+        return self.figure, [(f"{name} map", [plot, bar]) for box, (name, _), (plot, _, bar)
+                             in zip(self.show_boxes, QUANTITIES, self.maps) if box.isChecked()]
