@@ -12,6 +12,7 @@ import pytest
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from affine_ransac.analysis import Settings
+from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
 from affine_ransac.release.analysis import PARAMETERS, analyse_folder, read_display_images
 from affine_ransac.release.app import MaskRegWindow
@@ -92,11 +93,11 @@ def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     view.resize(1200, 900)
     view.show()
     QtWidgets.QApplication.processEvents()
-    image = style.render_image(view.maps_figure)
-    assert image.width() == 2 * view.maps_figure.viewport().width()
+    image = style.render_image(view.figure)
+    assert image.width() == 2 * view.figure.viewport().width()
     assert image.pixelColor(2, 2).name() == "#ffffff"
     table = view.profiles()
-    assert table[0][0] == "row y (µm)" and table[0][3] == "column x (µm)"
+    assert table[0][0] == "row y (µm)" and table[0][3] == "row mean dr (nm)" and table[0][4] == "column x (µm)"
     assert len(table) == max(len(view.row_y), len(view.column_x)) + 1
 
     # The profiles beside a map follow it: the row profile its y, the column profile its x.
@@ -107,18 +108,27 @@ def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     assert np.allclose(panel.columns.vb.viewRange()[0], panel.map.vb.viewRange()[0])
     rows_line = panel.rows.listDataItems()[0].getData()  # rotated: x = mean error, y = row position
     np.testing.assert_allclose(rows_line[0], view.row_mean[:, 0])
+    (ax, ay), (mx, my) = view.arrow_panel.map.vb.viewRange(), panel.map.vb.viewRange()
+    assert np.allclose(ay, my) and np.isclose(np.mean(ax), np.mean(mx))  # same area (x as wide as each map's shape)
+    dr_line = view.arrow_panel.rows.listDataItems()[0].getData()  # beside the arrows: the mean |error| per row
+    _, dr_mean, _ = row_means(view.design_nm[:, 1], np.linalg.norm(view.error_nm, axis=1), result.settings.row_gap_nm)
+    np.testing.assert_allclose(dr_line[0], dr_mean)
 
-    # Arrows: one shaft and two head strokes per contact, scaled.
-    view.display.setCurrentIndex(1)
-    assert view.figures.currentWidget() is view.arrows_figure and view.arrow_controls.isVisibleTo(view)
-    x, y = view.arrows.getData()
-    assert len(x) == 6 * len(view.error_nm)
+    # Arrows: one shaft and two head strokes per contact, scaled, coloured by their length.
+    assert arrow_points(view) == 6 * len(view.error_nm)
+    assert sum(len(item.getData()[0]) > 0 for item in view.arrows) > 1  # several colours
+    view.dr_bar.setLevels((0.0, 1e6))  # every arrow in the first colour, in contact order
     view.arrow_scale.setValue(1000)
-    x, y = view.arrows.getData()
+    x, y = view.arrows[0].getData()
     np.testing.assert_allclose([x[1] - x[0], y[1] - y[0]], view.error_nm[0] * 1000 / 1000)  # nm x 1000 on the map, in µm
     stitching = StitchingView(result, use_opengl=False)
     assert not stitching.load_button.isEnabled()  # contour CSVs: no images
     view.close()
+
+
+def arrow_points(view) -> int:
+    """The points of all arrows drawn, over every colour."""
+    return sum(len(item.getData()[0]) for item in view.arrows)
 
 
 def make_window(tmp_path):
@@ -289,20 +299,21 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
     view.values.setCurrentIndex(1)  # grid average
     _, mean, count = grid_means(result.design_nm, result.moving.residuals, 500.0)
     assert view.maps[0][1].image.shape[:2] == mean.shape[:2]  # one image pixel per cell
-    view.display.setCurrentIndex(1)
-    x, _ = view.arrows.getData()
-    assert len(x) == 6 * (count > 0).sum()  # one arrow per cell with contacts
+    assert arrow_points(view) == 6 * (count > 0).sum()  # one arrow per cell with contacts
     view.values.setCurrentIndex(0)
-    assert len(view.arrows.getData()[0]) == 6 * len(result.design_nm)
+    assert arrow_points(view) == 6 * len(result.design_nm)
     assert not view.cell.isEnabled()
 
-    view.display.setCurrentIndex(0)
-    view.grid_lines.setChecked(True)
-    assert view.maps[0][0].map.getAxis("bottom").grid
+    assert view.grid_lines.isChecked()  # on at start, on every map
+    assert all(panel.map.getAxis("bottom").grid for panel in view.panels)
+    view.grid_lines.setChecked(False)
+    assert not view.arrow_panel.map.getAxis("bottom").grid
 
     figure, graphs = view.shown_graphs()
     names = [name for name, _ in graphs]
-    assert figure is view.maps_figure and names[:3] == ["dx map", "dx mean per row", "dx mean per column"]
+    assert figure is view.figure and names[:6] == ["arrow map", "dr mean per row", "dr mean per column",
+                                                   "dx map", "dx mean per row", "dx mean per column"]
+    assert dict(graphs)["arrow map"][-1] is view.dr_bar
     map_items = dict(graphs)["dx map"]
     assert map_items[-1] is view.color_bar  # a map comes with its colour bar
     image = style.render_graph(figure, map_items)
@@ -310,4 +321,38 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
     assert image.width() == 2 * on_screen
     menu = [a.text() for a in view.maps[0][0].rows.vb.menu.actions()]
     assert "Copy this graph" in menu and "Save this graph..." in menu
+    view.close()
+
+
+def test_contacts_belong_to_the_stripes_whose_x_range_holds_them():
+    from affine_ransac.pipeline import contact_stripes
+    centers = np.array([[0.0, 0.0], [0.0, 100.0], [90.0, 0.0], [90.0, 100.0]])  # two stripes, 10 nm overlap
+    sizes = np.full((4, 2), 100.0)
+    x = np.array([-40.0, 42.0, 45.0, 100.0, 200.0])  # stripe 0, overlap, overlap, stripe 1, outside (nearest: 1)
+    assert contact_stripes(x, centers, sizes).tolist() == [[True, False], [True, True], [True, True],
+                                                           [False, True], [False, True]]
+
+
+def test_the_registration_tab_shows_the_stripes_ticked(tmp_path):
+    from affine_ransac.pipeline import contact_stripes
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    stripes = contact_stripes(result.design_nm[:, 0], result.centers, result.sizes)
+    assert stripes.shape[1] == 2 and view.stripes.text() == "Stripes: all 2"
+    assert len(view.error_nm) == len(result.design_nm)
+
+    view.stripes.set_selected([1])
+    assert view.stripes.text() == "Stripes: 1 of 2"
+    np.testing.assert_array_equal(view.design_nm, result.design_nm[stripes[:, 1]])
+    np.testing.assert_array_equal(view.error_nm, result.moving.residuals[stripes[:, 1]])  # not fitted again
+    assert arrow_points(view) == 6 * stripes[:, 1].sum()
+
+    view.stripes.list.item(1).setCheckState(QtCore.Qt.CheckState.Unchecked)  # the last one stays ticked
+    assert view.stripes.selected() == [1]
+    view.stripes.set_selected(range(2))
+    assert len(view.error_nm) == len(result.design_nm)
     view.close()

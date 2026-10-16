@@ -385,6 +385,25 @@ def tile_stripes(centers: np.ndarray, fovs: np.ndarray) -> np.ndarray:
     return stripe
 
 
+def stripe_ranges(centers: np.ndarray, fovs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(low, high), each (n_stripes,): the x range (nm) covered by the tiles of each stripe (tile_stripes)."""
+    stripe = tile_stripes(centers, fovs)
+    stripes = range(stripe.max() + 1)
+    low = np.array([(centers[stripe == s, 0] - fovs[stripe == s, 0] / 2).min() for s in stripes])
+    high = np.array([(centers[stripe == s, 0] + fovs[stripe == s, 0] / 2).max() for s in stripes])
+    return low, high
+
+
+def contact_stripes(x_nm: np.ndarray, centers: np.ndarray, fovs: np.ndarray) -> np.ndarray:
+    """(N, n_stripes) bool: whether each contact (x, nm) lies in the x range of each stripe (stripe_ranges). A
+    contact in the overlap of two stripes is in both; one outside every stripe is put in the nearest."""
+    low, high = stripe_ranges(centers, fovs)
+    inside = (x_nm[:, None] >= low) & (x_nm[:, None] <= high)
+    outside = np.flatnonzero(~inside.any(axis=1))
+    inside[outside, np.argmin(np.abs(x_nm[outside, None] - (low + high) / 2), axis=1)] = True
+    return inside
+
+
 def measurement_pairs(centers: np.ndarray, stripe: np.ndarray, first_upward: bool = True) -> set:
     """Tile pairs (i, j), i < j, measured one after the other in a serpentine scan: the stripes are
     measured in order of x, alternately upward and downward (the first from its bottom if

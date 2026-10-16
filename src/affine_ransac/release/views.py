@@ -4,12 +4,15 @@ StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, 
 placement; stitching failures (off at start, D76) and tile names on request; the SEM images on request
 (Load SEM images: the app reads them in the background and calls set_images), with an opacity slider.
 
-RegistrationView: the error after the moving-window affine, measured (SEM) − design, of every contact, as colour
-maps of dx and dy (jet, shared colour scale, rasterized to the screen like the research view; draw_map) or as
-one arrow map; values of every contact, or their mean per cell of a square grid (grid_means); grid lines on request. Every map has its profiles beside it (MarginalMap): the mean per row on its right, rotated so
-that y runs down the side like the map's y, and the mean per column below it; both follow the map's zoom and
-pan. Copy profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure or one
-graph (also in each graph's right-click menu).
+RegistrationView: the error after the moving-window affine, measured (SEM) − design, in one figure: an arrow map
+(arrows coloured by their length dr, jet, own colour bar) and colour maps of dx and dy (jet, shared colour scale,
+rasterized to the screen like the research view; draw_map), side by side and showing the same area; values of
+every contact, or their mean per cell of a square grid (grid_means); grid lines (on at start). Every map has its
+profiles beside it (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the
+map's y, and the mean per column below it, of dr beside the arrows and of its own component beside dx and dy;
+both follow the map's zoom and pan. Stripes (StripeSelector): the maps and profiles show the contacts of the
+stripes ticked. Copy profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole
+figure or one graph (also in each graph's right-click menu).
 
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
@@ -22,6 +25,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
+from affine_ransac.pipeline import contact_stripes, stripe_ranges
 from affine_ransac.registration import error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
@@ -284,11 +288,12 @@ class MarginalMap:
         grid.setRowStretchFactor(row, 3)
         grid.setRowStretchFactor(row + 1, 1)
 
-    def add_profile(self, name: str, color: str, row_um, row_mean, column_um, column_mean):
-        """One line in each profile: row_mean (nm) at the rows' y (µm), column_mean at the columns' x (µm)."""
+    def add_profile(self, name: str, color: str, row_um=(), row_mean=(), column_um=(), column_mean=()):
+        """One line in each profile: row_mean (nm) at the rows' y (µm), column_mean at the columns' x (µm).
+        Returns the two lines (row, column), to change their data later."""
         pen = pg.mkPen(color, width=2)
-        self.rows.plot(row_mean, row_um, pen=pen, name=name)
-        self.columns.plot(column_um, column_mean, pen=pen, name=name)
+        return self.rows.plot(row_mean, row_um, pen=pen, name=name), self.columns.plot(column_um, column_mean, pen=pen,
+                                                                                       name=name)
 
     def _follow(self, *_):
         (x0, x1), (y0, y1) = self.map.vb.viewRange()
@@ -296,63 +301,144 @@ class MarginalMap:
         self.columns.setXRange(x0, x1, padding=0)
 
 
+ARROW_COLOURS = 32  # arrows are coloured by their length in this many steps of the colour scale
+
+
+def error_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
+    """A jet colour bar over values (low, high) nm, in the figures' style."""
+    bar = pg.ColorBarItem(values=values, colorMap=JET, width=18)
+    axis = bar.getAxis("right")
+    axis.setTextPen(pg.mkPen(style.TEXT))
+    axis.setStyle(tickFont=QtGui.QFont(style.FONT, style.TICK_PT))
+    axis.enableAutoSIPrefix(False)
+    axis.setLabel(label, color=style.TEXT, **{"font-size": f"{style.LABEL_PT}pt"})
+    return bar
+
+
+def link_views(plots: list[pg.PlotItem]):
+    """The plots show the same area: a zoom or pan in one is copied to the others, as the same centre and the same
+    scale (µm per pixel), so plots of different widths still agree."""
+    busy = [False]
+
+    def follow(source):
+        def update(*_):
+            if busy[0] or source.vb.width() <= 0:
+                return
+            busy[0] = True
+            (x0, x1), y_range = source.vb.viewRange()
+            per_pixel, centre = (x1 - x0) / source.vb.width(), (x0 + x1) / 2
+            for target in plots:
+                if target is not source:
+                    half = per_pixel * target.vb.width() / 2
+                    target.vb.setRange(xRange=(centre - half, centre + half), yRange=y_range, padding=0)
+            busy[0] = False
+        source.vb.sigRangeChanged.connect(update)
+    for plot in plots:
+        follow(plot)
+
+
+class StripeSelector(QtWidgets.QPushButton):
+    """A button whose drop-down lists the stripes, each with a tick box (all ticked at start), and an All button.
+    changed() is called when the ticks change; the last ticked stripe cannot be unticked."""
+
+    def __init__(self, labels: list[str], changed):
+        super().__init__()
+        self.changed = changed
+        self.list = QtWidgets.QListWidget()
+        for label in labels:
+            item = QtWidgets.QListWidgetItem(label)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.CheckState.Checked)
+            self.list.addItem(item)
+        self.list.itemChanged.connect(self._ticked)
+        everything = QtWidgets.QPushButton("All")
+        everything.clicked.connect(lambda: self.set_selected(range(self.list.count())))
+        panel = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(panel)
+        column.addWidget(self.list)
+        column.addWidget(everything)
+        menu = QtWidgets.QMenu(self)
+        action = QtWidgets.QWidgetAction(menu)
+        action.setDefaultWidget(panel)
+        menu.addAction(action)
+        self.setMenu(menu)
+        self.setToolTip("The stripes whose contacts the maps and profiles show (a contact in the overlap of two "
+                        "stripes belongs to both)")
+        self._label()
+
+    def selected(self) -> list[int]:
+        return [k for k in range(self.list.count())
+                if self.list.item(k).checkState() == QtCore.Qt.CheckState.Checked]
+
+    def set_selected(self, stripes):
+        self.list.blockSignals(True)
+        for k in range(self.list.count()):
+            self.list.item(k).setCheckState(QtCore.Qt.CheckState.Checked if k in stripes else
+                                            QtCore.Qt.CheckState.Unchecked)
+        self.list.blockSignals(False)
+        self._label()
+        self.changed()
+
+    def _ticked(self, item):
+        if not self.selected():  # keep one stripe
+            self.list.blockSignals(True)
+            item.setCheckState(QtCore.Qt.CheckState.Checked)
+            self.list.blockSignals(False)
+            return
+        self._label()
+        self.changed()
+
+    def _label(self):
+        n, total = len(self.selected()), self.list.count()
+        self.setText(f"Stripes: all {total}" if n == total else f"Stripes: {n} of {total}")
+
+
 class RegistrationView(QtWidgets.QWidget):
     def __init__(self, result: ReleaseResult, use_opengl: bool = True):
         super().__init__()
-        r, s = result, result.settings
+        r = result
         self.result = r
-        self.error_nm = r.moving.residuals
         self.origin = np.round(r.design_nm.mean(axis=0), -3)  # whole µm
-        self.position_um = (r.design_nm - self.origin) / 1000
         distance, _ = cKDTree(r.design_nm).query(r.design_nm, k=2)
         self.pitch_nm = float(np.median(distance[:, 1]))
         self.dot_um = 0.4 * self.pitch_nm / 1000  # a disk of ~0.4 x the pitch when zoomed in
-        self.row_y, self.row_mean, _ = row_means(r.design_nm[:, 1], self.error_nm, s.row_gap_nm)
-        self.column_x, self.column_mean, _ = row_means(r.design_nm[:, 0], self.error_nm, s.row_gap_nm)
-        row_um, column_um = (self.row_y - self.origin[1]) / 1000, (self.column_x - self.origin[0]) / 1000
-        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
-        components = (("Δx", style.DX), ("Δy", style.DY))
+        self.in_stripe = contact_stripes(r.design_nm[:, 0], r.centers, r.sizes)
 
-        # Colour maps: dx and dy, each with the profiles of its own component; one colour bar.
-        self.maps_figure = figure(use_opengl)
+        # One figure: the arrow map (arrows coloured by their length dr, profiles of dr, its own colour bar), then
+        # the dx and dy colour maps (profiles of their own component, one shared colour bar). Same area in all.
+        self.figure = figure(use_opengl)
+        grid = self.figure.ci
+        self.arrow_panel = MarginalMap(grid, 0, 0, self.origin, "Δr: measured − design (nm)", "arrow")
+        self.arrow_profiles = [self.arrow_panel.add_profile("dr", style.DR)]
+        self.arrows = [pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(QtGui.QColor(*rgb[:3]), width=1), antialias=False)
+                       for rgb in JET.getLookupTable(nPts=ARROW_COLOURS)]
+        for item in self.arrows:
+            self.arrow_panel.map.addItem(item)
+        self.dr_bar = error_bar((0.0, 1.0), "dr = |error| (nm)")
+        self.dr_bar.sigLevelsChanged.connect(lambda *_: self.draw_arrows())
+        grid.addItem(self.dr_bar, row=0, col=2)
+        grid.layout.setColumnSpacing(2, 24)  # room between its axis label and the dx map's
         self.maps = []  # (MarginalMap, image, component)
-        for component, (name, color) in enumerate(components):
-            panel = MarginalMap(self.maps_figure.ci, 0, 2 * component, self.origin, f"{name}: measured − design (nm)",
+        self.map_profiles = []
+        for component, (name, color) in enumerate((("Δx", style.DX), ("Δy", style.DY))):
+            panel = MarginalMap(grid, 0, 3 + 2 * component, self.origin, f"{name}: measured − design (nm)",
                                 ("dx", "dy")[component])
-            panel.add_profile(name, color, row_um, self.row_mean[:, component], column_um,
-                              self.column_mean[:, component])
+            self.map_profiles.append(panel.add_profile(name, color))
             image = pg.ImageItem(axisOrder="row-major")
             image.setZValue(-100)  # under the grid lines
             panel.map.addItem(image)
             self.maps.append((panel, image, component))
-        limit = float(np.percentile(np.abs(self.error_nm), 99)) or 1.0
-        self.color_bar = pg.ColorBarItem(values=(-limit, limit), colorMap=JET, width=18)
-        axis = self.color_bar.getAxis("right")
-        axis.setTextPen(pg.mkPen(style.TEXT))
-        axis.setStyle(tickFont=QtGui.QFont(style.FONT, style.TICK_PT))
-        axis.enableAutoSIPrefix(False)
-        axis.setLabel("error (nm)", color=style.TEXT, **{"font-size": f"{style.LABEL_PT}pt"})
+        self.color_bar = error_bar((-1.0, 1.0), "error (nm)")
         self.color_bar.sigLevelsChanged.connect(lambda *_: self.draw_maps())
-        self.maps_figure.addItem(self.color_bar, row=0, col=4)
-        self._link_maps()
-        self.maps[0][0].map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
+        grid.addItem(self.color_bar, row=0, col=7)
+        self.panels = [self.arrow_panel] + [panel for panel, _, _ in self.maps]
+        link_views([panel.map for panel in self.panels])
         self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
         self.redraw.timeout.connect(self.draw_maps)
         for panel, _, _ in self.maps:
             panel.map.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
             panel.map.vb.sigResized.connect(lambda *_: self.redraw.start())
 
-        # Arrows: one map of the error vectors, both components in its profiles.
-        self.arrows_figure = figure(use_opengl)
-        self.arrow_panel = MarginalMap(self.arrows_figure.ci, 0, 0, self.origin, "Error vectors: measured − design",
-                                       "error vectors")
-        style.legend(self.arrow_panel.rows)
-        for component, (name, color) in enumerate(components):
-            self.arrow_panel.add_profile(name, color, row_um, self.row_mean[:, component], column_um,
-                                         self.column_mean[:, component])
-        self.arrows = pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(style.TEXT, width=1), antialias=False)
-        self.arrow_panel.map.addItem(self.arrows)
-        self.arrow_panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
         self.arrow_scale = QtWidgets.QDoubleSpinBox(decimals=0, minimum=1, maximum=1e7)
         self.arrow_scale.setToolTip("Arrows are drawn this many times longer than the error")
         self.arrow_scale.valueChanged.connect(self.draw_arrows)
@@ -362,67 +448,86 @@ class RegistrationView(QtWidgets.QWidget):
         self.values = QtWidgets.QComboBox()
         self.values.addItems(["Every contact", "Grid average"])
         self.values.setToolTip("Grid average: one value per square cell, the mean of the contacts in it")
-        area = np.prod(np.maximum(high - low, 1e-3))  # µm²
+        area = np.prod(np.maximum(np.ptp(r.design_nm, axis=0) / 1000, 1e-3))  # µm²
         self.cell = QtWidgets.QDoubleSpinBox(decimals=3, minimum=0.01, maximum=1e4, suffix=" µm", singleStep=0.1)
         self.cell.setValue(max(nice_number(np.sqrt(area / 2000)), nice_number(self.pitch_nm / 1000) * 2))  # ~2000 cells
         self.cell.setToolTip("Grid cell size (square)")
         self.grid_lines = QtWidgets.QCheckBox("Grid lines")
-        self.grid_lines.setToolTip("Grid lines on the colour maps")
+        self.grid_lines.setToolTip("Grid lines on the maps")
+        self.grid_lines.setChecked(True)
         self.grid_lines.toggled.connect(self.show_grid_lines)
+        low, high = stripe_ranges(r.centers, r.sizes)
+        self.stripes = StripeSelector([f"Stripe {k + 1}  (x {a / 1000:.1f} to {b / 1000:.1f} µm)"
+                                       for k, (a, b) in enumerate(zip(low, high))], self.select_stripes)
 
-        self.display = QtWidgets.QComboBox()
-        self.display.addItems(["Colour maps", "Arrows"])
-        self.figures = QtWidgets.QStackedWidget()
-        self.figures.addWidget(self.maps_figure)
-        self.figures.addWidget(self.arrows_figure)
-        self.display.currentIndexChanged.connect(self.show_display)
-
-        window = f"moving-window affine: window {s.moving_window_um:g} µm, step {s.moving_step_um:g} µm"
-        summary = QtWidgets.QLabel(f"<b>{len(self.error_nm)} contacts</b>, {len(self.row_y)} rows, "
-                                   f"{len(self.column_x)} columns. Error = measured (SEM) − design after the {window}: "
-                                   f"{summary_text(self.error_nm)}.")
-        summary.setWordWrap(True)
+        self.summary = QtWidgets.QLabel()
+        self.summary.setWordWrap(True)
         copy_profiles = QtWidgets.QPushButton("Copy profiles")
-        copy_profiles.setToolTip("Copy the mean per row and per column (µm; dx, dy nm) to the clipboard, "
+        copy_profiles.setToolTip("Copy the mean per row and per column (µm; dx, dy, dr nm) to the clipboard, "
                                  "tab-separated (pastes into Excel)")
         copy_profiles.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.profiles_text("\t")))
         export_profiles = QtWidgets.QPushButton("Export profiles CSV...")
         export_profiles.clicked.connect(self.export_profiles)
-        for panel, _, _ in self.maps:
+        for panel in self.panels:
             for plot, items, name in self.graphs_of(panel):
-                style.graph_actions(plot, self.maps_figure, items, name)
-        for plot, items, name in self.graphs_of(self.arrow_panel):
-            style.graph_actions(plot, self.arrows_figure, items, name)
+                style.graph_actions(plot, self.figure, items, name)
 
         controls = QtWidgets.QHBoxLayout()
-        self.arrow_controls = QtWidgets.QWidget()
-        arrow_row = QtWidgets.QHBoxLayout(self.arrow_controls)
-        arrow_row.setContentsMargins(0, 0, 0, 0)
-        for widget in (QtWidgets.QLabel("Arrow scale ×"), self.arrow_scale, self.arrow_key):
-            arrow_row.addWidget(widget)
-        for widget in (QtWidgets.QLabel("Show:"), self.display, QtWidgets.QLabel("   Values:"), self.values,
-                       QtWidgets.QLabel("cell"), self.cell, QtWidgets.QLabel("  "), self.grid_lines, self.arrow_controls):
+        for widget in (self.stripes, QtWidgets.QLabel("   Values:"), self.values, QtWidgets.QLabel("cell"), self.cell,
+                       QtWidgets.QLabel("  "), self.grid_lines, QtWidgets.QLabel("   Arrow scale ×"), self.arrow_scale,
+                       self.arrow_key):
             controls.addWidget(widget)
         controls.addStretch(1)
         for button in [copy_profiles, export_profiles] + style.image_menus(self.shown_graphs):
             controls.addWidget(button)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(summary)
+        layout.addWidget(self.summary)
         layout.addLayout(controls)
-        layout.addWidget(self.figures, stretch=1)
+        layout.addWidget(self.figure, stretch=1)
 
         self.values.currentIndexChanged.connect(self.set_values)
         self.cell.valueChanged.connect(self.set_values)
+        self.show_grid_lines(True)
+        self.select_stripes()
+
+    def select_stripes(self):
+        """Show the contacts of the ticked stripes: their maps, profiles, colour scales and summary, the view on
+        them. The errors stay those of the moving-window affine fitted on every contact."""
+        r, s = self.result, self.result.settings
+        selected = self.stripes.selected()
+        shown = self.in_stripe[:, selected].any(axis=1)
+        self.design_nm, self.error_nm = r.design_nm[shown], r.moving.residuals[shown]
+        self.position_um = (self.design_nm - self.origin) / 1000
+        length = np.linalg.norm(self.error_nm, axis=1)
+        values = np.column_stack([self.error_nm, length])  # dx, dy, dr
+        self.row_y, self.row_mean, _ = row_means(self.design_nm[:, 1], values, s.row_gap_nm)
+        self.column_x, self.column_mean, _ = row_means(self.design_nm[:, 0], values, s.row_gap_nm)
+        row_um, column_um = (self.row_y - self.origin[1]) / 1000, (self.column_x - self.origin[0]) / 1000
+        for k, (row_line, column_line) in enumerate(self.map_profiles + self.arrow_profiles):  # dx, dy, dr
+            row_line.setData(self.row_mean[:, k], row_um)
+            column_line.setData(column_um, self.column_mean[:, k])
+        limit = float(np.percentile(np.abs(self.error_nm), 99)) or 1.0
+        self.color_bar.setLevels((-limit, limit))
+        self.dr_bar.setLevels((0.0, float(np.percentile(length, 99)) or 1.0))
+
+        window = f"moving-window affine: window {s.moving_window_um:g} µm, step {s.moving_step_um:g} µm"
+        total = self.in_stripe.shape[1]
+        stripes = f"all {total} stripes" if len(selected) == total else \
+            f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
+        self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.row_y)} rows, "
+                             f"{len(self.column_x)} columns. Error = measured (SEM) − design after the {window}, "
+                             f"fitted on every contact: {summary_text(self.error_nm)}.")
+        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
+        self.arrow_panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
         self.set_values()
-        self.show_display(0)
 
     def grid_mode(self) -> bool:
         return self.values.currentIndex() == 1
 
     def set_values(self, *_):
-        """Every contact or the grid average: the grid computed again, the arrow scale reset, both displays drawn."""
+        """Every contact or the grid average: the grid computed again, the arrow scale reset, the maps drawn."""
         self.cell.setEnabled(self.grid_mode())
-        corner, mean, _ = grid_means(self.result.design_nm, self.error_nm, self.cell.value() * 1000)
+        corner, mean, _ = grid_means(self.design_nm, self.error_nm, self.cell.value() * 1000)
         self.grid_corner_um, self.grid_mean = (corner - self.origin) / 1000, mean
         vectors = self.arrow_vectors()[1]
         largest = float(np.percentile(np.linalg.norm(vectors, axis=1), 99)) if len(vectors) else 1.0
@@ -442,14 +547,8 @@ class RegistrationView(QtWidgets.QWidget):
         centres = self.grid_corner_um + (np.column_stack([cols, rows]) + 0.5) * self.cell.value()
         return centres, self.grid_mean[rows, cols]
 
-    def show_display(self, index: int):
-        """0: colour maps, 1: arrows."""
-        self.figures.setCurrentIndex(index)
-        self.arrow_controls.setVisible(index == 1)
-        self.grid_lines.setVisible(index == 0)
-
     def show_grid_lines(self, on: bool):
-        for panel, _, _ in self.maps:
+        for panel in self.panels:
             panel.map.showGrid(x=on, y=on, alpha=0.35)
 
     def draw_maps(self):
@@ -465,48 +564,36 @@ class RegistrationView(QtWidgets.QWidget):
                          self.dot_um, self.devicePixelRatioF(), background=255)
 
     def draw_arrows(self):
+        """The arrows, each coloured by its length (its error's dr) on the dr colour bar."""
         scale = self.arrow_scale.value()
         start, error = self.arrow_vectors()
-        self.arrows.setData(*arrow_segments(start, error * scale / 1000))
+        low, high = self.dr_bar.levels()
+        fraction = (np.linalg.norm(error, axis=1) - low) / (high - low) if high > low else np.zeros(len(error))
+        step = np.clip((fraction * ARROW_COLOURS).astype(int), 0, ARROW_COLOURS - 1)
+        for k, item in enumerate(self.arrows):
+            item.setData(*arrow_segments(start[step == k], error[step == k] * scale / 1000))
         self.arrow_key.setText(f"(1 nm error = {scale / 1000:g} µm on the map)")
 
     def graphs_of(self, panel: MarginalMap) -> list[tuple[pg.PlotItem, list, str]]:
-        """(plot, items to render, name) of a panel's graphs; a colour map comes with the colour bar."""
-        bar = [] if panel is self.arrow_panel else [self.color_bar]
-        return [(panel.map, [panel.map] + bar, f"{panel.name} map"),
-                (panel.rows, [panel.rows], f"{panel.name} mean per row"),
-                (panel.columns, [panel.columns], f"{panel.name} mean per column")]
+        """(plot, items to render, name) of a panel's graphs; a map comes with its colour bar."""
+        bar, profile = (self.dr_bar, "dr") if panel is self.arrow_panel else (self.color_bar, panel.name)
+        return [(panel.map, [panel.map, bar], f"{panel.name} map"),
+                (panel.rows, [panel.rows], f"{profile} mean per row"),
+                (panel.columns, [panel.columns], f"{profile} mean per column")]
 
     def shown_graphs(self):
-        """For the image menus: the figure shown and its graphs."""
-        if self.figures.currentIndex() == 1:
-            return self.arrows_figure, [(name, items) for _, items, name in self.graphs_of(self.arrow_panel)]
-        return self.maps_figure, [(name, items) for panel, _, _ in self.maps
-                                  for _, items, name in self.graphs_of(panel)] + [("colour bar", [self.color_bar])]
-
-    def _link_maps(self):
-        """Both colour maps show the same area."""
-        (a, _, _), (b, _, _) = self.maps
-        busy = [False]
-
-        def follow(source, target):
-            def update(*_):
-                if not busy[0]:
-                    busy[0] = True
-                    target.vb.setRange(rect=source.vb.viewRect(), padding=0)
-                    busy[0] = False
-            source.vb.sigRangeChanged.connect(update)
-        follow(a.map, b.map)
-        follow(b.map, a.map)
+        """For the image menus: the figure and its graphs."""
+        return self.figure, [(name, items) for panel in self.panels for _, items, name in self.graphs_of(panel)] + \
+            [("dr colour bar", [self.dr_bar]), ("dx, dy colour bar", [self.color_bar])]
 
     def profiles(self) -> list[list[str]]:
-        """Both profiles as one table: header, then per line a row (y, mask µm; mean dx, dy, nm) and a column
-        (x, mask µm; mean dx, dy, nm), blank where one profile has fewer lines than the other."""
-        header = ["row y (µm)", "row mean dx (nm)", "row mean dy (nm)",
-                  "column x (µm)", "column mean dx (nm)", "column mean dy (nm)"]
+        """Both profiles of the contacts shown, as one table: header, then per line a row (y, mask µm; mean dx, dy,
+        dr, nm) and a column (x, mask µm; mean dx, dy, dr, nm), blank where one profile has fewer lines."""
+        header = ["row y (µm)", "row mean dx (nm)", "row mean dy (nm)", "row mean dr (nm)",
+                  "column x (µm)", "column mean dx (nm)", "column mean dy (nm)", "column mean dr (nm)"]
 
         def cells(position, mean, k):
-            return [f"{position[k] / 1000:.4f}", *(f"{v:.4f}" for v in mean[k])] if k < len(position) else [""] * 3
+            return [f"{position[k] / 1000:.4f}", *(f"{v:.4f}" for v in mean[k])] if k < len(position) else [""] * 4
         length = max(len(self.row_y), len(self.column_x))
         return [header] + [cells(self.row_y, self.row_mean, k) + cells(self.column_x, self.column_mean, k)
                            for k in range(length)]
