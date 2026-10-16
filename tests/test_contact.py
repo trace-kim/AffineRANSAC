@@ -131,3 +131,20 @@ def test_solidity_filter_drops_the_pinched_off_background():
     image, truth = wide_band_image(band_px=16)
     unfiltered = detect_contacts(image, method="band", min_solidity=0.0)
     assert len(unfiltered.centers) > len(truth)  # the concave background pieces between the bands
+
+
+def test_contact_contrast_tells_contacts_from_regions_cut_out_of_noise():
+    from sample_sem import render_tile
+    from affine_ransac.features.contact import contact_contrast, keep_contacts
+    lattice = np.array([(x, y) for x in np.arange(-1530, 1530, 90.0) for y in np.arange(-1530, 1530, 90.0)])
+    pattern = render_tile(lattice, (0.0, 0.0), seed=1)
+    noise = cv2.GaussianBlur(np.random.default_rng(0).normal(0, 12, pattern.shape), (0, 0), 1.0)  # correlated
+    blank = np.clip(110 + noise, 0, 255).astype(np.uint8)
+
+    real, false = (detect_contacts(image, method="otsu") for image in (pattern, blank))
+
+    assert len(real.centers) > 20 and len(false.centers) > 20  # Otsu always cuts something out of noise
+    assert contact_contrast(pattern, real).min() > 10
+    assert contact_contrast(blank, false).max() < 5
+    kept = keep_contacts(real, np.arange(len(real.centers)) % 2 == 0)
+    assert len(kept.contours) == len(kept.centers) == len(kept.areas) == (len(real.centers) + 1) // 2

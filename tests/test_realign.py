@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import Settings
 from affine_ransac.features.contact import DetectedContacts
@@ -33,14 +34,18 @@ def inside(points, center, margin=30.0):
     return local[np.all(np.abs(local) < FOV / 2 - margin, axis=1)]
 
 
-def misaligned_tiles(contacts, seed=1) -> list[TileResult]:
-    """Each .oas covers its nominal field; each image shows the field OFFSET away, with a stage error and noise."""
+def misaligned_tiles(contacts, seed=1, blank_stripe=False) -> list[TileResult]:
+    """Each .oas covers its nominal field, drawn up to ~8 nm off (files offset against each other, more than
+    group_radius_nm); each image shows the field OFFSET away, with a stage error and noise. blank_stripe: the
+    images of the first stripe show no pattern, only false centres at random places."""
     rng = np.random.default_rng(seed)
     tiles = []
     for center in CENTERS:
         seen = center + OFFSET + rng.normal(0, 3, 2)  # where the image really is
         sem = inside(contacts, seen) + rng.normal(0, 0.3, (len(inside(contacts, seen)), 2))
-        tiles.append(tile(center, inside(contacts, center, margin=20), sem))
+        if blank_stripe and center[0] == 0:
+            sem = rng.uniform(-FOV / 2 + 30, FOV / 2 - 30, (40, 2))
+        tiles.append(tile(center, inside(contacts, center, margin=20) + rng.uniform(-6, 6, 2), sem))
     return tiles
 
 
@@ -48,7 +53,7 @@ def test_realign_tiles_finds_the_offset_and_gives_each_image_its_design():
     contacts = mask_contacts(missing=0.15)
     lines = []
 
-    realigned = realign_tiles(misaligned_tiles(contacts), Settings(realign_search_um=3.0), lines.append)
+    realigned = realign_tiles(misaligned_tiles(contacts), Settings(realign=True), lines.append)
 
     shifts = np.array([t.center_nm for t in realigned]) - CENTERS
     np.testing.assert_allclose(shifts, np.tile(shifts[0], (len(CENTERS), 1)))  # one offset for all
@@ -60,13 +65,31 @@ def test_realign_tiles_finds_the_offset_and_gives_each_image_its_design():
         inner = inside(t.design_points_nm(), t.center_nm, margin=40) + t.center_nm  # the SEM sees these
         ia, _ = match_points(inner, t.sem_points_nm(), 15.0)
         assert len(ia) == len(inner) > 0
-        assert t.oas_path is None
+        assert t.oas_center_nm is not None
+
+
+def test_realign_tiles_merges_the_same_contact_of_offset_oas_files():
+    realigned = realign_tiles(misaligned_tiles(mask_contacts(missing=0.15)), Settings(realign=True), lambda line: None)
+
+    for t in realigned:
+        if len(t.design.centers) > 1:  # one design contact per contact: none closer than half the pitch
+            assert cKDTree(t.design.centers).query(t.design.centers, k=2)[0][:, 1].min() > PITCH / 2
+
+
+def test_realign_tiles_finds_the_offset_with_a_stripe_of_blank_images():
+    lines = []
+
+    realigned = realign_tiles(misaligned_tiles(mask_contacts(missing=0.15), blank_stripe=True),
+                              Settings(realign=True), lines.append)
+
+    np.testing.assert_allclose(realigned[0].center_nm - CENTERS[0], OFFSET, atol=5)
+    assert not any(line.startswith("!!") for line in lines)
 
 
 def test_realign_tiles_warns_on_a_fully_periodic_pattern():
     lines = []
 
-    realign_tiles(misaligned_tiles(mask_contacts(missing=0.0)), Settings(realign_search_um=3.0), lines.append)
+    realign_tiles(misaligned_tiles(mask_contacts(missing=0.0)), Settings(realign=True), lines.append)
 
     assert any(line.startswith("!! Realignment") for line in lines)
 

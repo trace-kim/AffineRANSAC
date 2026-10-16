@@ -2,7 +2,9 @@
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
 placement; stitching failures (off at start, D76) and tile names on request; the SEM images on request
-(Load SEM images: the app reads them in the background and calls set_images), with an opacity slider.
+(Load SEM images: the app reads them in the background and calls set_images), with an opacity slider; the design
+pattern on request (Load design: the .oas contacts filled, one colour per stripe, set_design), so that the files of
+neighbouring stripes can be told apart where they overlap.
 
 RegistrationView: the error after the moving-window affine, measured (SEM) − design, in one figure: an arrow map
 (arrows coloured by their length dr, jet, own colour bar) and colour maps of dx and dy (jet, shared colour scale,
@@ -53,6 +55,17 @@ def figure(use_opengl: bool) -> pg.GraphicsLayoutWidget:
     return widget
 
 
+def design_item(mask: np.ndarray, center_nm, fov_x_nm: float, color: str) -> pg.ImageItem:
+    """A tile's design pattern (read_design_images mask, 1 = contact) in a colour, half transparent, nothing
+    between the contacts; above the SEM images."""
+    item = tile_image_item(mask, center_nm, fov_x_nm, mask.shape)
+    rgb = QtGui.QColor(color)
+    item.setLookupTable(np.array([[0, 0, 0, 0], [rgb.red(), rgb.green(), rgb.blue(), 170]], np.uint8))
+    item.setLevels((0, 1))
+    item.setZValue(-5)
+    return item
+
+
 def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -> pg.ImageItem:
     """A (possibly downsampled) SEM image covering its tile: pixel size = FOV / image width of the full image
     (full_shape, as the pipeline), image centre at center_nm, image rows downwards (y up on the plot)."""
@@ -65,8 +78,9 @@ def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -
 
 
 class StitchingView(QtWidgets.QWidget):
-    def __init__(self, result: ReleaseResult, use_opengl: bool = True, on_load_images=None):
-        """on_load_images(): called by Load SEM images (None, or a result without images: button disabled)."""
+    def __init__(self, result: ReleaseResult, use_opengl: bool = True, on_load_images=None, on_load_design=None):
+        """on_load_images(): called by Load SEM images (None, or a result without images: button disabled);
+        on_load_design(): the same for Load design (a result without .oas files: disabled)."""
         super().__init__()
         self.result = result
         r = result
@@ -75,6 +89,7 @@ class StitchingView(QtWidgets.QWidget):
                        "stitched": tuple(np.nan_to_num(c) for c in
                                          placement_corrections(r.stitch.corrections, r.design_stitch.corrections)["mean"])}
         self.image_items = []
+        self.design_items = []  # (tile index, item)
 
         self.graphics = figure(use_opengl)
         self.plot = mask_plot(self.origin)
@@ -140,6 +155,19 @@ class StitchingView(QtWidgets.QWidget):
         if can_load:
             self.load_button.clicked.connect(on_load_images)
         controls.addWidget(self.load_button)
+        self.design_box = QtWidgets.QCheckBox("Design pattern")
+        self.design_box.setEnabled(False)
+        self.design_box.setToolTip("The .oas contacts, one colour per stripe")
+        self.design_box.toggled.connect(self.update_visibility)
+        controls.addWidget(self.design_box)
+        self.design_button = QtWidgets.QPushButton("Load design")
+        can_load_design = on_load_design is not None and any(r.oas_paths)
+        self.design_button.setEnabled(can_load_design)
+        self.design_button.setToolTip("Read the .oas files and show their contacts, one colour per stripe"
+                                      if can_load_design else "No .oas files")
+        if can_load_design:
+            self.design_button.clicked.connect(on_load_design)
+        controls.addWidget(self.design_button)
         controls.addStretch(1)
 
         self.status = QtWidgets.QLabel(self.status_text())
@@ -194,6 +222,8 @@ class StitchingView(QtWidgets.QWidget):
         self.layers["Design centres"].setData(design[:, 0], design[:, 1])
         for k, item in enumerate(self.image_items):
             item.setPos(*sem_shift[k])
+        for k, item in self.design_items:  # a realigned tile's design is not its own file: the files stay put
+            item.setPos(*(design_shift[k] if not r.settings.realign else (0.0, 0.0)))
 
     def update_visibility(self, *_):
         for name, items in self.layers.items():
@@ -201,6 +231,8 @@ class StitchingView(QtWidgets.QWidget):
                 item.setVisible(self.boxes[name].isChecked())
         for item in self.image_items:
             item.setVisible(self.images_box.isChecked())
+        for _, item in self.design_items:
+            item.setVisible(self.design_box.isChecked())
 
     def set_images(self, images: list[tuple[np.ndarray, tuple]]):
         """Show the SEM images: per tile (image, shape of the full image), from the app's loader."""
@@ -216,6 +248,25 @@ class StitchingView(QtWidgets.QWidget):
         self.set_opacity(self.opacity.value())
         self.images_box.setChecked(True)
         self.load_button.setEnabled(False)
+        self.update_positions()
+        self.update_visibility()
+
+    def set_design(self, masks: list[np.ndarray | None]):
+        """Show the design pattern: per tile its mask (release.analysis.read_design_images; None: no .oas) at its
+        file's position (result.oas_centers), in the colour of the tile's stripe."""
+        for _, item in self.design_items:
+            self.plot.removeItem(item)
+        self.design_items = []
+        r = self.result
+        for k, mask in enumerate(masks):
+            if mask is not None:
+                color = style.STRIPES[int(r.stripe[k]) % len(style.STRIPES)]
+                item = design_item(mask, r.oas_centers[k] - self.origin, r.sizes[k][0], color)
+                self.plot.addItem(item)
+                self.design_items.append((k, item))
+        self.design_box.setEnabled(True)
+        self.design_box.setChecked(True)
+        self.design_button.setEnabled(False)
         self.update_positions()
         self.update_visibility()
 

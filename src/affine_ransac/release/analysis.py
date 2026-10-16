@@ -8,7 +8,7 @@ progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 """
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +17,8 @@ import numpy as np
 
 from affine_ransac.analysis import Settings, check_settings, detect_layer, load_image_tiles, report_stitching
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
+from affine_ransac.geometry.frames import tile_nm_to_pixel
+from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, measurement_pairs, slipped_pairs, stitch_design, stitch_tiles,
@@ -33,7 +35,7 @@ COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched"
           "moving_window_um", "moving_step_um", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + ["detection", "search_px", "design_search_nm",
-                                  "design_tolerance_nm", "min_match_fraction", "stitch_refined", "realign_search_um"]}
+                                  "design_tolerance_nm", "min_match_fraction", "stitch_refined", "min_contrast", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 
@@ -56,6 +58,10 @@ class ReleaseResult:
     moving: MovingWindowResult        # residuals: G_w(SEM) − design per contact
     image_paths: list[str]            # per tile its SEM image ([] for contour CSVs), shown on request
     log: list[str]
+    oas_paths: list[str] = field(default_factory=list)  # per tile its .oas ("" if none; [] for contour CSVs)
+    # (n_tiles, 2) mask position of each .oas file's (0, 0) at the nominal placement: the tile centre, or for
+    # realigned tiles (settings.realign) where the file itself sits, stitched (its contacts are not that tile's)
+    oas_centers: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
 
 
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,
@@ -87,6 +93,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         neighbours = tile_neighbours(centers, sizes)
         design_stitch = stitch_design(tiles, s.design_max_match_nm, s.outlier_factor, s.min_matched)
         image_paths = [str(r.image_path) for r in records]
+        oas_paths = [str(t.oas_path) if t.oas_path is not None else "" for t in tiles]
+        oas_centers = np.array([t.center_nm if t.oas_center_nm is None else t.oas_center_nm for t in tiles])
 
         def errors(sem_corrections, design_corrections):  # each tile matched to its own design
             return design_errors(sem_points, design_points, sem_corrections, design_corrections, design_ok,
@@ -106,7 +114,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         stripe = tile_stripes(centers, np.array([t.center_nm for t in tiles]))  # image centres, if in the files
         design_stitch = stitch_tiles(design_points, centers, sizes, s.design_max_match_nm, s.outlier_factor,
                                      s.min_matched, label="design")
-        image_paths = []
+        image_paths, oas_paths, oas_centers = [], [], np.empty((0, 2))
 
         def errors(sem_corrections, design_corrections):  # CSV rows are already paired
             return paired_errors(sem_points, design_points, sem_corrections, design_corrections)
@@ -136,7 +144,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
                          sem_points,
                          design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm, moving,
-                         image_paths, lines)
+                         image_paths, lines, oas_paths, oas_centers)
 
 
 def file_numbers(names: list[str]) -> np.ndarray | None:
@@ -188,6 +196,30 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log, tile_ids) -
             + ("" if guided else "; the stitching method 'measurement order first' avoids this"))
     return stitch
 
+
+
+def read_design_images(result: ReleaseResult, progress: Callable[[float, str], None] = lambda fraction, stage: None
+                       ) -> list[np.ndarray | None]:
+    """The design pattern for display: per tile, its .oas contacts (merged shapes, as drawn: normal tone) filled
+    into a uint8 mask (1 = contact, rows down, like an SEM image) covering the tile's field of view; None for a
+    tile without an .oas. Pixels per tile side from IMAGE_BUDGET_PX, at most 1024."""
+    s, n = result.settings, len(result.oas_paths)
+    side = int(min(1024, np.sqrt(IMAGE_BUDGET_PX / max(n, 1))))
+    masks = []
+    for k, (path, fov) in enumerate(zip(result.oas_paths, result.sizes)):
+        if not path:
+            masks.append(None)
+        else:
+            pixel_nm = fov[0] / side
+            shape = (max(1, round(fov[1] / pixel_nm)), side)
+            mask = np.zeros(shape, np.uint8)
+            outlines = contact_outlines(load_layout(path), s.layer, s.datatype)
+            polygons = [np.round(tile_nm_to_pixel(o, shape, pixel_nm) * 16).astype(np.int32) for o in outlines]
+            if polygons:
+                cv2.fillPoly(mask, polygons, 1, shift=4)  # 4 fractional bits: sub-pixel edges
+            masks.append(mask)
+        progress((k + 1) / n, f"Reading design {k + 1} of {n}")
+    return masks
 
 
 def read_display_images(paths: list[str], progress: Callable[[float, str], None] = lambda fraction, stage: None

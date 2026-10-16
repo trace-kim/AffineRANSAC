@@ -29,7 +29,8 @@ from affine_ransac.analysis import Settings
 from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
-from affine_ransac.release.analysis import DEFAULTS, PARAMETERS, analyse_folder, read_display_images
+from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, analyse_folder, read_design_images,
+                                           read_display_images)
 from affine_ransac.release.cache import load_cache, save_cache
 from affine_ransac.release.config import config_path, default_download_root, read_ftp_config
 from affine_ransac.release.ftp_dialog import FtpDialog
@@ -135,6 +136,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.folder = None   # the open folder
         self.result = None   # its ReleaseResult
         self.images = None   # its SEM images, once loaded (kept when the tabs are rebuilt)
+        self.design = None   # its design pattern masks, once loaded (the same)
         self.busy = False
         self.setWindowTitle(TITLE)
         self.welcome()
@@ -286,6 +288,17 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.log(f"=== Loading {len(paths)} SEM images")
         self.run("Loading SEM images", lambda log, progress: read_display_images(paths, progress), self.show_images)
 
+    def load_design(self):
+        result = self.result
+        self.log(f"=== Loading the design of {len(result.oas_paths)} tiles")
+        self.run("Loading the design", lambda log, progress: read_design_images(result, progress), self.show_design)
+
+    def show_design(self, masks):
+        self.design = masks
+        self.stitching_view.set_design(masks)
+        self.status.set_idle(f"Design of {sum(m is not None for m in masks)} tiles loaded (Stitching tab, "
+                             f"Design pattern)")
+
     def set_gpu(self, on: bool):
         self.preferences.setValue("use_opengl", "true" if on else "false")
         if self.result is not None:
@@ -299,7 +312,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     # --- showing a result -------------------------------------------------------------------------
     def show_new_result(self, result):
-        self.images = None  # those of another result
+        self.images = self.design = None  # those of another result
         self.show_result(result)
 
     def show_images(self, images):
@@ -312,9 +325,11 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.processEvents()
         use_opengl = self.gpu_action.isChecked()
         tabs = QtWidgets.QTabWidget()
-        self.stitching_view = StitchingView(result, use_opengl, self.load_images)
+        self.stitching_view = StitchingView(result, use_opengl, self.load_images, self.load_design)
         if self.images is not None:
             self.stitching_view.set_images(self.images)
+        if self.design is not None:
+            self.stitching_view.set_design(self.design)
         self.registration_view = RegistrationView(result, use_opengl)
         tabs.addTab(self.stitching_view, "Stitching")
         tabs.addTab(self.registration_view, "Registration")
@@ -354,6 +369,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         if self.result is not None:
             self.stitching_view.load_button.setEnabled(
                 not self.busy and self.images is None and bool(self.result.image_paths))
+            self.stitching_view.design_button.setEnabled(
+                not self.busy and self.design is None and any(self.result.oas_paths))
 
     def log(self, text: str):
         self.log_view.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")

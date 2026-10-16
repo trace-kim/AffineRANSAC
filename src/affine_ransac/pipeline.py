@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from affine_ransac.features.contact import DetectedContacts, detect_contacts
+from affine_ransac.features.contact import DetectedContacts, contact_contrast, detect_contacts, keep_contacts
 from affine_ransac.features.edges import refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
@@ -140,6 +140,10 @@ class TileResult:
     design: DesignContacts      # design contacts in the tone that matches the SEM
     oas_path: Path | None = None  # the tile's design file (read again to measure contact sizes)
     seconds: dict[str, float] = field(default_factory=dict)  # time per step of process_tile (logged)
+    low_contrast: int = 0         # detected contacts dropped by the contrast check (process_tile min_contrast)
+    # Mask position of the .oas file's (0, 0) when it is not center_nm: a realigned tile (realign.realign_tiles),
+    # whose design contacts come from all files, not from its own (only drawn, never measured).
+    oas_center_nm: np.ndarray | None = None
 
     def sem_points_nm(self, refined: bool = True) -> np.ndarray:
         """SEM contact centres in mask nm at the nominal placement."""
@@ -160,7 +164,7 @@ class TileResult:
         outlines = [pixel_to_tile_nm(c, self.image.shape, self.pixel_size_nm) for c in found.contours]
         centers = pixel_to_tile_nm(found.centers, self.image.shape, self.pixel_size_nm)
         sem = contact_sizes(outlines, centers, roi_width_nm, self.pixel_size_nm)
-        if self.oas_path is None or len(self.design.centers) == 0:
+        if self.oas_path is None or self.oas_center_nm is not None or len(self.design.centers) == 0:
             return sem, np.full((len(self.design.centers), 3), np.nan)
         design_shapes = design_outlines(load_layout(self.oas_path), layer, self.fov_nm, self.design.reversed)
         if len(design_shapes) != len(self.design.centers):  # the same file read the same way: should not happen
@@ -182,6 +186,7 @@ def process_tile(
     detection: str = "otsu",
     design_tolerance_nm: float = 10.0,
     match_design: bool = True,
+    min_contrast: float = 0.0,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
@@ -191,6 +196,8 @@ def process_tile(
     pairs within design_tolerance_nm). detection: "otsu", "otsu3" or "band" (method of
     features.contact.detect_contacts). match_design False: the design is read in normal tone without matching it
     to the SEM (ok, NaN fraction), for images that do not show their own design (realign.realign_tiles).
+    min_contrast > 0: detected contacts whose contrast against a ring around them is below this many noise sigma
+    are dropped before refinement (features.contact.contact_contrast; false contacts in images without pattern).
     """
     t_start = time.perf_counter()
     image = load_sem_image(image_path)
@@ -198,6 +205,9 @@ def process_tile(
     pixel_size_nm = fov_nm[0] / image.shape[1]
     t_read = time.perf_counter()
     otsu = detect_contacts(image, method=detection)
+    found = len(otsu.centers)
+    if min_contrast > 0:
+        otsu = keep_contacts(otsu, contact_contrast(image, otsu) >= min_contrast)
     t_detect = time.perf_counter()
     refined = refine_edges(image, otsu, search_px=search_px)
     t_refine = time.perf_counter()
@@ -228,6 +238,7 @@ def process_tile(
         design=design,
         oas_path=None if oas_path is None else Path(oas_path),
         seconds=seconds,
+        low_contrast=found - len(otsu.centers),
     )
 
 

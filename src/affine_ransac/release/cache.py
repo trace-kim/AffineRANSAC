@@ -20,7 +20,7 @@ from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.results_file import _get_fields, _get_parts, _get_stitch, _put_fields, _put_parts, _put_stitch
 
 CACHE_NAME = "MaskReg_analysis.npz"
-FORMAT = 2  # 2: the stripe of each tile (D89)
+FORMAT = 3  # 2: the stripe of each tile (D89); 3: the .oas paths and positions (D93)
 
 
 def cache_paths(folder, user_cache_dir) -> list[Path]:
@@ -31,7 +31,8 @@ def cache_paths(folder, user_cache_dir) -> list[Path]:
 
 def save_cache(result: ReleaseResult, user_cache_dir) -> Path:
     """Write the result to the first cache path that can be written; returns it."""
-    arrays = {"centers": result.centers, "sizes": result.sizes, "stripe": result.stripe, "sem_nm": result.sem_nm, "design_nm": result.design_nm}
+    arrays = {"centers": result.centers, "sizes": result.sizes, "stripe": result.stripe, "sem_nm": result.sem_nm, "design_nm": result.design_nm,
+              "oas_centers": result.oas_centers}
     _put_parts(arrays, "sem_points", result.sem_points, np.empty((0, 2)))
     _put_parts(arrays, "design_points", result.design_points, np.empty((0, 2)))
     _put_stitch(arrays, "stitch", result.stitch)
@@ -39,6 +40,7 @@ def save_cache(result: ReleaseResult, user_cache_dir) -> Path:
     _put_fields(arrays, "moving", result.moving)
     info = {"format": FORMAT, "saved": time.strftime("%Y-%m-%d %H:%M"), "folder": result.folder, "kind": result.kind,
             "settings": asdict(result.settings), "tile_ids": result.tile_ids, "image_paths": result.image_paths,
+            "oas_paths": result.oas_paths,
             "log": result.log}
     arrays["info"] = np.array(json.dumps(info))
     errors = []
@@ -70,6 +72,7 @@ def load_cache(folder, user_cache_dir) -> tuple[ReleaseResult, str] | None:
                     design_points=_get_parts(arrays, "design_points"), stitch=_get_stitch(arrays, "stitch"),
                     design_stitch=_get_stitch(arrays, "design_stitch"), sem_nm=arrays["sem_nm"],
                     design_nm=arrays["design_nm"], moving=_get_fields(arrays, "moving", MovingWindowResult),
-                    image_paths=info["image_paths"], log=info["log"])
+                    image_paths=info["image_paths"], log=info["log"], oas_paths=info["oas_paths"],
+                    oas_centers=arrays["oas_centers"])
             return result, info["saved"]
     return None

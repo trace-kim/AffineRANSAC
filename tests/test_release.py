@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pyqtgraph as pg
 import pytest
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.analysis import Settings
 from affine_ransac.registration import row_means
@@ -140,8 +140,8 @@ def make_window(tmp_path):
 
 
 def test_realignment_is_a_parameter_of_image_folders():
-    assert "realign_search_um" in PARAMETERS["images"]
-    assert "realign_search_um" not in PARAMETERS["contour CSV"]
+    assert "realign" in PARAMETERS["images"]
+    assert "realign" not in PARAMETERS["contour CSV"]
 
 
 def wait(window, seconds=120):
@@ -198,6 +198,30 @@ def test_sem_images_are_loaded_on_request(tmp_path, monkeypatch):
     window.gpu_action.setChecked(False)
     window.set_gpu(False)  # rebuilt: the images loaded are kept
     assert len(window.stitching_view.image_items) == 4
+
+
+def test_the_design_pattern_is_loaded_on_request_in_stripe_colours(tmp_path, monkeypatch):
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    window.open_folder(str(tmp_path))
+    wait(window)
+    view = window.stitching_view
+    assert view.design_button.isEnabled() and not view.design_box.isEnabled()
+    window.load_design()
+    wait(window)
+    r = window.result
+    assert [k for k, _ in view.design_items] == [0, 1, 2, 3] and view.design_box.isChecked()
+    assert all(mask.max() == 1 and mask.mean() > 0.05 for mask in window.design)  # the contacts are filled
+    for k, item in view.design_items:  # each at its file's position, in its stripe's colour
+        rect = item.mapRectToParent(item.boundingRect())
+        np.testing.assert_allclose([rect.center().x(), rect.center().y()],
+                                   r.oas_centers[k] - view.origin + view.shifts["stitched"][1][k], atol=1)
+        color = QtGui.QColor(style.STRIPES[int(r.stripe[k]) % len(style.STRIPES)])
+        assert tuple(item.lut[1][:3]) == (color.red(), color.green(), color.blue())
+    reopened, _ = load_cache(tmp_path, str(tmp_path / "user cache"))
+    assert reopened.oas_paths == r.oas_paths and np.allclose(reopened.oas_centers, r.oas_centers)
 
 
 def write_layers(path, layers, empty=()):
