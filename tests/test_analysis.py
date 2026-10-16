@@ -321,6 +321,6 @@ def test_tile_loading_logs_its_timing(tmp_path):
     records = write_image_folder(tmp_path)
     lines = []
     _, tiles = analysis.load_image_tiles(records, IMAGE_SETTINGS, log=lines.append)
-    assert set(tiles[0].seconds) == {"read", "detect", "refine", "oas", "match"}
+    assert set(tiles[0].seconds) == {"read", "detect", "refine", "oas", "contacts", "shift", "reversed"}
     timing = [line for line in lines if line.startswith("Timing:")]
-    assert len(timing) == 1 and "refine" in timing[0] and "workers" in timing[0]
+    assert len(timing) == 1 and "shift" in timing[0] and "reversed tone was tried" in timing[0]

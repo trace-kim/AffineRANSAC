@@ -77,6 +77,7 @@ def choose_design_contacts(
     search_nm: float = 100.0,
     min_fraction: float = 0.5,
     tolerance_nm: float = 10.0,
+    seconds: dict | None = None,
 ) -> DesignContacts:
     """Read the design contacts with whichever tone matches the SEM contacts.
 
@@ -85,20 +86,27 @@ def choose_design_contacts(
     (matching.match_with_shift). If fewer than min_fraction of the SEM contacts (sem_local,
     tile-local nm) match a design contact, try tone reversed (frame-touching holes are dropped by
     its reader). If that does not reach min_fraction either, the better of the two is returned
-    with ok=False.
+    with ok=False. seconds, if given, gets the time of each step: contacts (normal tone read), shift (its
+    shift search), reversed (the tone-reversed read and search; 0 if not tried).
     """
+    seconds = {} if seconds is None else seconds
+    t_start = time.perf_counter()
     def result(centers, reversed_tone, fraction, match, ok):
         shift_match, tied = match
         return DesignContacts(centers, reversed_tone, fraction, ok, shift_match.shift, tied)
 
     normal, sizes = read_contacts(layout, *layer)
     normal = normal[inside_frame(normal, sizes, fov_nm)]
+    t_contacts = time.perf_counter()
     normal_fraction, normal_match = matched_fraction(normal, sem_local, search_nm, tolerance_nm)
+    t_shift = time.perf_counter()
+    seconds.update(contacts=t_contacts - t_start, shift=t_shift - t_contacts, reversed=0.0)
     if normal_fraction >= min_fraction:
         return result(normal, False, normal_fraction, normal_match, ok=True)
 
     reversed_, _ = read_contacts_tone_reversed(layout, *layer, frame_nm=tuple(fov_nm))
     reversed_fraction, reversed_match = matched_fraction(reversed_, sem_local, search_nm, tolerance_nm)
+    seconds["reversed"] = time.perf_counter() - t_shift
     if reversed_fraction >= min_fraction:
         return result(reversed_, True, reversed_fraction, reversed_match, ok=True)
     if reversed_fraction > normal_fraction:
@@ -192,18 +200,16 @@ def process_tile(
     refined = refine_edges(image, otsu, search_px=search_px)
     t_refine = time.perf_counter()
 
+    seconds = {"read": t_read - t_start, "detect": t_detect - t_read, "refine": t_refine - t_detect,
+               "oas": 0.0, "contacts": 0.0, "shift": 0.0, "reversed": 0.0}
     if oas_path is None:
         design = DesignContacts(np.empty((0, 2)), False, 0.0, ok=False)
-        t_oas = t_refine
     else:
         layout = load_layout(oas_path)
-        t_oas = time.perf_counter()
+        seconds["oas"] = time.perf_counter() - t_refine
         sem_local = pixel_to_tile_nm(refined.centers, image.shape, pixel_size_nm)
         design = choose_design_contacts(layout, layer, fov_nm, sem_local,
-                                        design_search_nm, min_match_fraction, design_tolerance_nm)
-    t_match = time.perf_counter()
-    seconds = {"read": t_read - t_start, "detect": t_detect - t_read, "refine": t_refine - t_detect,
-               "oas": t_oas - t_refine, "match": t_match - t_oas}
+                                        design_search_nm, min_match_fraction, design_tolerance_nm, seconds)
 
     return TileResult(
         image=image,

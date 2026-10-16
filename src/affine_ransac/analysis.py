@@ -343,8 +343,10 @@ def timing_summary(tiles: list[TileResult], wall_s: float, sample: list[int], wo
     one_by_one = np.isin(np.arange(len(tiles)), sample)
     expected = totals[one_by_one].sum() + totals[~one_by_one].sum() / workers
     medians = ", ".join(f"{step} {np.median([t.seconds[step] for t in tiles]):.3f}" for step in steps)
+    reversed_tried = sum(t.seconds["reversed"] > 0 for t in tiles)
     return (f"Timing: {len(tiles)} tiles loaded in {wall_s:.1f} s; per tile, median s: {medians} "
-            f"(total {np.median(totals):.3f}); the steps alone would take {expected:.1f} s with {workers} workers")
+            f"(total {np.median(totals):.3f}); the steps alone would take {expected:.1f} s with {workers} workers; "
+            f"the reversed tone was tried on {reversed_tried} tile(s)")
 
 
 def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResult], polygons) -> AnalysisResult:
