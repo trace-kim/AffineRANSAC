@@ -15,7 +15,7 @@ from pyqtgraph.Qt import QtCore
 
 from affine_ransac.release import app as release_app
 from affine_ransac.release import ftp as remote
-from affine_ransac.release.config import CONFIG_ENV, config_path, read_ftp_config
+from affine_ransac.release.config import CONFIG_ENV, config_path, read_ftp_config, read_hidden_settings
 from affine_ransac.release.ftp_dialog import FtpDialog
 from test_analysis import write_contour_folder
 from test_release import make_window, wait
@@ -115,6 +115,16 @@ def test_the_config_file_gives_the_ftp_keys(tmp_path, monkeypatch):
     assert read_ftp_config(path) == {"host": "ftp.lab", "user": "mask", "password": "a%b"}
     monkeypatch.setenv(CONFIG_ENV, str(path))
     assert config_path() == path
+
+
+def test_the_config_file_gives_the_hidden_parameters(tmp_path):
+    path = tmp_path / "maskreg.ini"
+    assert read_hidden_settings(path) == {}  # no file
+    path.write_text("[ftp]\nhost = ftp.lab\n[analysis]\nrealign_search_um = 12.5\n", encoding="utf-8")
+    assert read_hidden_settings(path) == {"realign_search_um": 12.5}
+    path.write_text("[analysis]\nmax_match_nm = 30\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown"):
+        read_hidden_settings(path)
 
 
 def make_preferences(tmp_path):

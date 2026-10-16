@@ -181,6 +181,7 @@ def process_tile(
     min_match_fraction: float = 0.5,
     detection: str = "otsu",
     design_tolerance_nm: float = 10.0,
+    match_design: bool = True,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
@@ -188,7 +189,8 @@ def process_tile(
     layer: (layer, datatype) of the contacts in the .oas. The design tone is chosen by matching
     against the refined SEM centres (choose_design_contacts: shift search up to design_search_nm,
     pairs within design_tolerance_nm). detection: "otsu", "otsu3" or "band" (method of
-    features.contact.detect_contacts).
+    features.contact.detect_contacts). match_design False: the design is read in normal tone without matching it
+    to the SEM (ok, NaN fraction), for images that do not show their own design (realign.realign_tiles).
     """
     t_start = time.perf_counter()
     image = load_sem_image(image_path)
@@ -208,8 +210,13 @@ def process_tile(
         layout = load_layout(oas_path)
         seconds["oas"] = time.perf_counter() - t_refine
         sem_local = pixel_to_tile_nm(refined.centers, image.shape, pixel_size_nm)
-        design = choose_design_contacts(layout, layer, fov_nm, sem_local,
-                                        design_search_nm, min_match_fraction, design_tolerance_nm, seconds)
+        if not match_design:
+            centers, sizes = read_contacts(layout, *layer)
+            design = DesignContacts(centers[inside_frame(centers, sizes, fov_nm)], False, np.nan, ok=True)
+            seconds["contacts"] = time.perf_counter() - t_refine - seconds["oas"]
+        else:
+            design = choose_design_contacts(layout, layer, fov_nm, sem_local,
+                                            design_search_nm, min_match_fraction, design_tolerance_nm, seconds)
 
     return TileResult(
         image=image,

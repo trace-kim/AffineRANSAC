@@ -5,6 +5,7 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -155,6 +156,22 @@ def write_image_folder(folder, design=None):
 
 
 IMAGE_SETTINGS = Settings(layer=1, datatype=0, detection="otsu")
+
+
+def test_image_folder_with_realignment_runs_the_notebook_flow(tmp_path):
+    from test_pipeline import LATTICE, visible
+    offset = np.array([270.0, -180.0])  # design − SEM: each .oas is drawn for a field this far from its image
+    records = write_image_folder(tmp_path, design=lambda k, nominal: visible(LATTICE + offset - nominal, margin=0))
+    lines = []
+
+    result = analyse_images(tmp_path, records, replace(IMAGE_SETTINGS, realign_search_um=1.0), log=lines.append)
+
+    assert any(line.startswith("Realignment: design - SEM offset") for line in lines)
+    assert any(line.startswith("!! Realignment") for line in lines)  # the test lattice is fully periodic
+    assert all(t.design.ok and t.oas_path is None for t in result.images.tiles)
+    assert result.images.design_polygons == [[], [], [], []]
+    errors = np.linalg.norm(result.sets["uncorrected"].sem_nm - result.sets["uncorrected"].design_nm, axis=1)
+    assert len(errors) > 50 and np.median(errors) < 10  # paired to the design the images show (one pitch: 90 nm)
 
 
 def test_image_folder_runs_the_notebook_flow(tmp_path):

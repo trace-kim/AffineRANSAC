@@ -83,6 +83,17 @@ def test_tile_contact_sizes_of_sem_discs_and_design_squares(tmp_path):
     assert np.median(banded[contacts, 1]) < np.median(sem[contacts, 1])
 
 
+def test_process_tile_can_read_the_design_without_matching_it(tmp_path):
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
+    write_design(tmp_path / "tile.oas", visible(LATTICE, margin=0) + 45.0)  # half a pitch off: no match
+
+    tile = process_tile(tmp_path / "tile.jpg", tmp_path / "tile.oas", (0.0, 0.0), (FOV, FOV), layer=(1, 0),
+                        match_design=False)
+
+    assert tile.design.ok and np.isnan(tile.design.match_fraction)
+    assert len(tile.design.centers) > 0 and np.all(np.abs(tile.design.centers) < FOV / 2)  # frame contacts dropped
+
+
 def test_process_tile_without_oas(tmp_path):
     write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
     tile = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0))

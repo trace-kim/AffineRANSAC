@@ -39,6 +39,7 @@ from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout
 from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, process_tile, slipped_pairs,
                                     stitch_design, stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points,
                                     tile_neighbours, tile_stripes)
+from affine_ransac.realign import realign_tiles
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, merge_observations, merge_values,
                                         paired_errors)
 from affine_ransac.stitching import placement_corrections
@@ -91,13 +92,17 @@ class Settings:
     min_match_fraction: float = setting(0.5, "A design tone is accepted if at least this fraction of the SEM "
                                              "contacts match it")
     stitch_refined: bool = setting(True, "Stitch with the refined centres (off: Otsu centres)")
+    realign_search_um: float = setting(0.0, "Images all taken at one wrong offset from their design (failed SEM "
+                                            "alignment): 0 = off; else the largest offset searched, µm. The SEM is "
+                                            "stitched alone, matched to the design of all .oas files together, and "
+                                            "every image gets the design in its shifted field (normal tone only)")
     spread_flag_nm: float = setting(2.0, "Stitch viewer: ring merged contacts whose SEM observations differ by more")
     arrow_scale: float = setting(10.0, "Stitch viewer: error lines are drawn this many times longer than the error")
 
 
 CSV_ONLY = {"tile_margin_nm"}
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "design_search_nm", "design_tolerance_nm",
-               "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale"}
+               "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale", "realign_search_um"}
 STITCH_METHODS = ("all overlaps", "measurement order first")
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "stitch_method": STITCH_METHODS}
 
@@ -123,6 +128,7 @@ def check_settings(s: Settings, kind: str):
               "intrafield_nodes": (s.intrafield_nodes >= 2, "must be >= 2"),
               "ransac_delay_ms": (s.ransac_delay_ms >= 0, "must be >= 0"),
               "tile_margin_nm": (s.tile_margin_nm >= 0, "must be >= 0"),
+              "realign_search_um": (s.realign_search_um >= 0, "must be >= 0"),
               "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]")}
     problems += [f"{name} {rule} (is {getattr(s, name)})" for name, (ok, rule) in limits.items()
                  if name in used and not ok]
@@ -261,7 +267,8 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
     s = settings
     log, lines = _recording(log)
     tile_ids, tiles = load_image_tiles(records, s, log)
-    polygons = [read_polygons(load_layout(r.oas_path), s.layer, s.datatype) if r.oas_path else [] for r in records]
+    polygons = [read_polygons(load_layout(r.oas_path), s.layer, s.datatype) if t.oas_path else []
+                for r, t in zip(records, tiles)]  # realigned tiles have no .oas of their own: no outlines
     result = _analyse_tiles(str(folder), s, log, tile_ids, tiles, polygons)
     result.log = lines
     return result
@@ -281,19 +288,25 @@ def _process_tile(arguments: tuple) -> TileResult:
 def load_image_tiles(records: list, settings: Settings, log: Callable[[str], None] = print,
                      progress: Callable[[int, int], None] | None = None) -> tuple[list[str], list[TileResult]]:
     """The tile ids and loaded tiles (process_tile) of an image folder's records, after the checks (settings,
-    records, sample tiles matched to their design). progress(done, total) after every tile."""
+    records, sample tiles matched to their design). progress(done, total) after every tile.
+    settings.realign_search_um > 0: the design is read without matching, then the tiles are realigned
+    (realign.realign_tiles) before the flagged tiles are counted."""
     s = settings
     layer = (s.layer, s.datatype)
     check_settings(s, "images")
     check_image_records(records, layer)
     tile_ids = [r.tile_id for r in records]
+    realign = s.realign_search_um > 0
+    if realign:
+        log(f"!! Realignment on (realign_search_um {s.realign_search_um:g}): images are not matched to their own .oas")
     without_oas = [r.tile_id for r in records if r.oas_path is None]
     if without_oas:
         log(f"!! {len(without_oas)} image(s) without an .oas: {without_oas}")
 
     def arguments(r):  # plain values only, so they can be sent to a worker process
         return (r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), layer,
-                s.search_px, s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm)
+                s.search_px, s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm,
+                not realign)
 
     # A few tiles first: if none matches its design, the settings or the data are wrong; stop now.
     with_oas = [k for k, r in enumerate(records) if r.oas_path is not None]
@@ -304,12 +317,13 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
         loaded[k] = process_tile(*arguments(records[k]))
         if progress is not None:
             progress(len(loaded), len(records))
-    if not any(t.design.ok for t in loaded.values()):
+    if not realign and not any(t.design.ok for t in loaded.values()):
         fractions = {tile_ids[k]: round(t.design.match_fraction, 2) for k, t in loaded.items()}
         raise ValueError(f"No design tone matched the SEM in the sample tiles {fractions} (fraction of SEM contacts "
                          f"matched; min_match_fraction {s.min_match_fraction}): check layer / datatype, detection, "
                          f"design_search_nm and design_tolerance_nm")
-    log(f"Sample tiles matched to their design: {sum(t.design.ok for t in loaded.values())} of {len(loaded)}")
+    if not realign:
+        log(f"Sample tiles matched to their design: {sum(t.design.ok for t in loaded.values())} of {len(loaded)}")
 
     # The other tiles in parallel, about one per physical core (each tile is independent); map keeps their order.
     rest = [k for k in range(len(records)) if k not in loaded]
@@ -326,9 +340,12 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
                 log(f"{done} of {len(records)} tiles loaded and detected")
     tiles = [loaded[k] for k in range(len(records))]
     log(timing_summary(tiles, time.perf_counter() - start, sample, workers))
+    if realign:
+        tiles = realign_tiles(tiles, s, log)
     flagged = [tile_ids[k] for k, t in enumerate(tiles) if not t.design.ok]
     if flagged:
-        log(f"!! {len(flagged)} tile(s) FLAGGED: neither design tone matches the SEM (or no .oas): {flagged}")
+        reason = "no design contact in its realigned field" if realign else             "neither design tone matches the SEM (or no .oas)"
+        log(f"!! {len(flagged)} tile(s) FLAGGED: {reason}: {flagged}")
     if len(flagged) == len(tiles):
         raise RuntimeError("No tile matched its design: nothing can be measured (see the flagged tiles above)")
     return tile_ids, tiles
