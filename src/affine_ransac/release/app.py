@@ -7,7 +7,7 @@ Start it with:  python -m affine_ransac.release.app
 - File > Folders: the folder of maskreg.ini and the download folder (folders_dialog.py).
 - File > Open folder: a folder of contour CSVs or of SEM images. If it holds a saved analysis (cache.py), that is
   shown at once; otherwise the folder is analysed (release/analysis.py) with the current parameters and the
-  result saved there.
+  result saved there. File > Open recent: the last folders whose result was shown, opened the same way.
 - Analysis > Restart analysis: analyse the open folder again (current parameters) and save over the old result.
 - Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart.
 - View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
@@ -18,6 +18,7 @@ Start it with:  python -m affine_ransac.release.app
 
 import configparser
 import json
+import os
 import threading
 import time
 import traceback
@@ -42,6 +43,7 @@ from affine_ransac.release.views import ContactSizeTab, RegistrationView, Stitch
 
 APP = "MaskReg"
 TITLE = "MaskReg - Mask Registration Analyzer"
+RECENT = 10  # folders in File > Open recent
 
 
 def opengl_works() -> bool:
@@ -158,6 +160,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.actions = {}
         file_menu = self.menuBar().addMenu("&File")
         self._action(file_menu, "open", "&Open folder...", "Ctrl+O", self.choose_folder)
+        self.recent_menu = file_menu.addMenu("Open &recent")
+        self.recent_menu.aboutToShow.connect(self.fill_recent_menu)
         self._action(file_menu, "ftp", "Browse &FTP server...", "Ctrl+Shift+O", self.browse_ftp)
         file_menu.addSeparator()
         file_menu.addAction("Fol&ders...", lambda: FoldersDialog(self.preferences, self).exec())
@@ -196,7 +200,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.actions[name] = action
 
     def welcome(self):
-        label = QtWidgets.QLabel("<h2>MaskReg</h2><p>Open a data folder with <b>File &gt; Open folder</b> (Ctrl+O).</p>"
+        label = QtWidgets.QLabel("<h2>MaskReg</h2><p>Open a data folder with <b>File &gt; Open folder</b> (Ctrl+O), "
+                                 "or one opened before with <b>File &gt; Open recent</b>.</p>"
                                  "<p>A folder analysed before opens its saved result at once.</p>",
                                  alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet(f"color: {style.MUTED}")
@@ -208,6 +213,37 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         if folder:
             self.preferences.setValue("last_folder", folder)
             self.open_folder(folder)
+
+    def recent_folders(self) -> list[str]:
+        try:
+            return json.loads(self.preferences.value("recent_folders", "") or "[]")
+        except ValueError:
+            return []
+
+    def remember_folder(self, folder: str):
+        """Put the folder at the top of File > Open recent (once; at most RECENT folders)."""
+        folder = str(Path(folder))
+        same = lambda other: os.path.normcase(other) == os.path.normcase(folder)
+        recent = [folder] + [f for f in self.recent_folders() if not same(f)]
+        self.preferences.setValue("recent_folders", json.dumps(recent[:RECENT]))
+
+    def fill_recent_menu(self):
+        """File > Open recent: the folders shown last, newest first; a folder gone from the disk is greyed."""
+        self.recent_menu.clear()
+        recent = self.recent_folders()
+        for folder in recent:
+            found = Path(folder).is_dir()
+            action = self.recent_menu.addAction(f"{Path(folder).name}   ({folder}){'' if found else '  - not found'}")
+            action.setEnabled(found)
+            action.triggered.connect(lambda checked=False, f=folder: self.open_recent(f))
+        if not recent:
+            self.recent_menu.addAction("No folders opened yet").setEnabled(False)
+        self.recent_menu.addSeparator()
+        self.recent_menu.addAction("Clear list", lambda: self.preferences.setValue("recent_folders", "[]"))
+
+    def open_recent(self, folder: str):
+        self.preferences.setValue("last_folder", folder)
+        self.open_folder(folder)
 
     def browse_ftp(self):
         path = config_path(self.preferences.value("config_folder", ""))
@@ -377,6 +413,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def show_new_result(self, result):
         self.images = self.design = None  # those of another result
         self.show_result(result)
+        self.remember_folder(result.folder)
 
     def show_images(self, images):
         self.images = images
@@ -429,6 +466,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     def update_actions(self):
         self.actions["open"].setEnabled(not self.busy)
+        self.recent_menu.menuAction().setEnabled(not self.busy)
         self.actions["ftp"].setEnabled(not self.busy)
         self.actions["restart"].setEnabled(not self.busy and self.folder is not None)
         self.actions["parameters"].setEnabled(not self.busy)

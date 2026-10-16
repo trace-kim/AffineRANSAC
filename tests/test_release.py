@@ -184,6 +184,37 @@ def test_opening_a_folder_analyses_it_once_then_opens_the_saved_result(tmp_path,
     assert reopened.settings.moving_window_um == 3.0
 
 
+def test_folders_shown_are_listed_in_open_recent_newest_first(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    write_contour_folder(data)
+    window = make_window(tmp_path)
+    for k in range(12):
+        (tmp_path / f"old{k}").mkdir()
+        window.remember_folder(str(tmp_path / f"old{k}"))
+    (tmp_path / "old11").rmdir()  # gone from the disk
+
+    window.open_folder(data.as_posix())  # forward slashes, as the folder dialog gives them
+    wait(window)
+    recent = window.recent_folders()
+    assert len(recent) == release_app.RECENT and recent[0] == str(data) and recent[1] == str(tmp_path / "old11")
+    window.remember_folder(str(tmp_path / "old10"))
+    window.remember_folder(str(data))  # the same folder moves up, once
+    assert window.recent_folders()[:2] == [str(data), str(tmp_path / "old10")]
+
+    window.fill_recent_menu()
+    actions = [a for a in window.recent_menu.actions() if not a.isSeparator()]
+    assert len(actions) == release_app.RECENT + 1 and actions[-1].text() == "Clear list"
+    gone = next(a for a in actions if "old11" in a.text())
+    assert "not found" in gone.text() and not gone.isEnabled()
+    opened = []
+    monkeypatch.setattr(window, "open_folder", opened.append)
+    actions[1].trigger()
+    assert opened == [str(tmp_path / "old10")] and window.preferences.value("last_folder") == opened[0]
+    actions[-1].trigger()
+    assert window.recent_folders() == []
+
+
 def test_sem_images_are_loaded_on_request(tmp_path, monkeypatch):
     records = write_image_folder(tmp_path)
     monkeypatch.setattr(release_app, "image_records", lambda folder: records)
