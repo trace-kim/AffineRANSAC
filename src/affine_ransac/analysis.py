@@ -21,6 +21,7 @@ The AnalysisResult holds what the analysis window shows (view_analysis.analysis_
 `log` receives what the notebooks print (counts, failures).
 """
 
+import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -265,6 +266,12 @@ def analyse_images(folder, records: list, settings: Settings, log: Callable[[str
     return result
 
 
+def worker_count() -> int:
+    """Worker processes for loading tiles: half the logical cores, about one per physical core (D87).
+    One per logical core ran out of memory on large tiles (each worker holds a whole tile's arrays)."""
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
 def _process_tile(arguments: tuple) -> TileResult:
     """process_tile(*arguments); at module level so that worker processes can run it."""
     return process_tile(*arguments)
@@ -302,10 +309,12 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
                          f"design_search_nm and design_tolerance_nm")
     log(f"Sample tiles matched to their design: {sum(t.design.ok for t in loaded.values())} of {len(loaded)}")
 
-    # The other tiles in parallel, one per CPU core (each tile is independent); map keeps their order.
+    # The other tiles in parallel, about one per physical core (each tile is independent); map keeps their order.
     rest = [k for k in range(len(records)) if k not in loaded]
     done = len(loaded)
-    with ProcessPoolExecutor() as pool:
+    workers = worker_count()
+    log(f"Loading the other {len(rest)} tiles in {workers} worker processes")
+    with ProcessPoolExecutor(max_workers=workers) as pool:
         for k, tile in zip(rest, pool.map(_process_tile, [arguments(records[k]) for k in rest])):
             loaded[k] = tile
             done += 1

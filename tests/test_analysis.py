@@ -296,6 +296,15 @@ def test_tiles_loaded_in_parallel_equal_tiles_loaded_one_by_one(tmp_path):
         assert tile.design.ok == alone.design.ok
 
 
+def test_worker_count_is_half_the_logical_cores_at_least_one(monkeypatch):
+    monkeypatch.setattr(analysis.os, "cpu_count", lambda: 16)
+    assert analysis.worker_count() == 8
+    monkeypatch.setattr(analysis.os, "cpu_count", lambda: 1)
+    assert analysis.worker_count() == 1
+    monkeypatch.setattr(analysis.os, "cpu_count", lambda: None)
+    assert analysis.worker_count() == 1
+
+
 def test_no_design_match_in_the_sample_tiles_stops_after_them(tmp_path, monkeypatch):
     rng = np.random.default_rng(3)
     records = write_image_folder(tmp_path, design=lambda k, nominal: rng.uniform(-300, 300, (60, 2)))  # no lattice
