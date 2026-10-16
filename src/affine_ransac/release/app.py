@@ -8,7 +8,8 @@ Start it with:  python -m affine_ransac.release.app
 - File > Open folder: a folder of contour CSVs or of SEM images. If it holds a saved analysis (cache.py), that is
   shown at once; otherwise the folder is analysed (release/analysis.py) with the current parameters and the
   result saved there. File > Open recent: the last folders whose result was shown, opened the same way.
-- Analysis > Restart analysis: analyse the open folder again (current parameters) and save over the old result.
+- Analysis > Restart analysis: analyse the open folder again (current parameters) and save the new result; the old
+  one is kept as a backup (the last 5, cache.py).
 - Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart.
 - View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
   Contact size tab (hidden unless turned on; remembered): area, xCD and yCD of every contact, measured on request
@@ -321,7 +322,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles)
         progress(1.0, "Saving the result")
         try:
-            log(f"Result saved: {save_cache(result, self.cache_dir)}")
+            log(f"Result saved: {save_cache(result, self.cache_dir, log=log)}")
         except OSError as error:
             log(f"!! {error}")
         return result
@@ -368,7 +369,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             log(f"Contact sizes of {len(sizes.sem)} contacts measured")
             progress(1.0, "Saving the result")
             try:
-                log(f"Result saved with them: {save_cache(replace(result, contact_sizes=sizes), cache_dir)}")
+                saved = save_cache(replace(result, contact_sizes=sizes), cache_dir, backup=False)  # the same run
+                log(f"Result saved with them: {saved}")
             except OSError as error:
                 log(f"!! {error}")
             return sizes

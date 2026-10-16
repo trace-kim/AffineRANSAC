@@ -17,7 +17,7 @@ from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
 from affine_ransac.release.analysis import PARAMETERS, analyse_folder, measure_contact_sizes, read_display_images
 from affine_ransac.release.app import MaskRegWindow
-from affine_ransac.release.cache import CACHE_NAME, cache_paths, load_cache, save_cache
+from affine_ransac.release.cache import BACKUPS, CACHE_NAME, cache_paths, load_cache, save_cache
 from affine_ransac.release.views import (NEEDS_TILES, NOT_IMAGES, ContactSizeTab, ContactSizeView, RegistrationView,
                                          StitchingView)
 from test_analysis import IMAGE_SETTINGS, STAGE, write_contour_folder, write_image_folder
@@ -82,6 +82,39 @@ def test_the_cache_is_saved_in_the_folder_or_else_in_the_user_cache(tmp_path):
     (data / CACHE_NAME).mkdir()  # the data folder's file cannot be written
     assert save_cache(result, user) == cache_paths(data, user)[1]
     assert load_cache(data, user) is not None
+
+
+def test_a_new_run_keeps_the_last_five_runs_it_replaced_as_backups(tmp_path, monkeypatch):
+    data, user = tmp_path / "data", tmp_path / "user"
+    data.mkdir()
+    write_contour_folder(data)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(data, "contour CSV", Settings(), log=lambda line: None)
+    current, backups = data / CACHE_NAME, data / BACKUPS
+    start = time.mktime((2026, 10, 16, 9, 0, 0, 0, 0, -1))  # local time, as the names
+    for k in range(7):
+        save_cache(replace(result, log=[f"run {k}"]), user)
+        os.utime(current, (start + 60 * k, start + 60 * k))  # run k saved at 09:0k
+    stamps = lambda: [p.name.removeprefix("MaskReg_analysis_") for p in sorted(backups.iterdir())]
+    assert stamps() == [f"20261016-09{k:02d}00.npz" for k in range(1, 6)]  # runs 1-5; run 0, the oldest, deleted
+    assert load_cache(data, user)[0].log == ["run 6"]
+    with np.load(backups / "MaskReg_analysis_20261016-090500.npz") as arrays:
+        assert "run 5" in str(arrays["info"])
+
+    os.utime(current, (start + 300, start + 300))  # run 6 saved in the same second as run 5
+    save_cache(replace(result, log=["run 7"]), user)
+    assert stamps()[-2:] == ["20261016-090500.npz", "20261016-090501.npz"] and len(stamps()) == 5
+
+    save_cache(replace(result, log=["run 7, sizes added"]), user, backup=False)  # the same run: no backup
+    assert len(stamps()) == 5 and load_cache(data, user)[0].log == ["run 7, sizes added"]
+
+    def disk_full(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(np, "savez_compressed", disk_full)
+    with pytest.raises(OSError, match="could not be saved"):
+        save_cache(replace(result, log=["run 8"]), user)
+    assert load_cache(data, user)[0].log == ["run 7, sizes added"] and len(stamps()) == 5
+    assert not list(tmp_path.rglob("*.part"))
 
 
 def test_figures_are_white_and_label_mask_coordinates(tmp_path):
@@ -175,13 +208,14 @@ def test_opening_a_folder_analyses_it_once_then_opens_the_saved_result(tmp_path,
     wait(window)
     assert "Saved analysis of" in window.log_view.toPlainText() and window.result is not analysed
 
-    # Parameters changed: the restart uses them and saves over the old result.
+    # Parameters changed: the restart uses them and saves over the old result, which is kept as a backup.
     window.preferences.setValue("settings", '{"moving_window_um": 3.0, "moving_step_um": 1.0}')
     window.restart()
     wait(window)
     assert window.result.settings.moving_window_um == 3.0
     reopened, _ = load_cache(data, tmp_path / "user cache")
     assert reopened.settings.moving_window_um == 3.0
+    assert len(list((data / BACKUPS).iterdir())) == 1 and "Previous run kept as" in window.log_view.toPlainText()
 
 
 def test_folders_shown_are_listed_in_open_recent_newest_first(tmp_path, monkeypatch):

@@ -7,10 +7,16 @@ The tiles kept to measure them are not saved (the images are large).
 
 Where: CACHE_NAME in the data folder; if that cannot be written (read-only share), the same file under the
 user's own cache folder, named after the data folder's path. Loading tries both, data folder first.
+
+Backups (D98): a new run moves the run it replaces into the BACKUPS folder next to it, named by when that run was
+saved; the newest KEEP_BACKUPS are kept. A file is written as <name>.part first and renamed when complete, so a
+failed save leaves the previous run in place.
 """
 
+import contextlib
 import hashlib
 import json
+import os
 import time
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -24,6 +30,8 @@ from affine_ransac.results_file import _get_fields, _get_parts, _get_stitch, _pu
 
 CACHE_NAME = "MaskReg_analysis.npz"
 FORMAT = 3  # 2: the stripe of each tile (D89); 3: the .oas paths and positions (D93)
+BACKUPS = "MaskReg_backups"  # folder of the earlier runs, next to the saved run
+KEEP_BACKUPS = 5
 
 
 def cache_paths(folder, user_cache_dir) -> list[Path]:
@@ -32,8 +40,9 @@ def cache_paths(folder, user_cache_dir) -> list[Path]:
     return [Path(folder) / CACHE_NAME, Path(user_cache_dir) / f"{key}_{CACHE_NAME}"]
 
 
-def save_cache(result: ReleaseResult, user_cache_dir) -> Path:
-    """Write the result to the first cache path that can be written; returns it."""
+def save_cache(result: ReleaseResult, user_cache_dir, backup: bool = True, log=lambda text: None) -> Path:
+    """Write the result to the first cache path that can be written; returns it. backup: the result is a new run,
+    so the run it replaces is kept as a backup; False: the same run saved again (e.g. with its contact sizes)."""
     arrays = {"centers": result.centers, "sizes": result.sizes, "stripe": result.stripe, "sem_nm": result.sem_nm, "design_nm": result.design_nm,
               "oas_centers": result.oas_centers}
     _put_parts(arrays, "sem_points", result.sem_points, np.empty((0, 2)))
@@ -52,14 +61,35 @@ def save_cache(result: ReleaseResult, user_cache_dir) -> Path:
     arrays["info"] = np.array(json.dumps(info))
     errors = []
     for path in cache_paths(result.folder, user_cache_dir):
+        part = path.with_name(path.name + ".part")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "wb") as f:  # a file object: np.savez would add .npz to a name without it
+            with open(part, "wb") as f:  # a file object: np.savez would add .npz to a name without it
                 np.savez_compressed(f, **arrays)
+            if backup and path.is_file():
+                log(f"Previous run kept as {back_up(path)}")
+            os.replace(part, path)
             return path
         except OSError as error:
             errors.append(f"{path}: {error}")
+            with contextlib.suppress(OSError):
+                part.unlink(missing_ok=True)
     raise OSError("The analysis could not be saved: " + "; ".join(errors))
+
+
+def back_up(path: Path) -> Path:
+    """Move the saved run `path` into the BACKUPS folder next to it, named by when it was saved; delete all but the
+    newest KEEP_BACKUPS there. Returns where it went."""
+    folder = path.parent / BACKUPS
+    folder.mkdir(exist_ok=True)
+    saved = path.stat().st_mtime
+    # A backup saved in the same second already: take the next free second, so the names stay in saving order.
+    while (target := folder / f"{path.stem}_{time.strftime('%Y%m%d-%H%M%S', time.localtime(saved))}.npz").exists():
+        saved += 1
+    os.replace(path, target)
+    for old in sorted(folder.glob(f"{path.stem}_*.npz"))[:-KEEP_BACKUPS]:
+        old.unlink()
+    return target
 
 
 def load_cache(folder, user_cache_dir) -> tuple[ReleaseResult, str] | None:
