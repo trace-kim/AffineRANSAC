@@ -31,8 +31,7 @@ from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS, PARAMETERS, analyse_folder, read_display_images
 from affine_ransac.release.cache import load_cache, save_cache
-from affine_ransac.release.config import (HIDDEN, config_path, default_download_root, read_ftp_config,
-                                          read_hidden_settings)
+from affine_ransac.release.config import config_path, default_download_root, read_ftp_config
 from affine_ransac.release.ftp_dialog import FtpDialog
 from affine_ransac.release.views import RegistrationView, StitchingView
 
@@ -360,21 +359,13 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.log_view.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")
 
     def settings(self) -> Settings:
-        """The parameters chosen last (the release's defaults for any not saved); the hidden ones (config.HIDDEN)
-        only from maskreg.ini, never from what was saved, so removing them from the file turns them off."""
+        """The parameters chosen last (the release's defaults for any not saved)."""
         try:
             saved = json.loads(self.preferences.value("settings", "") or "{}")
         except ValueError:
             saved = {}
-        known = {f.name for f in fields(Settings)} - set(HIDDEN)
-        try:
-            hidden = read_hidden_settings(config_path())
-        except (ValueError, configparser.Error) as error:
-            self.log(f"!! maskreg.ini [analysis] ignored: {error}")
-            hidden = {}
-        for name, value in hidden.items():
-            self.log(f"Hidden parameter from {config_path()}: {name} = {value:g}")
-        return replace(DEFAULTS, **{name: value for name, value in saved.items() if name in known}, **hidden)
+        known = {f.name for f in fields(Settings)}
+        return replace(DEFAULTS, **{name: value for name, value in saved.items() if name in known})
 
     def closeEvent(self, event):
         if self.busy and QtWidgets.QMessageBox.question(self, TITLE, "Still working. Quit anyway?") != \

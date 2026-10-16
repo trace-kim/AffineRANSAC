@@ -33,7 +33,7 @@ COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched"
           "moving_window_um", "moving_step_um", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + ["detection", "search_px", "design_search_nm",
-                                  "design_tolerance_nm", "min_match_fraction", "stitch_refined"]}
+                                  "design_tolerance_nm", "min_match_fraction", "stitch_refined", "realign_search_um"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 

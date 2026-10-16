@@ -139,16 +139,9 @@ def make_window(tmp_path):
     return MaskRegWindow(preferences, cache_dir=str(tmp_path / "user cache"))
 
 
-def test_hidden_parameters_come_only_from_the_config_file(tmp_path, monkeypatch):
-    path = tmp_path / "maskreg.ini"
-    monkeypatch.setenv("MASKREG_CONFIG", str(path))
-    window = make_window(tmp_path)
-    window.preferences.setValue("settings", '{"realign_search_um": 7.0, "max_match_nm": 40.0}')
-    assert window.settings().realign_search_um == 0.0  # a saved value is ignored
-    assert window.settings().max_match_nm == 40.0
-    assert "realign_search_um" not in PARAMETERS["images"]  # not in the Parameters dialog
-    path.write_text("[analysis]\nrealign_search_um = 10\n", encoding="utf-8")
-    assert window.settings().realign_search_um == 10.0
+def test_realignment_is_a_parameter_of_image_folders():
+    assert "realign_search_um" in PARAMETERS["images"]
+    assert "realign_search_um" not in PARAMETERS["contour CSV"]
 
 
 def wait(window, seconds=120):
