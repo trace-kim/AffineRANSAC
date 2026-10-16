@@ -30,13 +30,14 @@ from pathlib import Path
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
+from affine_ransac import __version__
 from affine_ransac.analysis import Settings
 from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
-from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, analyse_folder, measure_contact_sizes,
+from affine_ransac.release.analysis import (ANALYSIS, DEFAULTS, PARAMETERS, analyse_folder, measure_contact_sizes,
                                            read_design_images, read_display_images)
-from affine_ransac.release.cache import load_cache, save_cache
+from affine_ransac.release.cache import FORMAT, load_cache, made_by, save_cache
 from affine_ransac.release.config import config_path, download_root, read_ftp_config
 from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
@@ -289,15 +290,26 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
         def work(log, progress):
             progress(0.0, "Looking for a saved analysis")
-            cached = load_cache(folder, cache_dir)
+            cached = load_cache(folder, cache_dir, log)
             if cached is not None:
                 result, saved = cached
-                log(f"Saved analysis of {saved} opened (Analysis > Restart analysis runs it again)")
+                log(f"Saved analysis of {saved} opened, made by {made_by(result.version)} (Analysis > Restart "
+                    f"analysis runs it again)")
                 return result
-            log("No saved analysis: analysing the folder")
+            log("No saved analysis to show: analysing the folder")
             return self._analyse_and_save(folder, settings, keep_tiles, log, progress)
         self.folder = folder
-        self.run(f"Opening {Path(folder).name}", work, self.show_new_result)
+        self.run(f"Opening {Path(folder).name}", work, self.show_opened)
+
+    def show_opened(self, result):
+        """Show the folder's result. A saved run of an older analysis is flagged, and the user asked whether to
+        analyse the folder again."""
+        self.show_new_result(result)
+        if result.analysis < ANALYSIS and QtWidgets.QMessageBox.question(
+                self, TITLE, f"This analysis was made by {made_by(result.version)}. MaskReg {__version__} analyses "
+                f"differently, so its numbers may differ.\n\nAnalyse the folder again now? The saved analysis is "
+                f"kept as a backup.") == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.restart()
 
     def restart(self):
         folder, settings, keep_tiles = self.folder, self.settings(), self.size_action.isChecked()
@@ -317,7 +329,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         """Analyse the folder (in the background thread) and save the result; a failed save is only logged.
         keep_tiles: an image folder's result keeps its tiles, to measure the contact sizes on."""
         kind = folder_kind(Path(folder))
-        log(f"Analysing a {kind} folder")
+        log(f"Analysing a {kind} folder with MaskReg {__version__} (analysis {ANALYSIS})")
         records = image_records(folder) if kind == "images" else None
         result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles)
         progress(1.0, "Saving the result")
@@ -406,10 +418,11 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             self.show_result(self.result)  # draw again with the new choice
 
     def about(self):
-        QtWidgets.QMessageBox.about(self, "About MaskReg", "<b>MaskReg</b> - mask registration analyzer<br><br>"
-                                    "Stitches the SEM tiles of a folder, compares every contact with the design and "
-                                    "reports the registration error, measured − design, after a moving-window "
-                                    "affine along y.")
+        QtWidgets.QMessageBox.about(self, "About MaskReg", f"<b>MaskReg {__version__}</b> - mask registration "
+                                    f"analyzer<br><br>Stitches the SEM tiles of a folder, compares every contact with "
+                                    f"the design and reports the registration error, measured − design, after a "
+                                    f"moving-window affine along y.<br><br>Saved analyses: file format {FORMAT}, "
+                                    f"analysis {ANALYSIS}.")
 
     # --- showing a result -------------------------------------------------------------------------
     def show_new_result(self, result):
@@ -443,7 +456,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.result = result
         self.setWindowTitle(f"{TITLE} - {Path(result.folder).name}")
         self.status.set_idle(f"{Path(result.folder).name}: {len(result.tile_ids)} tiles, {len(result.design_nm)} "
-                             f"contacts ({result.kind} folder)  |  drawing on the {'GPU' if use_opengl else 'CPU'}")
+                             f"contacts ({result.kind} folder)  |  drawing on the {'GPU' if use_opengl else 'CPU'}"
+                             + run_note(result))
         self.update_actions()
 
     # --- background jobs --------------------------------------------------------------------------
@@ -464,7 +478,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.log(text)
         self.status.set_idle("Failed - see View > Log")
         self.update_actions()
-        QtWidgets.QMessageBox.critical(self, TITLE, text.strip().splitlines()[-1])
+        last = text.strip().splitlines()[-1]  # "SomeError: message"; the log has the whole traceback
+        QtWidgets.QMessageBox.critical(self, TITLE, last.partition(": ")[2] or last)
 
     def update_actions(self):
         self.actions["open"].setEnabled(not self.busy)
@@ -499,6 +514,15 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         event.accept()
+
+
+def run_note(result) -> str:
+    """The status bar's note on a run made by another analysis than this MaskReg's ("" for its own)."""
+    if result.analysis < ANALYSIS:
+        return f"  |  OUTDATED: made by {made_by(result.version)}; Analysis > Restart analysis updates it"
+    if result.analysis > ANALYSIS:
+        return f"  |  made by {made_by(result.version)}, newer than this MaskReg {__version__}"
+    return ""
 
 
 def main():

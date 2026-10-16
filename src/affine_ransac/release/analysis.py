@@ -18,6 +18,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from affine_ransac import __version__
 from affine_ransac.analysis import (ContactSizes, Settings, check_settings, detect_layer, load_image_tiles,
                                    merged_contact_sizes, report_stitching)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
@@ -31,6 +32,10 @@ from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs,
 from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
+# Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
+# "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
+# lower number is shown as outdated.
+ANALYSIS = 1
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -77,6 +82,8 @@ class ReleaseResult:
     oas_centers: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
     contact_sizes: ContactSizes | None = None  # images, once measured (measure_contact_sizes); saved
     tiles: LoadedTiles | None = None           # images run with keep_tiles; not saved
+    version: str = __version__                 # the MaskReg that made the run ("": one before versions were saved)
+    analysis: int = ANALYSIS                   # and its ANALYSIS (0: before they were saved)
 
 
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,

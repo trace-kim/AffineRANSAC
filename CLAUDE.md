@@ -19,6 +19,7 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 - Notebooks (`notebooks/`) are for the user to test implemented functions on **real data** in VS Code. A notebook is a settings cell (paths/params) plus short cells that call library functions and print results. **No demo modes or synthetic-data code.** Commit notebooks with outputs cleared.
 - Every new dependency goes in `pyproject.toml`: in `dependencies` if production code needs it, otherwise in the `dev` extra. When dependencies change, tell the user to re-run `pip install -e ".[dev]"`.
 - Always seed the RNG. Validate with synthetic data (spec §10).
+- MaskReg (`release/`) and the library code it runs: a change that alters its results raises `ANALYSIS`, one that makes older run files unreadable raises `FORMAT`; record the new values in `tests/test_release_versions.py` and add a `CHANGELOG.md` line under *Unreleased* in the same commit (spec "Versions and run files", D99). Change `__version__` only when the user releases a version.
 
 ## Remote agent (one-way handoff)
 The real data (SEM images, `.oas`, metadata CSV) is only on the user's remote machine. Data-specific work there is done by a **remote agent**: **opencode** with an unknown model, *not* Claude Code. Its standing rules are in `AGENTS.md`.
