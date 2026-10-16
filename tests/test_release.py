@@ -240,24 +240,25 @@ def test_release_defaults(tmp_path):
 
 
 def test_the_scan_direction_comes_from_the_file_numbers():
+    from affine_ransac.pipeline import tile_stripes
     from affine_ransac.release.analysis import file_numbers, scan_direction
     # 2 stripes x 3 images, serpentine: stripe 1 measured downward (CD1 at the top), stripe 2 upward.
     centers = np.array([(0, 2), (0, 1), (0, 0), (1, 0), (1, 1), (1, 2)], dtype=float) * 2600
-    sizes = np.full((6, 2), 2880.0)
     names = [f"CD{k:06d}" for k in range(1, 7)]
     lines = []
-    assert scan_direction(names, centers, sizes, True, lines.append) is False
+    assert scan_direction(names, centers, tile_stripes(centers), True, lines.append) is False
     assert lines == ["Scan: first stripe measured downward (file numbers)"]
 
     lines = []  # every stripe upward: a raster, not a serpentine
     raster = np.array([(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)], dtype=float) * 2600
-    assert scan_direction(names, raster, sizes, False, lines.append) is True
+    assert scan_direction(names, raster, tile_stripes(raster), False, lines.append) is True
     assert lines[1].startswith("!! Stripe(s) [2] do not alternate")
 
     assert file_numbers(["CD7", "CD10"]).tolist() == [7, 10]
     assert file_numbers(["CD7", "tile"]) is None and file_numbers(["A1", "B1"]) is None
     lines = []
-    assert scan_direction(["a", "b", "c", "d", "e", "f"], centers, sizes, True, lines.append) is True  # fallback
+    assert scan_direction(["a", "b", "c", "d", "e", "f"], centers, tile_stripes(centers), True,
+                          lines.append) is True  # fallback
     assert lines[0].startswith("!! Scan direction not known")
 
 
@@ -329,7 +330,7 @@ def test_contacts_belong_to_the_stripes_whose_x_range_holds_them():
     centers = np.array([[0.0, 0.0], [0.0, 100.0], [90.0, 0.0], [90.0, 100.0]])  # two stripes, 10 nm overlap
     sizes = np.full((4, 2), 100.0)
     x = np.array([-40.0, 42.0, 45.0, 100.0, 200.0])  # stripe 0, overlap, overlap, stripe 1, outside (nearest: 1)
-    assert contact_stripes(x, centers, sizes).tolist() == [[True, False], [True, True], [True, True],
+    assert contact_stripes(x, centers, sizes, np.array([0, 0, 1, 1])).tolist() == [[True, False], [True, True], [True, True],
                                                            [False, True], [False, True]]
 
 
@@ -341,8 +342,8 @@ def test_the_registration_tab_shows_the_stripes_ticked(tmp_path):
     with pytest.warns(UserWarning):
         result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
     view = RegistrationView(result, use_opengl=False)
-    stripes = contact_stripes(result.design_nm[:, 0], result.centers, result.sizes)
-    assert stripes.shape[1] == 2 and view.stripes.text() == "Stripes: all 2"
+    stripes = contact_stripes(result.design_nm[:, 0], result.centers, result.sizes, result.stripe)
+    assert stripes.shape[1] == 2 and result.stripe.tolist() == [0, 0, 0, 1, 1, 1] and view.stripes.text() == "Stripes: all 2"
     assert len(view.error_nm) == len(result.design_nm)
 
     view.stripes.set_selected([1])

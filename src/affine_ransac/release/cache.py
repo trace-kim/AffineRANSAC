@@ -20,7 +20,7 @@ from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.results_file import _get_fields, _get_parts, _get_stitch, _put_fields, _put_parts, _put_stitch
 
 CACHE_NAME = "MaskReg_analysis.npz"
-FORMAT = 1
+FORMAT = 2  # 2: the stripe of each tile (D89)
 
 
 def cache_paths(folder, user_cache_dir) -> list[Path]:
@@ -31,7 +31,7 @@ def cache_paths(folder, user_cache_dir) -> list[Path]:
 
 def save_cache(result: ReleaseResult, user_cache_dir) -> Path:
     """Write the result to the first cache path that can be written; returns it."""
-    arrays = {"centers": result.centers, "sizes": result.sizes, "sem_nm": result.sem_nm, "design_nm": result.design_nm}
+    arrays = {"centers": result.centers, "sizes": result.sizes, "stripe": result.stripe, "sem_nm": result.sem_nm, "design_nm": result.design_nm}
     _put_parts(arrays, "sem_points", result.sem_points, np.empty((0, 2)))
     _put_parts(arrays, "design_points", result.design_points, np.empty((0, 2)))
     _put_stitch(arrays, "stitch", result.stitch)
@@ -65,7 +65,8 @@ def load_cache(folder, user_cache_dir) -> tuple[ReleaseResult, str] | None:
                 settings = Settings(**{k: v for k, v in info["settings"].items() if k in known})
                 result = ReleaseResult(
                     folder=str(folder), kind=info["kind"], settings=settings, tile_ids=info["tile_ids"],
-                    centers=arrays["centers"], sizes=arrays["sizes"], sem_points=_get_parts(arrays, "sem_points"),
+                    centers=arrays["centers"], sizes=arrays["sizes"],
+                    stripe=arrays["stripe"], sem_points=_get_parts(arrays, "sem_points"),
                     design_points=_get_parts(arrays, "design_points"), stitch=_get_stitch(arrays, "stitch"),
                     design_stitch=_get_stitch(arrays, "design_stitch"), sem_nm=arrays["sem_nm"],
                     design_nm=arrays["design_nm"], moving=_get_fields(arrays, "moving", MovingWindowResult),

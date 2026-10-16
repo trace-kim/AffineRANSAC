@@ -375,29 +375,46 @@ def pair_kind(centers: np.ndarray, i: int, j: int) -> str:
     return "horizontal" if step[0] > 2 * step[1] else "corner"
 
 
-def tile_stripes(centers: np.ndarray, fovs: np.ndarray) -> np.ndarray:
-    """(n_tiles,) stripe of each tile, 0 for the smallest x: tiles of one stripe share their centre x
-    (a new stripe starts where the sorted centre x jumps by more than half the median tile width)."""
+STRIPE_BREAK = 10.0  # a jump between stripes is at least this many times the largest x scatter within a stripe
+
+
+def tile_stripes(centers: np.ndarray, image_centers: np.ndarray | None = None) -> np.ndarray:
+    """(n_tiles,) stripe of each tile, 0 for the smallest x. Tiles of one stripe share their centre x up to the
+    stage scatter (metadata: equal up to rounding, user); neighbouring stripes are one step apart (tile width −
+    overlap, whatever the overlap). So the gaps between the sorted centre x are small (scatter) or large (a new
+    stripe): the stripes break at the largest ratio between two consecutive sorted gaps (gaps below 1 nm taken as
+    1 nm: equal x), if that ratio is at least STRIPE_BREAK; otherwise all tiles are one stripe.
+    image_centers: the exact image centres (contour CSVs: DesignX_Add − DesignX), used instead of centers when
+    every tile has one: centres of contact bounding boxes vary by up to a pitch within a stripe, which split
+    stripes on the contour-CSV test data."""
+    if image_centers is not None and np.isfinite(image_centers).all():
+        centers = image_centers
     order = np.argsort(centers[:, 0])
-    new_stripe = np.diff(centers[order, 0]) > np.median(fovs[:, 0]) / 2
+    gaps = np.diff(centers[order, 0])
+    sorted_gaps = np.sort(np.maximum(gaps, 1.0))
+    ratio = sorted_gaps[1:] / sorted_gaps[:-1]
+    if len(ratio) and ratio.max() >= STRIPE_BREAK:
+        new_stripe = gaps > sorted_gaps[np.argmax(ratio)]
+    else:
+        new_stripe = np.zeros(len(gaps), bool)
     stripe = np.empty(len(centers), int)
     stripe[order] = np.concatenate([[0], np.cumsum(new_stripe)])
     return stripe
 
 
-def stripe_ranges(centers: np.ndarray, fovs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(low, high), each (n_stripes,): the x range (nm) covered by the tiles of each stripe (tile_stripes)."""
-    stripe = tile_stripes(centers, fovs)
+def stripe_ranges(centers: np.ndarray, fovs: np.ndarray, stripe: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(low, high), each (n_stripes,): the x range (nm) covered by the tiles (centres, sizes) of each stripe
+    (stripe: per tile, tile_stripes)."""
     stripes = range(stripe.max() + 1)
     low = np.array([(centers[stripe == s, 0] - fovs[stripe == s, 0] / 2).min() for s in stripes])
     high = np.array([(centers[stripe == s, 0] + fovs[stripe == s, 0] / 2).max() for s in stripes])
     return low, high
 
 
-def contact_stripes(x_nm: np.ndarray, centers: np.ndarray, fovs: np.ndarray) -> np.ndarray:
+def contact_stripes(x_nm: np.ndarray, centers: np.ndarray, fovs: np.ndarray, stripe: np.ndarray) -> np.ndarray:
     """(N, n_stripes) bool: whether each contact (x, nm) lies in the x range of each stripe (stripe_ranges). A
     contact in the overlap of two stripes is in both; one outside every stripe is put in the nearest."""
-    low, high = stripe_ranges(centers, fovs)
+    low, high = stripe_ranges(centers, fovs, stripe)
     inside = (x_nm[:, None] >= low) & (x_nm[:, None] <= high)
     outside = np.flatnonzero(~inside.any(axis=1))
     inside[outside, np.argmin(np.abs(x_nm[outside, None] - (low + high) / 2), axis=1)] = True

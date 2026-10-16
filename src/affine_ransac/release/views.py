@@ -402,7 +402,7 @@ class RegistrationView(QtWidgets.QWidget):
         distance, _ = cKDTree(r.design_nm).query(r.design_nm, k=2)
         self.pitch_nm = float(np.median(distance[:, 1]))
         self.dot_um = 0.4 * self.pitch_nm / 1000  # a disk of ~0.4 x the pitch when zoomed in
-        self.in_stripe = contact_stripes(r.design_nm[:, 0], r.centers, r.sizes)
+        self.in_stripe = contact_stripes(r.design_nm[:, 0], r.centers, r.sizes, r.stripe)
 
         # One figure: the arrow map (arrows coloured by their length dr, profiles of dr, its own colour bar), then
         # the dx and dy colour maps (profiles of their own component, one shared colour bar). Same area in all.
@@ -456,7 +456,7 @@ class RegistrationView(QtWidgets.QWidget):
         self.grid_lines.setToolTip("Grid lines on the maps")
         self.grid_lines.setChecked(True)
         self.grid_lines.toggled.connect(self.show_grid_lines)
-        low, high = stripe_ranges(r.centers, r.sizes)
+        low, high = stripe_ranges(r.centers, r.sizes, r.stripe)
         self.stripes = StripeSelector([f"Stripe {k + 1}  (x {a / 1000:.1f} to {b / 1000:.1f} µm)"
                                        for k, (a, b) in enumerate(zip(low, high))], self.select_stripes)
 

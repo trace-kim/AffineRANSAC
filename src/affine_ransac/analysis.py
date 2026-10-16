@@ -414,7 +414,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     boxes (FOVs); image_centers: (n_tiles, 2) image centres for the in-image map (NaN: no map);
     errors(points, sem_corrections, design_corrections) -> DesignErrors of the SEM points against the
     design. Returns the result, and the observations and merged contacts of every placement."""
-    stripe = tile_stripes(centers, sizes)
+    stripe = tile_stripes(centers, image_centers)
     order_pairs = measurement_pairs(centers, stripe, s.first_stripe_upward)
     guided = s.stitch_method == "measurement order first"
 

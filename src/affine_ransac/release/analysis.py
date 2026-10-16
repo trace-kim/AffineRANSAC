@@ -46,6 +46,7 @@ class ReleaseResult:
     tile_ids: list[str]
     centers: np.ndarray               # (n_tiles, 2) tile centres, mask nm
     sizes: np.ndarray                 # (n_tiles, 2) tile sizes (images: FOV), nm
+    stripe: np.ndarray                # (n_tiles,) stripe of each tile, 0 = smallest x (pipeline.tile_stripes)
     sem_points: list[np.ndarray]      # per tile, SEM centres at the nominal placement, mask nm
     design_points: list[np.ndarray]   # per tile, design centres at the nominal placement, mask nm
     stitch: StitchResult              # SEM stitching
@@ -79,6 +80,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
             records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"))
         centers = np.array([t.center_nm for t in tiles])
         sizes = np.array([t.fov_nm for t in tiles])
+        stripe = tile_stripes(centers)
         sem_points = [t.sem_points_nm(s.stitch_refined) for t in tiles]
         design_points = [t.design_points_nm() for t in tiles]
         design_ok = [t.design.ok for t in tiles]
@@ -101,6 +103,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         sem_points = [t.sem_nm for t in tiles]
         design_points = [t.design_nm for t in tiles]
         centers, sizes = tile_boxes_from_points(design_points, s.tile_margin_nm)
+        stripe = tile_stripes(centers, np.array([t.center_nm for t in tiles]))  # image centres, if in the files
         design_stitch = stitch_tiles(design_points, centers, sizes, s.design_max_match_nm, s.outlier_factor,
                                      s.min_matched, label="design")
         image_paths = []
@@ -109,9 +112,10 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
             return paired_errors(sem_points, design_points, sem_corrections, design_corrections)
 
     names = [Path(r.image_path).stem for r in records] if kind == "images" else tile_ids
-    s = replace(s, first_stripe_upward=scan_direction(names, centers, sizes, s.first_stripe_upward, record))
+    record(f"{stripe.max() + 1} stripe(s)")
+    s = replace(s, first_stripe_upward=scan_direction(names, centers, stripe, s.first_stripe_upward, record))
     progress(LOAD_SHARE, "Stitching")
-    stitch = stitch_sem(sem_points, centers, sizes, s, record, tile_ids)
+    stitch = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
     report_stitching(record, "Design", design_stitch, tile_ids)
 
     progress(LOAD_SHARE + 0.1, "Comparing with the design")
@@ -129,7 +133,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
                                   s.moving_step_um * 1000)
     progress(1.0, "Done")
-    return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), sem_points,
+    return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
+                         sem_points,
                          design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm, moving,
                          image_paths, lines)
 
@@ -143,12 +148,12 @@ def file_numbers(names: list[str]) -> np.ndarray | None:
     return numbers if len(set(numbers.tolist())) == len(numbers) else None
 
 
-def scan_direction(names: list[str], centers, sizes, fallback: bool, log) -> bool:
+def scan_direction(names: list[str], centers, stripe, fallback: bool, log) -> bool:
     """Whether the first stripe was measured upward, from the file numbers (measurement order); logged. If the
     names have no distinct numbers, or the first stripe has one image, `fallback`. Stripes that do not alternate
-    (not a serpentine) are logged with !!: the pairs between stripes in measurement order are then wrong."""
+    (not a serpentine) are logged with !!: the pairs between stripes in measurement order are then wrong.
+    stripe: per tile, tile_stripes."""
     numbers = file_numbers(names)
-    stripe = tile_stripes(centers, sizes)
     directions = stripe_directions(centers, stripe, numbers) if numbers is not None else [None]
     if directions[0] is None:
         log(f"!! Scan direction not known from the file names: first stripe taken as measured "
@@ -164,10 +169,9 @@ def scan_direction(names: list[str], centers, sizes, fallback: bool, log) -> boo
     return upward
 
 
-def stitch_sem(sem_points, centers, sizes, s: Settings, log, tile_ids) -> StitchResult:
-    """The SEM stitching over all overlaps, guided by the stitching in measurement order if
-    s.stitch_method says so; pairs fitted one row off (by that stitching) are logged."""
-    stripe = tile_stripes(centers, sizes)
+def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log, tile_ids) -> StitchResult:
+    """The SEM stitching over all overlaps, guided by the stitching in measurement order (stripe: per tile,
+    tile_stripes) if s.stitch_method says so; pairs fitted one row off (by that stitching) are logged."""
     order = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
                          label="SEM, measurement order",
                          only_pairs=measurement_pairs(centers, stripe, s.first_stripe_upward))

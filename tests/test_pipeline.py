@@ -265,7 +265,7 @@ def drifting_serpentine(step_nm=17.0, pitch=100.0, fov=1200.0):
 
 def test_an_offset_near_one_pitch_slips_a_row_unless_guided_by_the_measurement_order():
     points, centers, fovs, truth = drifting_serpentine()
-    order = measurement_pairs(centers, tile_stripes(centers, fovs))
+    order = measurement_pairs(centers, tile_stripes(centers))
     first = stitch_tiles(points, centers, fovs, only_pairs=order)
     np.testing.assert_allclose(first.corrections, truth, atol=0.5)  # 17 nm between consecutive images
 
@@ -283,12 +283,27 @@ def test_an_offset_near_one_pitch_slips_a_row_unless_guided_by_the_measurement_o
 
 def test_tiles_are_grouped_into_stripes_by_their_centre_x():
     centers, fovs = serpentine()
-    np.testing.assert_array_equal(tile_stripes(centers, fovs), np.repeat([0, 1, 2], 4))
+    np.testing.assert_array_equal(tile_stripes(centers), np.repeat([0, 1, 2], 4))
+
+
+def test_stripes_break_at_the_x_steps_whatever_the_overlap():
+    width = 2650.0
+    x = np.repeat([0.0, 0.3, 0.6], 4) * width  # stripes overlap by 70 % of the tile width
+    y = np.tile(np.arange(4) * 2000.0, 3)
+    centers = np.column_stack([x + 1e-9 * np.arange(12), y])  # equal x up to rounding
+    np.testing.assert_array_equal(tile_stripes(centers), np.repeat([0, 1, 2], 4))
+    np.testing.assert_array_equal(tile_stripes(centers[:4]), np.zeros(4))  # one stripe
+
+    # Contact bounding boxes: centre x differs by up to a pitch within a stripe; the image centres decide.
+    boxes = centers + np.column_stack([np.tile([0.0, 3.0, 130.0, 0.0], 3), np.zeros(12)])
+    assert tile_stripes(boxes).max() > 2  # split wrongly
+    np.testing.assert_array_equal(tile_stripes(boxes, centers), np.repeat([0, 1, 2], 4))
+    np.testing.assert_array_equal(tile_stripes(boxes, np.full((12, 2), np.nan)), tile_stripes(boxes))  # unknown
 
 
 def test_measurement_pairs_follow_the_serpentine():
     centers, fovs = serpentine()  # tiles 0-3: stripe 0 bottom to top, 4-7: stripe 1, 8-11: stripe 2
-    stripe = tile_stripes(centers, fovs)
+    stripe = tile_stripes(centers)
     within = {(0, 1), (1, 2), (2, 3), (4, 5), (5, 6), (6, 7), (8, 9), (9, 10), (10, 11)}
     # Stripe 0 measured upward ends at its top (3) and stripe 1 starts at its top (7); stripe 1 ends
     # at its bottom (4), where stripe 2 starts (8).
