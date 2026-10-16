@@ -20,6 +20,7 @@ Tile data is passed as plain arguments (paths, nm values), not as metadata recor
 module works with any metadata reader.
 """
 
+import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,6 +131,7 @@ class TileResult:
     refined: DetectedContacts   # pixel frame: Otsu contours moved to the maximum gradient
     design: DesignContacts      # design contacts in the tone that matches the SEM
     oas_path: Path | None = None  # the tile's design file (read again to measure contact sizes)
+    seconds: dict[str, float] = field(default_factory=dict)  # time per step of process_tile (logged)
 
     def sem_points_nm(self, refined: bool = True) -> np.ndarray:
         """SEM contact centres in mask nm at the nominal placement."""
@@ -180,18 +182,28 @@ def process_tile(
     pairs within design_tolerance_nm). detection: "otsu", "otsu3" or "band" (method of
     features.contact.detect_contacts).
     """
+    t_start = time.perf_counter()
     image = load_sem_image(image_path)
     fov_nm = np.asarray(fov_nm, dtype=float)
     pixel_size_nm = fov_nm[0] / image.shape[1]
+    t_read = time.perf_counter()
     otsu = detect_contacts(image, method=detection)
+    t_detect = time.perf_counter()
     refined = refine_edges(image, otsu, search_px=search_px)
+    t_refine = time.perf_counter()
 
     if oas_path is None:
         design = DesignContacts(np.empty((0, 2)), False, 0.0, ok=False)
+        t_oas = t_refine
     else:
+        layout = load_layout(oas_path)
+        t_oas = time.perf_counter()
         sem_local = pixel_to_tile_nm(refined.centers, image.shape, pixel_size_nm)
-        design = choose_design_contacts(load_layout(oas_path), layer, fov_nm, sem_local,
+        design = choose_design_contacts(layout, layer, fov_nm, sem_local,
                                         design_search_nm, min_match_fraction, design_tolerance_nm)
+    t_match = time.perf_counter()
+    seconds = {"read": t_read - t_start, "detect": t_detect - t_read, "refine": t_refine - t_detect,
+               "oas": t_oas - t_refine, "match": t_match - t_oas}
 
     return TileResult(
         image=image,
@@ -202,6 +214,7 @@ def process_tile(
         refined=refined,
         design=design,
         oas_path=None if oas_path is None else Path(oas_path),
+        seconds=seconds,
     )
 
 

@@ -315,3 +315,12 @@ def test_no_design_match_in_the_sample_tiles_stops_after_them(tmp_path, monkeypa
     with pytest.raises(ValueError, match="No design tone matched the SEM in the sample tiles"):
         analyse_images(tmp_path, records, IMAGE_SETTINGS)
     assert len(loaded) == 3  # the sample tiles only, not the whole folder
+
+
+def test_tile_loading_logs_its_timing(tmp_path):
+    records = write_image_folder(tmp_path)
+    lines = []
+    _, tiles = analysis.load_image_tiles(records, IMAGE_SETTINGS, log=lines.append)
+    assert set(tiles[0].seconds) == {"read", "detect", "refine", "oas", "match"}
+    timing = [line for line in lines if line.startswith("Timing:")]
+    assert len(timing) == 1 and "refine" in timing[0] and "workers" in timing[0]

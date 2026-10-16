@@ -22,6 +22,7 @@ The AnalysisResult holds what the analysis window shows (view_analysis.analysis_
 """
 
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -297,6 +298,7 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     # A few tiles first: if none matches its design, the settings or the data are wrong; stop now.
     with_oas = [k for k, r in enumerate(records) if r.oas_path is not None]
     sample = sorted({with_oas[i] for i in np.linspace(0, len(with_oas) - 1, SAMPLE_TILES).round().astype(int)})
+    start = time.perf_counter()
     loaded = {}
     for k in sample:
         loaded[k] = process_tile(*arguments(records[k]))
@@ -323,12 +325,26 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
             if done % max(1, len(records) // 10) == 0 or done == len(records):
                 log(f"{done} of {len(records)} tiles loaded and detected")
     tiles = [loaded[k] for k in range(len(records))]
+    log(timing_summary(tiles, time.perf_counter() - start, sample, workers))
     flagged = [tile_ids[k] for k, t in enumerate(tiles) if not t.design.ok]
     if flagged:
         log(f"!! {len(flagged)} tile(s) FLAGGED: neither design tone matches the SEM (or no .oas): {flagged}")
     if len(flagged) == len(tiles):
         raise RuntimeError("No tile matched its design: nothing can be measured (see the flagged tiles above)")
     return tile_ids, tiles
+
+
+def timing_summary(tiles: list[TileResult], wall_s: float, sample: list[int], workers: int) -> str:
+    """One log line: the tile loading's wall time, the median time per step of process_tile, and the wall
+    time the steps alone would take (the sample tiles one by one, the rest spread over the workers).
+    A wall time well above that is time outside the steps (worker start-up, sending tiles back, waiting)."""
+    steps = list(tiles[0].seconds)
+    totals = np.array([sum(t.seconds.values()) for t in tiles])
+    one_by_one = np.isin(np.arange(len(tiles)), sample)
+    expected = totals[one_by_one].sum() + totals[~one_by_one].sum() / workers
+    medians = ", ".join(f"{step} {np.median([t.seconds[step] for t in tiles]):.3f}" for step in steps)
+    return (f"Timing: {len(tiles)} tiles loaded in {wall_s:.1f} s; per tile, median s: {medians} "
+            f"(total {np.median(totals):.3f}); the steps alone would take {expected:.1f} s with {workers} workers")
 
 
 def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResult], polygons) -> AnalysisResult:
