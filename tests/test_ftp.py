@@ -1,5 +1,5 @@
-"""The FTP browser and download of the release app (affine_ransac.release.ftp, ftp_dialog, config), against a
-local pyftpdlib server."""
+"""The FTP browser and download of the release app (affine_ransac.release.ftp, ftp_dialog, config,
+folders_dialog), against a local pyftpdlib server."""
 
 import os
 
@@ -15,7 +15,8 @@ from pyqtgraph.Qt import QtCore
 
 from affine_ransac.release import app as release_app
 from affine_ransac.release import ftp as remote
-from affine_ransac.release.config import CONFIG_ENV, config_path, read_ftp_config
+from affine_ransac.release.config import CONFIG_ENV, config_path, download_root, read_ftp_config
+from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
 from test_analysis import write_contour_folder
 from test_release import make_window, wait
@@ -115,6 +116,41 @@ def test_the_config_file_gives_the_ftp_keys(tmp_path, monkeypatch):
     assert read_ftp_config(path) == {"host": "ftp.lab", "user": "mask", "password": "a%b"}
     monkeypatch.setenv(CONFIG_ENV, str(path))
     assert config_path() == path
+
+
+def test_the_users_folders_come_before_the_config_file_and_the_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv(CONFIG_ENV, str(tmp_path / "admin.ini"))
+    assert config_path(str(tmp_path / "mine")) == tmp_path / "mine" / "maskreg.ini"
+    assert config_path("") == tmp_path / "admin.ini"
+    assert download_root("D:/chosen", {"download_folder": "D:/preset"}) == "D:/chosen"
+    assert download_root("", {"download_folder": "D:/preset"}) == "D:/preset"
+    assert download_root("", {}).endswith("MaskReg data")
+
+
+def test_the_folders_dialog_keeps_the_users_choice_and_the_window_uses_it(tmp_path, monkeypatch):
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    (mine / "maskreg.ini").write_text("[ftp]\nhost = ftp.lab\ndownload_folder = D:/preset\n", encoding="utf-8")
+    window = make_window(tmp_path)
+    dialog = FoldersDialog(window.preferences)
+    assert "default:" in dialog.config_folder.placeholderText()
+    dialog.config_folder.setText(str(mine))
+    assert "found" in dialog.config_note.text() and "D:/preset" in dialog.download_folder.placeholderText()
+    dialog.download_folder.setText(str(tmp_path / "downloads"))
+    dialog.accept()
+    assert window.preferences.value("config_folder") == str(mine)
+
+    seen = {}
+
+    class Dialog:  # stands in for the FTP dialog: records what it was given, then is cancelled
+        def __init__(self, preferences, config, root, parent):
+            seen.update(config=config, root=root)
+
+        def exec(self):
+            return 0
+    monkeypatch.setattr(release_app, "FtpDialog", Dialog)
+    window.browse_ftp()
+    assert seen == {"config": {"host": "ftp.lab", "download_folder": "D:/preset"}, "root": str(tmp_path / "downloads")}
 
 
 def make_preferences(tmp_path):

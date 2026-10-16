@@ -4,6 +4,7 @@ Start it with:  python -m affine_ransac.release.app
 - File > Browse FTP server: connect to an FTP server (pre-set in maskreg.ini, config.py), walk through its folders
   and download one to analyse it: kept at <download folder>/<host>/<remote path>; only new or changed files are
   fetched, then the folder is opened as above (analysed again if anything new arrived).
+- File > Folders: the folder of maskreg.ini and the download folder (folders_dialog.py).
 - File > Open folder: a folder of contour CSVs or of SEM images. If it holds a saved analysis (cache.py), that is
   shown at once; otherwise the folder is analysed (release/analysis.py) with the current parameters and the
   result saved there.
@@ -34,7 +35,8 @@ from affine_ransac.release import style
 from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, analyse_folder, measure_contact_sizes,
                                            read_design_images, read_display_images)
 from affine_ransac.release.cache import load_cache, save_cache
-from affine_ransac.release.config import config_path, default_download_root, read_ftp_config
+from affine_ransac.release.config import config_path, download_root, read_ftp_config
+from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
 from affine_ransac.release.views import ContactSizeTab, RegistrationView, StitchingView
 
@@ -158,6 +160,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self._action(file_menu, "open", "&Open folder...", "Ctrl+O", self.choose_folder)
         self._action(file_menu, "ftp", "Browse &FTP server...", "Ctrl+Shift+O", self.browse_ftp)
         file_menu.addSeparator()
+        file_menu.addAction("Fol&ders...", lambda: FoldersDialog(self.preferences, self).exec())
+        file_menu.addSeparator()
         file_menu.addAction("&Quit", self.close)
         analysis_menu = self.menuBar().addMenu("&Analysis")
         self._action(analysis_menu, "restart", "&Restart analysis", "F5", self.restart)
@@ -206,13 +210,13 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             self.open_folder(folder)
 
     def browse_ftp(self):
-        path = config_path()
+        path = config_path(self.preferences.value("config_folder", ""))
         try:
             config = read_ftp_config(path)
         except configparser.Error as error:
             QtWidgets.QMessageBox.warning(self, TITLE, f"{path} could not be read, so it is ignored:\n{error}")
             config = {}
-        root = config.get("download_folder") or default_download_root()
+        root = download_root(self.preferences.value("download_folder", ""), config)
         dialog = FtpDialog(self.preferences, config, root, self)
         if dialog.exec() and dialog.chosen:
             self.download_and_open(dialog.login(), dialog.chosen, root)

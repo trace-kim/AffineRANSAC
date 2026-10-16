@@ -9,8 +9,10 @@ An administrator writes maskreg.ini (plain text, so the password is readable by 
     password = secret
     download_folder = D:/MaskReg data
 
-Every key is optional. The file is the one named by the MASKREG_CONFIG environment variable, or else
-%LOCALAPPDATA%/MaskReg/maskreg.ini (on Windows; the user's config folder elsewhere).
+Every key is optional. The file is maskreg.ini in the folder the user chose (File > Folders), or else the one named
+by the MASKREG_CONFIG environment variable, or else %LOCALAPPDATA%/MaskReg/maskreg.ini (on Windows; the user's
+config folder elsewhere). Downloads are kept in the folder the user chose, else the file's download_folder, else
+Documents/MaskReg data.
 """
 
 import configparser
@@ -23,7 +25,10 @@ CONFIG_NAME = "maskreg.ini"
 CONFIG_ENV = "MASKREG_CONFIG"
 
 
-def config_path() -> Path:
+def config_path(folder: str = "") -> Path:
+    """The settings file: maskreg.ini in `folder` (the user's choice; "" = none chosen), else the default."""
+    if folder:
+        return Path(folder, CONFIG_NAME)
     if os.environ.get(CONFIG_ENV):
         return Path(os.environ[CONFIG_ENV])
     folder = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.GenericConfigLocation)
@@ -37,7 +42,12 @@ def read_ftp_config(path: Path) -> dict[str, str]:
     return dict(parser["ftp"]) if parser.has_section("ftp") else {}
 
 
+def download_root(chosen: str, config: dict[str, str]) -> str:
+    """Where downloaded folders are kept: the user's choice ("" = none chosen), else the config file's
+    download_folder, else Documents/MaskReg data."""
+    return chosen or config.get("download_folder") or default_download_root()
+
+
 def default_download_root() -> str:
-    """Where downloaded data is kept unless the config file says otherwise: Documents/MaskReg data."""
     documents = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.DocumentsLocation)
     return str(Path(documents, "MaskReg data"))
