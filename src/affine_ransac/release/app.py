@@ -15,6 +15,8 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   Contact size tab (hidden unless turned on; remembered): area, xCD and yCD of every contact, measured on request
   on the tiles of the run, which an image run keeps in memory only while the tab is on.
 - Status bar: the step being done, a progress bar with its percentage, and the time so far.
+- Updates (installed MaskReg only, update.py): at start a newer version is looked for in the background; if one is
+  found the user is asked, and Yes installs it and restarts MaskReg. Help > Check for updates does the same on request.
 """
 
 import configparser
@@ -22,6 +24,7 @@ import json
 import multiprocessing
 import os
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -43,6 +46,7 @@ from affine_ransac.release.cache import FORMAT, load_cache, made_by, save_cache
 from affine_ransac.release.config import config_path, download_root, read_ftp_config
 from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
+from affine_ransac.release.update import UPDATE_INI, download_setup, find_update, installed_source, run_setup
 from affine_ransac.release.views import ContactSizeTab, RegistrationView, StitchingView
 
 APP = "MaskReg"
@@ -87,6 +91,24 @@ class Job(QtCore.QObject):
             self.failed.emit(traceback.format_exc())
         else:
             self.done.emit(result)
+
+
+class UpdateCheck(QtCore.QObject):
+    """find_update in a background thread, beside any analysis (a Job would share its warnings handling); the answer
+    arrives in the GUI thread as `done` (None, or version, setup file and size) or `failed` (the error)."""
+    done = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+
+    def start(self, source: dict):
+        threading.Thread(target=self._run, args=(source,), daemon=True).start()
+
+    def _run(self, source):
+        try:
+            found = find_update(source, __version__)
+        except Exception as error:
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        else:
+            self.done.emit(found)
 
 
 class StatusBar(QtWidgets.QStatusBar):
@@ -136,13 +158,17 @@ class StatusBar(QtWidgets.QStatusBar):
 
 
 class MaskRegWindow(QtWidgets.QMainWindow):
-    def __init__(self, preferences: QtCore.QSettings | None = None, cache_dir: str | None = None):
+    def __init__(self, preferences: QtCore.QSettings | None = None, cache_dir: str | None = None,
+                 update_source: dict | None = None):
         """preferences: where the parameters, the last folder and the drawing choice are kept (default: the
-        user's MaskReg settings); cache_dir: the user's cache folder (used when a data folder is read-only)."""
+        user's MaskReg settings); cache_dir: the user's cache folder (used when a data folder is read-only);
+        update_source: the server of newer versions (update.py; None: no updates, e.g. not the installed MaskReg)."""
         super().__init__()
         self.preferences = preferences or QtCore.QSettings(APP, APP)
         self.cache_dir = cache_dir or QtCore.QStandardPaths.writableLocation(
             QtCore.QStandardPaths.StandardLocation.CacheLocation)
+        self.update_source = update_source
+        self.update_found = None  # (version, setup file, size) of a newer MaskReg, until the user is asked
         self.folder = None   # the open folder
         self.result = None   # its ReleaseResult
         self.images = None   # its SEM images, once loaded (kept when the tabs are rebuilt)
@@ -187,6 +213,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.size_action.setChecked(self.preferences.value("contact_size_tab", "") == "true")  # hidden by default
         self.size_action.toggled.connect(self.set_size_tab)
         help_menu = self.menuBar().addMenu("&Help")
+        self.update_action = help_menu.addAction("Check for &updates...", lambda: self.check_for_update(quiet=False))
+        self.update_action.setEnabled(update_source is not None)
         help_menu.addAction("&About MaskReg", self.about)
 
         self.job = Job()
@@ -194,6 +222,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.job.progress.connect(self.status.update_progress)
         self.job.done.connect(self._job_done)
         self.job.failed.connect(self._job_failed)
+        self.update_check = UpdateCheck()
+        self.update_check.done.connect(self._update_checked)
+        self.update_check.failed.connect(self._update_check_failed)
         self.update_actions()
         self.resize(1600, 1050)
 
@@ -419,6 +450,59 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         if self.result is not None:
             self.show_result(self.result)  # draw again with the new choice
 
+    # --- updates (update.py) -----------------------------------------------------------------------
+    def check_for_update(self, quiet: bool = True):
+        """Look for a newer MaskReg in the background. quiet (at start): say nothing unless one is found; else also
+        say that this one is the newest, or why the server could not be asked."""
+        self.update_quiet = quiet
+        self.update_action.setEnabled(False)
+        self.update_check.start(self.update_source)
+
+    def _update_checked(self, found):
+        self.update_action.setEnabled(True)
+        if found is None:
+            self.log(f"Update check: MaskReg {__version__} is the newest")
+            if not self.update_quiet:
+                QtWidgets.QMessageBox.information(self, TITLE, f"MaskReg {__version__} is the newest version.")
+            return
+        self.log(f"Update check: MaskReg {found[0]} is available")
+        self.update_found = found
+        self.offer_update()
+
+    def _update_check_failed(self, error: str):
+        self.update_action.setEnabled(True)
+        self.log(f"Update check failed: {error}")
+        if not self.update_quiet:
+            QtWidgets.QMessageBox.warning(self, TITLE, f"Could not look for updates:\n{error}")
+
+    def offer_update(self):
+        """Ask whether to install the newer MaskReg found. While a job runs, it is asked once the job is done; No:
+        asked again at the next start."""
+        if self.busy or self.update_found is None:
+            return
+        found, self.update_found = self.update_found, None
+        if QtWidgets.QMessageBox.question(
+                self, TITLE, f"MaskReg {found[0]} is available (this is MaskReg {__version__}).\n\nInstall it now? "
+                f"MaskReg closes, installs it and starts again; the analysis shown is already saved.") == \
+                QtWidgets.QMessageBox.StandardButton.Yes:
+            self.install_update(found)
+
+    def install_update(self, found):
+        """Download the installer (status bar), then run it and quit: it installs over this MaskReg and starts the
+        new one."""
+        version, name, size = found
+        source, folder = self.update_source, Path(tempfile.gettempdir(), "MaskReg update")
+        self.log(f"=== Downloading MaskReg {version}")
+
+        def work(log, progress):
+            return download_setup(source, name, size, folder, lambda fraction: progress(fraction, "Downloading"))
+
+        def downloaded(setup):
+            self.log(f"Starting {setup}")
+            run_setup(setup)
+            self.close()
+        self.run(f"Updating to MaskReg {version}", work, downloaded)
+
     def about(self):
         QtWidgets.QMessageBox.about(self, "About MaskReg", f"<b>MaskReg {__version__}</b> - mask registration "
                                     f"analyzer<br><br>Stitches the SEM tiles of a folder, compares every contact with "
@@ -474,6 +558,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.busy = False
         self.on_done(value)
         self.update_actions()
+        self.offer_update()  # a newer MaskReg found while the job ran
 
     def _job_failed(self, text: str):
         self.busy = False
@@ -482,6 +567,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.update_actions()
         last = text.strip().splitlines()[-1]  # "SomeError: message"; the log has the whole traceback
         QtWidgets.QMessageBox.critical(self, TITLE, last.partition(": ")[2] or last)
+        self.offer_update()
 
     def update_actions(self):
         self.actions["open"].setEnabled(not self.busy)
@@ -532,8 +618,16 @@ def main():
     multiprocessing.freeze_support()  # packaged as MaskReg.exe, the tile-loading workers start through here
     style.setup()
     app = pg.mkQApp(APP)
-    window = MaskRegWindow()
+    try:
+        source, problem = installed_source(), ""
+    except (configparser.Error, ValueError) as error:
+        source, problem = None, f"!! {UPDATE_INI} cannot be read, so MaskReg does not look for updates: {error}"
+    window = MaskRegWindow(update_source=source)
     window.show()
+    if problem:
+        window.log(problem)
+    if source is not None:
+        window.check_for_update()
     if len(sys.argv) > 1:
         window.open_folder(sys.argv[1])
     app.exec()

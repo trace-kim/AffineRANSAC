@@ -19,3 +19,4 @@ docs/remote/
 # Packaging output (packaging/MaskReg.spec)
 build/
 dist/
+packaging/update.ini

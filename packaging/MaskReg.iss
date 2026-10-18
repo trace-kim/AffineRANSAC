@@ -39,4 +39,5 @@ Name: "{autoprograms}\MaskReg"; Filename: "{app}\MaskReg.exe"
 Name: "{autodesktop}\MaskReg"; Filename: "{app}\MaskReg.exe"; Tasks: desktopicon
 
 [Run]
+; Not when silent: an update started by MaskReg starts MaskReg again itself (src/affine_ransac/release/update.py).
 Filename: "{app}\MaskReg.exe"; Description: "Start MaskReg"; Flags: nowait postinstall skipifsilent

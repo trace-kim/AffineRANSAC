@@ -23,5 +23,7 @@ they open, flagged as outdated.
 - MaskReg comes as an installer, `MaskReg-setup-X.Y.Z.exe`: a program of its own, Python included, installed per
   user without admin rights, with a Start menu entry and an uninstall entry (D100). `MaskReg <folder>` opens that
   folder at start.
+- Automatic updates: at every start MaskReg looks for a newer version on the update server and offers it; Yes installs
+  it and restarts MaskReg, No asks again next time. *Help → Check for updates...* (D101).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

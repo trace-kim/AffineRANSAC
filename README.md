@@ -55,7 +55,15 @@ is done):
    *Unreleased* above it.
 3. `pytest` must pass.
 4. On the data machine (image folders need its metadata reader; the build refuses without it), with Inno Setup 6
-   installed once (`winget install JRSoftware.InnoSetup`), build the installer (~2 min):
+   installed once (`winget install JRSoftware.InnoSetup`) and the update server written once in
+   `packaging/update.ini` (kept out of git; the installed MaskReg looks there for newer versions):
+   ```
+   [update]
+   host = 192.168.0.10
+   port = 21
+   folder = /MaskReg
+   ```
+   build the installer (~2 min):
    ```
    python packaging/build.py
    ```
@@ -68,10 +76,13 @@ is done):
    git push origin main vX.Y.Z
    ```
 6. On GitHub: *Releases → Draft a new release*, choose the tag, paste its `CHANGELOG.md` section and attach
-   `MaskReg-setup-X.Y.Z.exe`. Users install it by running it (no admin rights needed); a newer version installs over
-   the older one.
+   `MaskReg-setup-X.Y.Z.exe`.
+7. Upload `MaskReg-setup-X.Y.Z.exe` into the update folder with your own FTP account. Every installed MaskReg finds
+   it at its next start and offers it; users who say No are asked again at the following start.
 
-Planned (`docs/SPEC.md` D100): automatic updates from a read-only FTP folder.
+First installation: users run `MaskReg-setup-X.Y.Z.exe` once (no admin rights needed). The update FTP server must let
+anyone log in anonymously and only read (download) the update folder; only you may write there. MaskReg never holds a
+password for it.
 
 ## Notebooks
 

@@ -1,8 +1,11 @@
-"""Build MaskReg for users (docs/SPEC.md D100): the program folder dist/MaskReg/ (PyInstaller, MaskReg.spec), then
-the installer dist/MaskReg-setup-<version>.exe (Inno Setup, MaskReg.iss), for the version in affine_ransac.__version__.
+"""Build MaskReg for users (docs/SPEC.md D100, D101): the program folder dist/MaskReg/ (PyInstaller, MaskReg.spec),
+then the installer dist/MaskReg-setup-<version>.exe (Inno Setup, MaskReg.iss), for the version in
+affine_ransac.__version__.
 
 Run on the data machine, from the repository root:  python packaging/build.py
-Needs Inno Setup 6 (free; e.g. winget install JRSoftware.InnoSetup).
+Needs Inno Setup 6 (free; e.g. winget install JRSoftware.InnoSetup) and packaging/update.ini, the server the installed
+MaskReg takes its updates from (kept out of git; format in src/affine_ransac/release/update.py), which goes into the
+installer. MASKREG_TEST_BUILD=1 builds without it (and without the image metadata reader): such a copy never updates.
 """
 
 import os
@@ -12,8 +15,10 @@ import sys
 from pathlib import Path
 
 from affine_ransac import __version__
+from affine_ransac.release.update import UPDATE_INI, read_update_source
 
 HERE = Path(__file__).parent
+DIST = HERE.parent / "dist"
 
 
 def inno_compiler() -> str:
@@ -29,11 +34,20 @@ def inno_compiler() -> str:
 
 def main():
     compiler = inno_compiler()
+    source = read_update_source(HERE / UPDATE_INI)
+    if source is None and os.environ.get("MASKREG_TEST_BUILD") != "1":
+        sys.exit(f"{HERE / UPDATE_INI} is missing (or has no [update] host): write it, so that the installed MaskReg "
+                 f"can update itself (format: src/affine_ransac/release/update.py)")
     print(f"Building MaskReg {__version__}")
     subprocess.run([sys.executable, "-m", "PyInstaller", str(HERE / "MaskReg.spec"), "--noconfirm",
-                    "--distpath", str(HERE.parent / "dist"), "--workpath", str(HERE.parent / "build")], check=True)
+                    "--distpath", str(DIST), "--workpath", str(HERE.parent / "build")], check=True)
+    if source is not None:
+        shutil.copy(HERE / UPDATE_INI, DIST / "MaskReg" / UPDATE_INI)
+        print(f"Updates from ftp://{source['host']}:{source['port']}{source['folder']}")
+    else:
+        print("Test build without update.ini: this MaskReg does not look for updates")
     subprocess.run([compiler, f"/DVersion={__version__}", str(HERE / "MaskReg.iss")], check=True)
-    print(f"Done: {HERE.parent / 'dist' / f'MaskReg-setup-{__version__}.exe'}")
+    print(f"Done: {DIST / f'MaskReg-setup-{__version__}.exe'}")
 
 
 if __name__ == "__main__":
