@@ -54,22 +54,24 @@ is done):
 2. Set `__version__`; in `CHANGELOG.md` rename *Unreleased* to `X.Y.Z (YYYY-MM-DD)` and start a new empty
    *Unreleased* above it.
 3. `pytest` must pass.
-4. On the data machine (image folders need its metadata reader; the build refuses without it), build the program
-   folder `dist/MaskReg/` (MaskReg.exe and everything it needs, ~400 MB):
+4. On the data machine (image folders need its metadata reader; the build refuses without it), with Inno Setup 6
+   installed once (`winget install JRSoftware.InnoSetup`), build the installer (~2 min):
    ```
-   python -m PyInstaller packaging/MaskReg.spec --noconfirm
+   python packaging/build.py
    ```
-   Start `dist\MaskReg\MaskReg.exe` once and open a folder to check it.
+   It makes `dist\MaskReg\` (the program, ~400 MB) and `dist\MaskReg-setup-X.Y.Z.exe` (~100 MB). Install it, start
+   MaskReg from the Start menu and open a folder to check it.
 5. Commit, tag and push:
    ```
    git commit -am "Release X.Y.Z"
    git tag -a vX.Y.Z -m "MaskReg X.Y.Z"
    git push origin main vX.Y.Z
    ```
-6. On GitHub: *Releases → Draft a new release*, choose the tag, paste its `CHANGELOG.md` section.
+6. On GitHub: *Releases → Draft a new release*, choose the tag, paste its `CHANGELOG.md` section and attach
+   `MaskReg-setup-X.Y.Z.exe`. Users install it by running it (no admin rights needed); a newer version installs over
+   the older one.
 
-Planned (`docs/SPEC.md` D100): an installer (`MaskReg-setup-X.Y.Z.exe`, Inno Setup) and automatic updates from a
-read-only FTP folder.
+Planned (`docs/SPEC.md` D100): automatic updates from a read-only FTP folder.
 
 ## Notebooks
 
