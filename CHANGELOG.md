@@ -20,5 +20,7 @@ they open, flagged as outdated.
   longer leaves a damaged file (D98).
 - Every run records the MaskReg version and analysis that made it, and opening a folder checks them (D99). A run
   saved by a newer MaskReg is never replaced by an older one without the user's restart.
+- MaskReg can be built as a program of its own, Python included (`packaging/MaskReg.spec`, D100); `MaskReg <folder>`
+  opens that folder at start.
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

@@ -1,5 +1,5 @@
 """MaskReg: the minimal mask registration analyzer released to users (docs/SPEC.md D77).
-Start it with:  python -m affine_ransac.release.app
+Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [folder]; packaged: MaskReg.exe [folder])
 
 - File > Browse FTP server: connect to an FTP server (pre-set in maskreg.ini, config.py), walk through its folders
   and download one to analyse it: kept at <download folder>/<host>/<remote path>; only new or changed files are
@@ -19,7 +19,9 @@ Start it with:  python -m affine_ransac.release.app
 
 import configparser
 import json
+import multiprocessing
 import os
+import sys
 import threading
 import time
 import traceback
@@ -526,10 +528,14 @@ def run_note(result) -> str:
 
 
 def main():
+    """Start MaskReg; `maskreg <folder>` also opens that folder."""
+    multiprocessing.freeze_support()  # packaged as MaskReg.exe, the tile-loading workers start through here
     style.setup()
     app = pg.mkQApp(APP)
     window = MaskRegWindow()
     window.show()
+    if len(sys.argv) > 1:
+        window.open_folder(sys.argv[1])
     app.exec()
 
 

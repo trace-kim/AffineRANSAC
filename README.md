@@ -54,15 +54,22 @@ is done):
 2. Set `__version__`; in `CHANGELOG.md` rename *Unreleased* to `X.Y.Z (YYYY-MM-DD)` and start a new empty
    *Unreleased* above it.
 3. `pytest` must pass.
-4. Commit, tag and push:
+4. On the data machine (image folders need its metadata reader; the build refuses without it), build the program
+   folder `dist/MaskReg/` (MaskReg.exe and everything it needs, ~400 MB):
+   ```
+   python -m PyInstaller packaging/MaskReg.spec --noconfirm
+   ```
+   Start `dist\MaskReg\MaskReg.exe` once and open a folder to check it.
+5. Commit, tag and push:
    ```
    git commit -am "Release X.Y.Z"
    git tag -a vX.Y.Z -m "MaskReg X.Y.Z"
    git push origin main vX.Y.Z
    ```
-5. On GitHub: *Releases → Draft a new release*, choose the tag, paste its `CHANGELOG.md` section.
+6. On GitHub: *Releases → Draft a new release*, choose the tag, paste its `CHANGELOG.md` section.
 
-How users install updates (automatic updates) is not decided yet.
+Planned (`docs/SPEC.md` D100): an installer (`MaskReg-setup-X.Y.Z.exe`, Inno Setup) and automatic updates from a
+read-only FTP folder.
 
 ## Notebooks
 

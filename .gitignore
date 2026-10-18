@@ -15,3 +15,7 @@ docs/remote/
 
 # Personal notebook copies with real paths/outputs (keep tracked notebooks clean for git pull)
 *.local.ipynb
+
+# Packaging output (packaging/MaskReg.spec)
+build/
+dist/
