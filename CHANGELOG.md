@@ -58,5 +58,11 @@ they open, flagged as outdated.
   refinement, as the analysis did, and shows them as layers like the others: *Detected contours*, *Refined
   contours*, *Detected centres* and *Refined centres*, to compare the two methods that *stitch_refined* switches
   between. Contours are drawn for the contacts in view; zoom in if there are too many (D113).
+- Registration tab: the maps show all their contacts and nothing more: at start, after *View all* in any map, after a
+  change of stripes or values, and when the window is resized (unless you zoomed or panned: then the area is kept).
+  Each map takes the shape of its contacts; the room it does not need goes to the mean per row beside it or the mean
+  per column below. *View all* in the dx or dy map no longer zooms out a little more each time, and the figure no
+  longer runs past the right edge of a narrow window. The maps' titles are now *Δx (nm)* etc.; the colour bars say
+  *measured − design* (D114).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

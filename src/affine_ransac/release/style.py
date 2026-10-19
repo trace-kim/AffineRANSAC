@@ -21,6 +21,7 @@ STRIPES = ["#2a78d6", "#9b4dca", "#1baf7a", "#c7951a"]  # design pattern: one co
 FONT = "Segoe UI"
 TICK_PT, LABEL_PT, TITLE_PT = 10, 11, 12
 EXPORT_SCALE = 2  # Copy / Save image: pixels per screen pixel
+TICK_PX = 50  # a mask axis's labelled ticks at least this far apart, so that their labels fit side by side
 
 
 class MaskAxis(pg.AxisItem):
@@ -35,6 +36,17 @@ class MaskAxis(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):
         decimals = max(0, int(np.ceil(-np.log10(spacing * scale)))) if spacing * scale > 0 else 0
         return [f"{v * scale + self.origin_um:.{decimals}f}" for v in values]
+
+    def tickSpacing(self, minVal, maxVal, size):
+        """pyqtgraph's spacing, with the labelled ticks at least TICK_PX apart (1, 2, 5 x 10^k): pyqtgraph puts
+        two or more on any axis, and on a narrow map their labels ran into each other (D114)."""
+        levels = super().tickSpacing(minVal, maxVal, size)
+        if not levels or size <= 0 or maxVal == minVal:
+            return levels
+        major = levels[0][0]
+        while major * size / abs(maxVal - minVal) < TICK_PX:
+            major *= 2.5 if round(major / 10 ** np.floor(np.log10(major))) == 2 else 2  # 1 -> 2 -> 5 -> 10
+        return [(major, 0)] + levels[1:]
 
 
 def setup():

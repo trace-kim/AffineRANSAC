@@ -143,6 +143,7 @@ def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     # The profiles beside a map follow it: the row profile its y, the column profile its x.
     panel = view.maps[0][0]
     panel.map.vb.setRange(xRange=(0.2, 0.8), yRange=(1.0, 3.0), padding=0)
+    panel.map.vb.sigRangeChangedManually.emit([True, True])  # as a zoom with the mouse: the other maps follow
     QtWidgets.QApplication.processEvents()
     assert np.allclose(panel.rows.vb.viewRange()[1], panel.map.vb.viewRange()[1])
     assert np.allclose(panel.columns.vb.viewRange()[0], panel.map.vb.viewRange()[0])
@@ -164,6 +165,59 @@ def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     stitching = StitchingView(result, use_opengl=False)
     assert not stitching.load_button.isEnabled()  # contour CSVs: no images
     view.close()
+
+
+def settle():
+    for _ in range(5):
+        QtWidgets.QApplication.processEvents()
+
+
+def assert_fitted(view):
+    """Every map shows all of its contacts (extent) and at most a few pixels more either way, its shape theirs;
+    more height only where the maps are as short as the colour bars' labels let them be."""
+    low, high = view.extent()
+    labels_h = max(view.dr_bar.minimumHeight(), view.color_bar.minimumHeight())
+    for panel in view.panels:
+        (x0, x1), (y0, y1) = panel.map.vb.viewRange()
+        pixel = (x1 - x0) / panel.map.vb.width()
+        assert x0 <= low[0] + 1e-9 and x1 >= high[0] - 1e-9 and y0 <= low[1] + 1e-9 and y1 >= high[1] - 1e-9
+        assert (x1 - x0) - (high[0] - low[0]) < 3 * pixel
+        assert (y1 - y0) - (high[1] - low[1]) < 3 * pixel or panel.map.height() < labels_h + 1
+
+
+def test_the_maps_show_their_contacts_just(tmp_path):
+    """At start, after View All in any map and after a resize, every map shows all of its contacts and no more:
+    the room a map does not need goes to its profiles. A zoom with the mouse is kept when the window is resized.
+    A map is never shorter than its colour bar's label."""
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    for design in (result.design_nm, result.design_nm[:, ::-1]):  # 2 stripes x 3 tiles: taller than wide; and wide
+        view = RegistrationView(replace(result, design_nm=design), use_opengl=False)
+        view.resize(2000, 1000)
+        view.show()
+        settle()
+        assert_fitted(view)
+        low, high = view.extent()
+        assert np.ptp(view.position_um, axis=0) == pytest.approx(high - low - view.pitch_nm / 1000)  # half a pitch around
+        assert view.figure.ci.width() <= view.figure.width()  # nothing cut off on the right
+        panel = view.maps[0][0]
+
+        panel.map.vb.scaleBy((0.5, 0.5))  # a zoom with the mouse
+        panel.map.vb.sigRangeChangedManually.emit([True, True])
+        zoomed = panel.map.vb.viewRange()
+        view.resize(1600, 900)
+        settle()
+        assert not view.fitted and np.mean(panel.map.vb.viewRange()[1]) == pytest.approx(np.mean(zoomed[1]))
+        panel.map.vb.menu.viewAll.trigger()  # View All in a colour map: every map fitted again
+        settle()
+        assert_fitted(view)
+        view.resize(2200, 1100)
+        settle()
+        assert_fitted(view)
+        view.close()
 
 
 def result_with_failures(folder):

@@ -17,9 +17,10 @@ rasterized to the screen like the research view; draw_map), side by side and sho
 every contact, or their mean per cell of a square grid (grid_means); grid lines (on at start). Every map has its
 profiles beside it (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the
 map's y, and the mean per column below it, of dr beside the arrows and of its own component beside dx and dy;
-both follow the map's zoom and pan. Stripes (StripeSelector): the maps and profiles show the contacts of the
-stripes ticked. Copy profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole
-figure or one graph (also in each graph's right-click menu).
+both follow the map's zoom and pan. The maps show their contacts just, each shaped like them, at start and on View
+All (fit, D114). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
+profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure or one graph (also
+in each graph's right-click menu).
 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
@@ -59,10 +60,11 @@ CONTOURS = ("Detected contours", "Refined contours", "Detected centres", "Refine
 MAX_CONTOURS = 5000  # contacts in view whose contours are drawn; more are too small to read and slow to draw
 
 
-def mask_plot(origin_nm: np.ndarray, title: str = "", data_unit_nm: float = 1.0) -> pg.PlotItem:
+def mask_plot(origin_nm: np.ndarray, title: str = "", data_unit_nm: float = 1.0,
+              view_box: pg.ViewBox | None = None) -> pg.PlotItem:
     """A plot of data relative to origin_nm (data_unit_nm: see MaskAxis), axes in mask µm, equal x and y scales."""
-    plot = pg.PlotItem(axisItems={"bottom": style.MaskAxis("bottom", origin_nm[0], data_unit_nm),
-                                  "left": style.MaskAxis("left", origin_nm[1], data_unit_nm)})
+    plot = pg.PlotItem(viewBox=view_box, axisItems={"bottom": style.MaskAxis("bottom", origin_nm[0], data_unit_nm),
+                                                    "left": style.MaskAxis("left", origin_nm[1], data_unit_nm)})
     plot.setAspectLocked(True)
     style.style_plot(plot, title, "x (µm)", "y (µm)", grid=False)
     return plot
@@ -749,6 +751,18 @@ def arrow_segments(start: np.ndarray, vector: np.ndarray) -> tuple[np.ndarray, n
     return points[:, 0], points[:, 1]
 
 
+class FitViewBox(pg.ViewBox):
+    """A view box whose View All (right-click menu) calls view_all() instead of fitting everything in it (D114): a
+    colour map's image is drawn for its view, so View All zoomed out a little more every time."""
+
+    def __init__(self, view_all):
+        super().__init__()
+        self.view_all = view_all
+
+    def autoRange(self, *args, **kwargs):
+        self.view_all()
+
+
 class MarginalMap:
     """A map with the mean per row on its right (rotated: the row's y runs down the side, aligned with the map's
     y) and the mean per column below it (aligned with the map's x), in a GraphicsLayout at (row, col): the map
@@ -756,17 +770,24 @@ class MarginalMap:
     map's zoom and pan. Positions in µm relative to origin_nm."""
     AXIS_PX = 64  # left axis width of the map and of the column profile, so that their x line up
 
-    def __init__(self, layout: pg.GraphicsLayout, row: int, col: int, origin_nm, title: str, name: str):
-        """name: what the map shows, for naming its graphs (e.g. "dx")."""
-        self.name = name
-        self.map = mask_plot(origin_nm, title, data_unit_nm=1000)
-        self.rows = pg.PlotItem(axisItems={"left": style.MaskAxis("left", origin_nm[1], 1000)})
-        self.columns = pg.PlotItem(axisItems={"bottom": style.MaskAxis("bottom", origin_nm[0], 1000)})
+    def __init__(self, layout: pg.GraphicsLayout, row: int, col: int, origin_nm, title: str, name: str, view_all):
+        """name: what the map shows, for naming its graphs (e.g. "dx"); view_all(): the map's View All. A
+        profile's View All fits its error axis only: the other one follows the map."""
+        self.name, self.col = name, col
+        self.map = mask_plot(origin_nm, title, data_unit_nm=1000, view_box=FitViewBox(view_all))
+        self.rows = pg.PlotItem(viewBox=FitViewBox(lambda: self.rows.vb.enableAutoRange(x=True)),
+                                axisItems={"left": style.MaskAxis("left", origin_nm[1], 1000)})
+        self.columns = pg.PlotItem(viewBox=FitViewBox(lambda: self.columns.vb.enableAutoRange(y=True)),
+                                   axisItems={"bottom": style.MaskAxis("bottom", origin_nm[0], 1000)})
         layout.addItem(self.map, row=row, col=col)
         layout.addItem(self.rows, row=row, col=col + 1)
         layout.addItem(self.columns, row=row + 1, col=col)
         style.style_plot(self.rows, "Mean per row", "error (nm)")
         style.style_plot(self.columns, "Mean per column", "x (µm)", "error (nm)")
+        self.columns.layout.removeItem(self.columns.titleLabel)  # its title over its axis too: a narrower map (D114)
+        self.columns.layout.addItem(self.columns.titleLabel, 0, 0, 1, 2)
+        for plot in (self.map, self.rows, self.columns):
+            plot.hideButtons()  # its "A" auto-ranged every axis, as View All did
         for plot in (self.map, self.columns):
             plot.getAxis("left").setWidth(self.AXIS_PX)
         self.rows.addLine(x=0, pen=pg.mkPen(style.MUTED, style=QtCore.Qt.PenStyle.DashLine))
@@ -794,6 +815,7 @@ class MarginalMap:
 
 
 ARROW_COLOURS = 32  # arrows are coloured by their length in this many steps of the colour scale
+UNLIMITED = 16_777_215  # Qt's largest size (QWIDGETSIZE_MAX)
 
 
 def jet_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
@@ -804,27 +826,26 @@ def jet_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
     axis.setStyle(tickFont=QtGui.QFont(style.FONT, style.TICK_PT))
     axis.enableAutoSIPrefix(False)
     axis.setLabel(label, color=style.TEXT, **{"font-size": f"{style.LABEL_PT}pt"})
+    bar.setMinimumHeight(axis.label.boundingRect().width() + 10)  # its label fits along it
     return bar
 
 
 def link_views(plots: list[pg.PlotItem]):
-    """The plots show the same area: a zoom or pan in one is copied to the others, as the same centre and the same
-    scale (µm per pixel), so plots of different widths still agree. A hidden plot neither leads nor follows."""
-    busy = [False]
-
+    """The plots show the same area: a zoom or pan with the mouse in one is copied to the others, as the same centre
+    and the same scale (µm per pixel), so plots of different widths still agree. A hidden plot neither leads nor
+    follows. Only the user's zooms and pans: copied while the window is resized, a range was taken from a plot laid
+    out already and given to one not yet, which then showed less than it should (D114)."""
     def follow(source):
         def update(*_):
-            if busy[0] or not source.isVisible() or source.vb.width() <= 0:
+            if not source.isVisible() or source.vb.width() <= 0:
                 return
-            busy[0] = True
             (x0, x1), y_range = source.vb.viewRange()
             per_pixel, centre = (x1 - x0) / source.vb.width(), (x0 + x1) / 2
             for target in plots:
                 if target is not source and target.isVisible():
                     half = per_pixel * target.vb.width() / 2
                     target.vb.setRange(xRange=(centre - half, centre + half), yRange=y_range, padding=0)
-            busy[0] = False
-        source.vb.sigRangeChanged.connect(update)
+        source.vb.sigRangeChangedManually.connect(update)
     for plot in plots:
         follow(plot)
 
@@ -900,27 +921,27 @@ class RegistrationView(QtWidgets.QWidget):
         # the dx and dy colour maps (profiles of their own component, one shared colour bar). Same area in all.
         self.figure = figure(use_opengl)
         grid = self.figure.ci
-        self.arrow_panel = MarginalMap(grid, 0, 0, self.origin, "Δr: measured − design (nm)", "arrow")
+        self.arrow_panel = MarginalMap(grid, 0, 0, self.origin, "Δr (nm)", "arrow", self.fit)
         self.arrow_profiles = [self.arrow_panel.add_profile("dr", style.DR)]
         self.arrows = [pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(QtGui.QColor(*rgb[:3]), width=1), antialias=False)
                        for rgb in JET.getLookupTable(nPts=ARROW_COLOURS)]
         for item in self.arrows:
             self.arrow_panel.map.addItem(item)
-        self.dr_bar = jet_bar((0.0, 1.0), "dr = |error| (nm)")
+        self.dr_bar = jet_bar((0.0, 1.0), "|measured − design| (nm)")
         self.dr_bar.sigLevelsChanged.connect(lambda *_: self.draw_arrows())
         grid.addItem(self.dr_bar, row=0, col=2)
         grid.layout.setColumnSpacing(2, 24)  # room between its axis label and the dx map's
         self.maps = []  # (MarginalMap, image, component)
         self.map_profiles = []
         for component, (name, color) in enumerate((("Δx", style.DX), ("Δy", style.DY))):
-            panel = MarginalMap(grid, 0, 3 + 2 * component, self.origin, f"{name}: measured − design (nm)",
-                                ("dx", "dy")[component])
+            panel = MarginalMap(grid, 0, 3 + 2 * component, self.origin, f"{name} (nm)", ("dx", "dy")[component],
+                                self.fit)
             self.map_profiles.append(panel.add_profile(name, color))
             image = pg.ImageItem(axisOrder="row-major")
             image.setZValue(-100)  # under the grid lines
             panel.map.addItem(image)
             self.maps.append((panel, image, component))
-        self.color_bar = jet_bar((-1.0, 1.0), "error (nm)")
+        self.color_bar = jet_bar((-1.0, 1.0), "measured − design (nm)")
         self.color_bar.sigLevelsChanged.connect(lambda *_: self.draw_maps())
         grid.addItem(self.color_bar, row=0, col=7)
         self.panels = [self.arrow_panel] + [panel for panel, _, _ in self.maps]
@@ -930,6 +951,14 @@ class RegistrationView(QtWidgets.QWidget):
         for panel, _, _ in self.maps:
             panel.map.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
             panel.map.vb.sigResized.connect(lambda *_: self.redraw.start())
+        # The maps show their contacts just (fit), until the user zooms or pans one; then a resized figure keeps
+        # the area shown. The maps' shapes follow the figure's size (fit_layout), once it is laid out.
+        self.fitted = True
+        for panel in self.panels:
+            panel.map.vb.sigRangeChangedManually.connect(lambda *_: setattr(self, "fitted", False))
+        self.resized = QtCore.QTimer(self, singleShot=True, interval=0)
+        self.resized.timeout.connect(lambda: self.fit() if self.fitted else self.fit_layout())
+        self.figure.installEventFilter(self)
 
         self.arrow_scale = QtWidgets.QDoubleSpinBox(decimals=0, minimum=1, maximum=1e7)
         self.arrow_scale.setToolTip("Arrows are drawn this many times longer than the error")
@@ -1009,15 +1038,15 @@ class RegistrationView(QtWidgets.QWidget):
         self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.row_y)} rows, "
                              f"{len(self.column_x)} columns. Error = measured (SEM) − design after the {window}, "
                              f"fitted on every contact: {summary_text(self.error_nm)}.")
-        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
-        self.arrow_panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
+        self.fitted = True  # show them all
         self.set_values()
 
     def grid_mode(self) -> bool:
         return self.values.currentIndex() == 1
 
     def set_values(self, *_):
-        """Every contact or the grid average: the grid computed again, the arrow scale reset, the maps drawn."""
+        """Every contact or the grid average: the grid computed again, the arrow scale reset, the maps fitted again
+        unless zoomed, then drawn."""
         self.cell.setEnabled(self.grid_mode())
         corner, mean, _ = grid_means(self.design_nm, self.error_nm, self.cell.value() * 1000)
         self.grid_corner_um, self.grid_mean = (corner - self.origin) / 1000, mean
@@ -1027,8 +1056,56 @@ class RegistrationView(QtWidgets.QWidget):
         self.arrow_scale.blockSignals(True)
         self.arrow_scale.setValue(nice_number(0.5 * spacing_nm / (largest or 1.0)))  # largest arrows ~ half a spacing
         self.arrow_scale.blockSignals(False)
+        if self.fitted:
+            self.fit()
         self.draw_arrows()
         self.draw_maps()
+
+    def extent(self) -> tuple[np.ndarray, np.ndarray]:
+        """(low, high) x and y, µm, of what the maps show when fitted: the contacts shown with half a pitch around
+        them (their disks; arrows half a pitch long), or every cell of the grid."""
+        if self.grid_mode():
+            rows, cols = self.grid_mean.shape[:2]
+            return self.grid_corner_um, self.grid_corner_um + np.array([cols, rows]) * self.cell.value()
+        half = self.pitch_nm / 2000
+        return self.position_um.min(axis=0) - half, self.position_um.max(axis=0) + half
+
+    def fit(self):
+        """Every map shaped like the extent (fit_layout) and showing it, all of it and no more (D114)."""
+        self.fit_layout()
+        low, high = self.extent()
+        for panel in self.panels:
+            panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]), padding=0)
+        self.fitted = True
+
+    def fit_layout(self):
+        """Each map shaped like the extent, as large as fits in the room the layout's stretch factors give it; the
+        room it does not need goes to its profiles, the width to the mean per row beside it, the height to the mean
+        per column below (D114). Only largest sizes are set: the figure never grows wider than the window. A map is
+        never narrower than the title of its mean per column, nor shorter than its colour bar's label."""
+        if not self.isVisible():
+            return  # laid out when shown (eventFilter)
+        grid = self.figure.ci.layout
+        for panel in self.panels:
+            grid.setColumnMaximumWidth(panel.col, UNLIMITED)
+        grid.setRowMaximumHeight(0, UNLIMITED)
+        grid.activate()  # the room, as the stretch factors share the figure out
+        room_w = min(panel.map.vb.width() for panel in self.panels)
+        room_h = min(panel.map.vb.height() for panel in self.panels)
+        low, high = self.extent()
+        aspect = (high[0] - low[0]) / (high[1] - low[1])
+        view_w = max(min(room_w, aspect * room_h), 1.0, aspect)  # at least a pixel each way
+        plot = self.arrow_panel.map
+        for panel in self.panels:
+            grid.setColumnMaximumWidth(panel.col, plot.width() - plot.vb.width() + view_w)
+        row_h = plot.height() - plot.vb.height() + view_w / aspect
+        grid.setRowMaximumHeight(0, max(row_h, self.dr_bar.minimumHeight(), self.color_bar.minimumHeight()))
+        grid.activate()
+
+    def eventFilter(self, watched, event):
+        if watched is self.figure and event.type() == QtCore.QEvent.Type.Resize:
+            self.resized.start()  # once the figure has its new size
+        return False
 
     def arrow_vectors(self) -> tuple[np.ndarray, np.ndarray]:
         """Arrow starts (µm, relative to the origin) and errors (nm): every contact, or every cell's mean at its
