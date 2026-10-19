@@ -1,13 +1,14 @@
 """The release's tabs (docs/SPEC.md D77), pyqtgraph, presentation style (style.py).
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
-placement; on request (off at start, D76) the overlaps not matched (filled in the colour of their stitching, D107),
-the tiles not stitched (thick red outline) and the tile names; the SEM images on request
-(Load SEM images: the app reads them in the background and calls set_images), with an opacity slider; the design
-pattern on request (Load design: the .oas contacts filled, one colour per stripe, set_design), so that the files of
-neighbouring stripes can be told apart where they overlap. Of a failed run (release.analysis.AnalysisFailed) also
-the tiles not measured, with the count per reason; the cursor line names the tiles under the cursor and why each
-was not measured.
+placement, under a status line that grades the stitching (stitching_verdict, D109); on request (off at start, D76)
+the overlaps not matched (filled in the colour of their stitching, D107), the contacts in each overlap, used to
+stitch it or not (D110), the tiles not stitched (thick red outline) and the tile names (D108); the SEM images on
+request (Load SEM images: the app reads them in the background and calls set_images), with an opacity slider; the
+design pattern on request (Load design: the .oas contacts filled, one colour per stripe, set_design), so that the files
+of neighbouring stripes can be told apart where they overlap. A click on a tile shows it with its overlaps and
+neighbours, its details beside the plot (D111). Of a failed run (release.analysis.AnalysisFailed) also the tiles not
+measured, with the count per reason; the cursor line names the tiles under the cursor and why each was not measured.
 
 RegistrationView: the error after the moving-window affine, measured (SEM) − design, in one figure: an arrow map
 (arrows coloured by their length dr, jet, own colour bar) and colour maps of dx and dy (jet, shared colour scale,
