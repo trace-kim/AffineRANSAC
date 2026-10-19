@@ -58,12 +58,11 @@ they open, flagged as outdated.
   refinement, as the analysis did, and shows them as layers like the others: *Detected contours*, *Refined
   contours*, *Detected centres* and *Refined centres*, to compare the two methods that *stitch_refined* switches
   between. Contours are drawn for the contacts in view; zoom in if there are too many (D113).
-- Registration tab: the maps show all their contacts and nothing more: at start, after *View all* in any map, after a
-  change of stripes or values, and when the window is resized (unless you zoomed or panned: then the area is kept).
-  Each map takes the shape of its contacts; the room it does not need goes to the mean per row beside it or the mean
-  per column below. *View all* in the dx or dy map no longer zooms out a little more each time, and the figure no
-  longer runs past the right edge of a narrow window. The maps' titles are now *Δx (nm)* etc.; the colour bars say
-  *measured − design* (D114).
+- Registration tab: at start and on *View all* in any map, the maps show the full height of their contacts, centred,
+  at the width the window gives them; also after a change of stripes or values and when the window is resized
+  (unless you zoomed or panned: then the area is kept). *View all* in the dx or dy map no longer zooms out a little
+  more each time, and the figure no longer runs past the right edge of a narrow window. The maps' titles are now
+  *Δx (nm)* etc.; the colour bars say *measured − design* (D114, D117).
 - Registration tab: *Mean per row of Δx and Δy*, below the other controls: untick *Auto* and type the range (from,
   to, nm; Enter applies) to show both means per row on one fixed scale, kept when you change stripes. A zoom with
   the mouse in either sets it for both; *View all* there goes back to *Auto*. The mean dr per row keeps its own

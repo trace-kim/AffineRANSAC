@@ -173,51 +173,50 @@ def settle():
 
 
 def assert_fitted(view):
-    """Every map shows all of its contacts (extent) and at most a few pixels more either way, its shape theirs;
-    more height only where the maps are as short as the colour bars' labels let them be."""
+    """Every map shows the full height of its contacts (extent) and no more, centred on them in x (D117)."""
     low, high = view.extent()
-    labels_h = max(view.dr_bar.minimumHeight(), view.color_bar.minimumHeight())
     for panel in view.panels:
         (x0, x1), (y0, y1) = panel.map.vb.viewRange()
-        pixel = (x1 - x0) / panel.map.vb.width()
-        assert x0 <= low[0] + 1e-9 and x1 >= high[0] - 1e-9 and y0 <= low[1] + 1e-9 and y1 >= high[1] - 1e-9
-        assert (x1 - x0) - (high[0] - low[0]) < 3 * pixel
-        assert (y1 - y0) - (high[1] - low[1]) < 3 * pixel or panel.map.height() < labels_h + 1
+        pixel = (y1 - y0) / panel.map.vb.height()
+        assert y0 == pytest.approx(low[1], abs=pixel) and y1 == pytest.approx(high[1], abs=pixel)
+        assert (x0 + x1) / 2 == pytest.approx((low[0] + high[0]) / 2, abs=pixel)
 
 
-def test_the_maps_show_their_contacts_just(tmp_path):
-    """At start, after View All in any map and after a resize, every map shows all of its contacts and no more:
-    the room a map does not need goes to its profiles. A zoom with the mouse is kept when the window is resized.
-    A map is never shorter than its colour bar's label."""
+def test_view_all_fits_the_maps_to_the_height_of_their_contacts(tmp_path):
+    """At start, after View All in any map and after a resize, every map shows the full height of its contacts,
+    centred on them in x and as wide as the map is: a map's width does not depend on the contacts' shape. A zoom
+    with the mouse is kept when the window is resized (D117)."""
     style.setup()
     pg.mkQApp()
     write_contour_folder(tmp_path)
     with pytest.warns(UserWarning):
         result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    widths = []
     for design in (result.design_nm, result.design_nm[:, ::-1]):  # 2 stripes x 3 tiles: taller than wide; and wide
         view = RegistrationView(replace(result, design_nm=design), use_opengl=False)
-        view.resize(2000, 1000)
+        view.resize(1400, 900)
         view.show()
         settle()
         assert_fitted(view)
+        widths.append(view.maps[0][0].map.vb.width())
         low, high = view.extent()
         assert np.ptp(view.position_um, axis=0) == pytest.approx(high - low - view.pitch_nm / 1000)  # half a pitch around
-        assert view.figure.ci.width() <= view.figure.width()  # nothing cut off on the right
         panel = view.maps[0][0]
 
         panel.map.vb.scaleBy((0.5, 0.5))  # a zoom with the mouse
         panel.map.vb.sigRangeChangedManually.emit([True, True])
         zoomed = panel.map.vb.viewRange()
-        view.resize(1600, 900)
+        view.resize(1300, 850)
         settle()
         assert not view.fitted and np.mean(panel.map.vb.viewRange()[1]) == pytest.approx(np.mean(zoomed[1]))
         panel.map.vb.menu.viewAll.trigger()  # View All in a colour map: every map fitted again
         settle()
         assert_fitted(view)
-        view.resize(2200, 1100)
+        view.resize(1600, 1000)
         settle()
         assert_fitted(view)
         view.close()
+    assert widths[0] == pytest.approx(widths[1], rel=0.1)  # not shaped like the contacts (2 : 3 and 3 : 2)
 
 
 def test_the_means_per_row_of_dx_and_dy_take_a_range_typed_in(tmp_path):

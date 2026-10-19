@@ -17,8 +17,8 @@ rasterized to the screen like the research view; draw_map), side by side and sho
 every contact, or their mean per cell of a square grid (grid_means); grid lines (on at start). Every map has its
 profiles beside it (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the
 map's y, and the mean per column below it, of dr beside the arrows and of its own component beside dx and dy;
-both follow the map's zoom and pan. The maps show their contacts just, each shaped like them, at start and on View
-All (fit, D114). The means per row of dx and dy: Auto, or a range typed in, the same for both (D115). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
+both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
+them, as wide as they are (fit, D117). The means per row of dx and dy: Auto, or a range typed in, the same for both (D115). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
 profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx
 and dy together (D116) or one graph (also in each graph's right-click menu).
 
@@ -784,8 +784,6 @@ class MarginalMap:
         layout.addItem(self.columns, row=row + 1, col=col)
         style.style_plot(self.rows, "Mean per row", "error (nm)")
         style.style_plot(self.columns, "Mean per column", "x (µm)", "error (nm)")
-        self.columns.layout.removeItem(self.columns.titleLabel)  # its title over its axis too: a narrower map (D114)
-        self.columns.layout.addItem(self.columns.titleLabel, 0, 0, 1, 2)
         for plot in (self.map, self.rows, self.columns):
             plot.hideButtons()  # its "A" auto-ranged every axis, as View All did
         for plot in (self.map, self.columns):
@@ -815,7 +813,6 @@ class MarginalMap:
 
 
 ARROW_COLOURS = 32  # arrows are coloured by their length in this many steps of the colour scale
-UNLIMITED = 16_777_215  # Qt's largest size (QWIDGETSIZE_MAX)
 
 
 def jet_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
@@ -826,7 +823,6 @@ def jet_bar(values: tuple[float, float], label: str) -> pg.ColorBarItem:
     axis.setStyle(tickFont=QtGui.QFont(style.FONT, style.TICK_PT))
     axis.enableAutoSIPrefix(False)
     axis.setLabel(label, color=style.TEXT, **{"font-size": f"{style.LABEL_PT}pt"})
-    bar.setMinimumHeight(axis.label.boundingRect().width() + 10)  # its label fits along it
     return bar
 
 
@@ -951,14 +947,11 @@ class RegistrationView(QtWidgets.QWidget):
         for panel, _, _ in self.maps:
             panel.map.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
             panel.map.vb.sigResized.connect(lambda *_: self.redraw.start())
-        # The maps show their contacts just (fit), until the user zooms or pans one; then a resized figure keeps
-        # the area shown. The maps' shapes follow the figure's size (fit_layout), once it is laid out.
+        # The maps show the contacts' full height (fit) until the user zooms or pans one: then a change of values
+        # keeps the area shown.
         self.fitted = True
         for panel in self.panels:
             panel.map.vb.sigRangeChangedManually.connect(lambda *_: setattr(self, "fitted", False))
-        self.resized = QtCore.QTimer(self, singleShot=True, interval=0)
-        self.resized.timeout.connect(lambda: self.fit() if self.fitted else self.fit_layout())
-        self.figure.installEventFilter(self)
 
         self.arrow_scale = QtWidgets.QDoubleSpinBox(decimals=0, minimum=1, maximum=1e7)
         self.arrow_scale.setToolTip("Arrows are drawn this many times longer than the error")
@@ -1092,41 +1085,14 @@ class RegistrationView(QtWidgets.QWidget):
         return self.position_um.min(axis=0) - half, self.position_um.max(axis=0) + half
 
     def fit(self):
-        """Every map shaped like the extent (fit_layout) and showing it, all of it and no more (D114)."""
-        self.fit_layout()
+        """Every map shows the full height of the extent, centred on it in x, as wide as the map is: only y is
+        fitted (D117). The x range asked for is one pitch wide: with equal x and y scales the view box widens it to
+        the map, now and after any resize, so the fit holds and y never moves with the map's width."""
         low, high = self.extent()
+        centre, half = (low[0] + high[0]) / 2, self.pitch_nm / 2000
         for panel in self.panels:
-            panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]), padding=0)
+            panel.map.vb.setRange(xRange=(centre - half, centre + half), yRange=(low[1], high[1]), padding=0)
         self.fitted = True
-
-    def fit_layout(self):
-        """Each map shaped like the extent, as large as fits in the room the layout's stretch factors give it; the
-        room it does not need goes to its profiles, the width to the mean per row beside it, the height to the mean
-        per column below (D114). Only largest sizes are set: the figure never grows wider than the window. A map is
-        never narrower than the title of its mean per column, nor shorter than its colour bar's label."""
-        if not self.isVisible():
-            return  # laid out when shown (eventFilter)
-        grid = self.figure.ci.layout
-        for panel in self.panels:
-            grid.setColumnMaximumWidth(panel.col, UNLIMITED)
-        grid.setRowMaximumHeight(0, UNLIMITED)
-        grid.activate()  # the room, as the stretch factors share the figure out
-        room_w = min(panel.map.vb.width() for panel in self.panels)
-        room_h = min(panel.map.vb.height() for panel in self.panels)
-        low, high = self.extent()
-        aspect = (high[0] - low[0]) / (high[1] - low[1])
-        view_w = max(min(room_w, aspect * room_h), 1.0, aspect)  # at least a pixel each way
-        plot = self.arrow_panel.map
-        for panel in self.panels:
-            grid.setColumnMaximumWidth(panel.col, plot.width() - plot.vb.width() + view_w)
-        row_h = plot.height() - plot.vb.height() + view_w / aspect
-        grid.setRowMaximumHeight(0, max(row_h, self.dr_bar.minimumHeight(), self.color_bar.minimumHeight()))
-        grid.activate()
-
-    def eventFilter(self, watched, event):
-        if watched is self.figure and event.type() == QtCore.QEvent.Type.Resize:
-            self.resized.start()  # once the figure has its new size
-        return False
 
     def arrow_vectors(self) -> tuple[np.ndarray, np.ndarray]:
         """Arrow starts (µm, relative to the origin) and errors (nm): every contact, or every cell's mean at its
