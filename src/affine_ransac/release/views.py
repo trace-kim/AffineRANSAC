@@ -250,7 +250,7 @@ class StitchingView(QtWidgets.QWidget):
                                                    pg.mkPen(style.OVERLAPS, width=1.5), "Overlaps used")
         self.layers["Design centres"] = self.plot.plot(pen=None, symbol="o", symbolSize=4, symbolPen=None,
                                                        symbolBrush=style.DESIGN, name="Design centres")
-        used = "refined" if r.settings.stitch_refined else "detected"  # the centres the run used (stitch_refined)
+        used = "detected" if r.settings.refinement == "none" else "refined"  # the centres the run used
         self.layers["Measured centres"] = self.plot.plot(pen=None, symbol="o", symbolSize=3, symbolPen=None,
                                                          symbolBrush=style.SEM, name=f"Measured (SEM) centres, {used}")
         # Failures: overlaps not matched filled in the colour of their stitching (measured or design), tiles not
@@ -618,7 +618,8 @@ class StitchingView(QtWidgets.QWidget):
 
     def set_contours(self, contours):
         """Show the contours and centres from the detection and after edge refinement (release.analysis
-        read_contours, TileContours; D113) as four layers, ticked once loaded; they follow the placement."""
+        read_contours, TileContours; D113) as four layers, ticked once loaded (with refinement none the two of the
+        detection only, D124); they follow the placement."""
         r, self.contours = self.result, contours
         for name, color in zip(CONTOURS, (style.DETECTED, style.REFINED) * 2):
             if name in self.layers:
@@ -634,8 +635,12 @@ class StitchingView(QtWidgets.QWidget):
             self.plot.addItem(item)
             self.legend_entries.append((item, label))
             self.layers[name] = item
-            self.boxes[name].setEnabled(True)
-            self.boxes[name].setChecked(True)
+            # with refinement none the refined contours and centres are the detected ones: not offered (D124)
+            offered = name.startswith("Detected") or r.settings.refinement != "none"
+            self.boxes[name].setEnabled(offered)
+            self.boxes[name].setChecked(offered)
+            self.boxes[name].setToolTip("" if offered else "Refinement none: the detected contours and centres are "
+                                                           "the measured ones")
         self.contours_button.setEnabled(False)
         self.update_positions()
         self.update_visibility()

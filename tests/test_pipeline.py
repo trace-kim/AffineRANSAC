@@ -105,6 +105,24 @@ def test_process_tile_refines_with_the_edge_rule_asked_for(tmp_path):
         np.testing.assert_array_equal(tile.refined.centers, refine_edges(image, tile.otsu, rule=rule).centers)
     default = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0))
     np.testing.assert_array_equal(default.refined.centers, refine_edges(image, default.otsu, rule="mid-level").centers)
+    # none: no refinement, the detected contours are what the tile is measured with (D124)
+    plain = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0), refinement="none")
+    assert plain.refined is plain.otsu and plain.seconds["refine"] < 0.01
+    np.testing.assert_array_equal(plain.sem_points_nm(), plain.sem_points_nm(refined=False))
+
+
+def test_with_refinement_none_the_design_tone_is_chosen_with_the_detected_centres(tmp_path, monkeypatch):
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
+    write_design(tmp_path / "tile.oas", visible(LATTICE, margin=0))
+    seen = []
+    import affine_ransac.pipeline as pipeline
+    real = pipeline.choose_design_contacts
+    monkeypatch.setattr(pipeline, "choose_design_contacts", lambda *a, **k: seen.append(a[3]) or real(*a, **k))
+
+    tile = process_tile(tmp_path / "tile.jpg", tmp_path / "tile.oas", (0.0, 0.0), (FOV, FOV), layer=(1, 0),
+                        refinement="none")
+
+    np.testing.assert_array_equal(seen[0], tile.sem_points_nm(refined=False))  # tile centre (0, 0): local = mask
 
 
 def test_process_tile_without_oas(tmp_path):

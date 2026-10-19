@@ -139,6 +139,10 @@ def test_settings_for_each_kind_of_folder():
     assert "detection" in settings_for("images") and "tile_margin_nm" not in settings_for("images")
     assert "max_match_nm" in settings_for("contour CSV") and "max_match_nm" in settings_for("images")
     assert "moving_window_per_stripe" not in settings_for("images")  # the release's only (RELEASE_ONLY)
+    assert "stitch_refined" not in settings_for("images") and "refinement" in settings_for("images")  # D124
+    check_settings(replace(Settings(), refinement="none"), "images")  # a valid choice
+    with pytest.raises(ValueError, match="refinement must be one of"):
+        check_settings(replace(Settings(), refinement="off"), "images")
 
 
 def write_image_folder(folder, design=None):

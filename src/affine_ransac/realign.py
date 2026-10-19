@@ -173,7 +173,7 @@ def realign_tiles(tiles: list[TileResult], settings, log) -> list[TileResult]:
     s = settings
     centers = np.array([t.center_nm for t in tiles])
     fovs = np.array([t.fov_nm for t in tiles])
-    sem_points = [t.sem_points_nm(s.stitch_refined) for t in tiles]
+    sem_points = [t.sem_points_nm() for t in tiles]
     stitch = stitch_tiles(sem_points, centers, fovs, s.max_match_nm, s.outlier_factor, s.min_matched,
                           label="SEM, realignment")
     placed = ~np.isnan(stitch.corrections[:, 0])

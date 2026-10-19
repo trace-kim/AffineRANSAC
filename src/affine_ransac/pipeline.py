@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from affine_ransac.features.contact import DetectedContacts, contact_contrast, detect_contacts, keep_contacts
-from affine_ransac.features.edges import refine_edges
+from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
@@ -37,6 +37,9 @@ from affine_ransac.matching import match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
+
+
+REFINEMENTS = RULES + ("none",)  # process_tile refinement: an edge rule, or none (the detected contours, D124)
 
 
 @dataclass
@@ -141,7 +144,8 @@ class TileResult:
     fov_nm: np.ndarray          # (2,) field of view (width, height), nm
     pixel_size_nm: float
     otsu: DetectedContacts      # pixel frame: initial detection (detect_contacts, any method)
-    refined: DetectedContacts   # pixel frame: detected contours moved to their edges (refine_edges)
+    refined: DetectedContacts   # pixel frame: detected contours moved to their edges (refine_edges; the
+                                # detected ones with refinement "none"): what the tile is measured with
     design: DesignContacts      # design contacts in the tone that matches the SEM
     oas_path: Path | None = None  # the tile's design file (read again to measure contact sizes)
     seconds: dict[str, float] = field(default_factory=dict)  # time per step of process_tile (logged)
@@ -204,7 +208,9 @@ def process_tile(
     to the SEM (ok, NaN fraction), for images that do not show their own design (realign.realign_tiles).
     min_contrast > 0: detected contacts whose contrast against a ring around them is below this many noise sigma
     are dropped before refinement (features.contact.contact_contrast; false contacts in images without pattern).
-    refinement: the edge rule of the refinement, "mid-level" or "steepest gradient" (features.edges.refine_edges).
+    refinement: the edge rule of the refinement, "mid-level" or "steepest gradient" (features.edges.refine_edges), or
+    "none": no refinement, the detected contours are the refined ones. Either way `refined` holds what the tile is
+    measured with: the design tone is chosen with its centres, and sem_points_nm() gives them.
     """
     t_start = time.perf_counter()
     image = load_sem_image(image_path)
@@ -216,7 +222,7 @@ def process_tile(
     if min_contrast > 0:
         otsu = keep_contacts(otsu, contact_contrast(image, otsu) >= min_contrast)
     t_detect = time.perf_counter()
-    refined = refine_edges(image, otsu, search_px=search_px, rule=refinement)
+    refined = otsu if refinement == "none" else refine_edges(image, otsu, search_px=search_px, rule=refinement)
     t_refine = time.perf_counter()
 
     seconds = {"read": t_read - t_start, "detect": t_detect - t_read, "refine": t_refine - t_detect,

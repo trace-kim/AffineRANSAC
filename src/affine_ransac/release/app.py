@@ -39,7 +39,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac import __version__
-from affine_ransac.analysis import Settings
+from affine_ransac.analysis import Settings, current_names
 from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
@@ -626,8 +626,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             saved = json.loads(self.preferences.value("settings", "") or "{}")
         except ValueError:
             saved = {}
-        known = {f.name for f in fields(Settings)}
-        return replace(DEFAULTS, **{name: value for name, value in saved.items() if name in known})
+        known = {f.name for f in fields(Settings)}  # in today's names (an unticked stitch_refined: refinement none)
+        return replace(DEFAULTS, **{name: value for name, value in current_names(saved).items() if name in known})
 
     def closeEvent(self, event):
         if self.busy and QtWidgets.QMessageBox.question(self, TITLE, "Still working. Quit anyway?") != \

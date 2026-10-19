@@ -31,16 +31,15 @@ from typing import Callable
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.features.edges import RULES
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import correct_points, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
-from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, process_tile, slipped_pairs,
-                                    stitch_design, stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points,
-                                    tile_neighbours, tile_stripes)
+from affine_ransac.pipeline import (REFINEMENTS, StitchResult, TileResult, measurement_pairs, process_tile,
+                                    slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_rigid,
+                                    tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.realign import realign_tiles
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, merge_observations, merge_values,
                                         paired_errors)
@@ -87,11 +86,16 @@ class Settings:
     # Images only
     layer: int = setting(100, "Layer of the contacts in the .oas")
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
-    detection: str = setting("band", "otsu (plain), otsu3 (3 classes) or band (regions enclosed by the bright band)")
+    detection: str = setting("band", "How contacts are found (each a region with a first, pixel outline; REFINEMENT "
+                                      "then places its edge). band: the regions a bright band encloses, however grey "
+                                      "the hole. otsu: the dark regions, for images without a bright band. otsu3: the "
+                                      "regions darker than the background; finds contacts whose band noise breaks "
+                                      "up, but more false regions")
     search_px: float = setting(5.0, "Edge refinement searches this many pixels in/out along the contour normal")
-    refinement: str = setting("mid-level", "Edge refinement puts each contour point where the smoothed image rises "
-                                           "half-way from the contact's interior to its bright band (mid-level), or "
-                                           "at the steepest rise (steepest gradient, noisier; before D122)")
+    refinement: str = setting("mid-level", "Edge of each contact, used for all results. mid-level: where the smoothed "
+                                           "image is half-way between the contact's interior and its bright band. "
+                                           "steepest gradient: where it rises fastest (noisier; before D122). none: "
+                                           "no refinement, the detected regions' centres")
     design_search_nm: float = setting(100.0, "Design-SEM matching: largest offset of one image's SEM contacts "
                                              "against its own .oas, before stitching (its stage error); for a "
                                              "regular array also > pitch / 2")
@@ -99,7 +103,6 @@ class Settings:
                                                "tile shift (< pitch / 2)")
     min_match_fraction: float = setting(0.5, "A design tone is accepted if at least this fraction of the SEM "
                                              "contacts match it")
-    stitch_refined: bool = setting(True, "Stitch with the refined centres (off: Otsu centres)")
     min_contrast: float = setting(0.0, "Drop detected contacts whose mean grey level differs from a 3 px ring "
                                        "around them by less than this many noise sigma (false contacts in images "
                                        "without pattern); 0 = off. Noisy images give real contacts only a few "
@@ -115,10 +118,9 @@ class Settings:
 CSV_ONLY = {"tile_margin_nm"}
 RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis only (release/analysis.py)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
-               "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale", "min_contrast",
-               "realign"}
+               "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign"}
 STITCH_METHODS = ("all overlaps", "measurement order first")
-CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": RULES,
+CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
            "stitch_method": STITCH_METHODS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
 # with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
@@ -131,11 +133,20 @@ POSITIVE = {"max_match_nm", "design_max_match_nm", "outlier_factor", "group_radi
 SAMPLE_TILES = 3  # tiles matched to their design before the run (first, middle, last with an .oas)
 
 
+def current_names(values: dict) -> dict:
+    """Stored setting values (a saved run's, or remembered parameters) as today's settings: stitch_refined, a check
+    box until D124, unticked is refinement "none" (ticked: the run's refinement)."""
+    values = dict(values)
+    if values.pop("stitch_refined", True) is False:
+        values["refinement"] = "none"
+    return values
+
+
 def saved_settings(values: dict) -> Settings:
-    """The Settings of a saved run from its stored values: names unknown to this code are ignored; a setting the run
-    does not have takes what runs did before it existed (BEFORE), else its default."""
+    """The Settings of a saved run from its stored values (current_names): names unknown to this code are ignored; a
+    setting the run does not have takes what runs did before it existed (BEFORE), else its default."""
     known = {f.name for f in fields(Settings)}
-    return Settings(**{**BEFORE, **{name: value for name, value in values.items() if name in known}})
+    return Settings(**{**BEFORE, **{name: value for name, value in current_names(values).items() if name in known}})
 
 
 def settings_for(kind: str) -> list[str]:
@@ -426,7 +437,7 @@ def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResu
     polygons for the viewer."""
     centers = np.array([t.center_nm for t in tiles])
     fovs = np.array([t.fov_nm for t in tiles])
-    sem_points = [t.sem_points_nm(s.stitch_refined) for t in tiles]
+    sem_points = [t.sem_points_nm() for t in tiles]
     design_points = [t.design_points_nm() for t in tiles]
     design_ok = [t.design.ok for t in tiles]
     neighbours = tile_neighbours(centers, fovs)  # overlapping tiles: their matching shifts must agree
@@ -487,7 +498,7 @@ def merged_contact_sizes(tiles: list[TileResult], merged: MergedErrors, observat
         raise ValueError(f"The ROI width must be >= 0 (is {roi_width_nm})")
     sem_sizes, design_sizes = [], []
     for k, tile in enumerate(tiles):
-        sem, design = tile.contact_sizes((s.layer, s.datatype), roi_width_nm, s.stitch_refined)
+        sem, design = tile.contact_sizes((s.layer, s.datatype), roi_width_nm)
         sem_sizes.append(sem)
         design_sizes.append(design)
         if progress is not None:

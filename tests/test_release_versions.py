@@ -63,6 +63,14 @@ RESULTS = {
                                      -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
         "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
                    6.441456148, 6.821792166, 0.0, 0.0]},
+    # 5 (D124): refinement none (was stitch_refined off) chooses the design tone with the detected centres too;
+    # these folders are refined, so their numbers are those of 4.
+    5: {"contour CSV": [2360, 0.097645195, 0.097127712, 0.387878965, 0.376539609, 0.022559669, -0.052001588,
+                        8.149617877, 8.95389255, 12.5, 11.5],
+        "contour CSV, 3 um window": [2360, 0.09756319, 0.096903189, 0.38584456, 0.384917053, 0.024032299,
+                                     -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
+        "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
+                   6.441456148, 6.821792166, 0.0, 0.0]},
 }
 
 # Per FORMAT: the arrays (without the optional contact_sizes/*) and the info keys of a run file.
@@ -180,6 +188,11 @@ def test_a_run_saved_before_a_setting_existed_says_what_it_did(tmp_path):
         settings = json.loads(str(arrays["info"]))["settings"]
     rewrite_info(path, settings={name: value for name, value in settings.items() if name != "refinement"})
     assert load_cache(data, user)[0].settings.refinement == "steepest gradient"
+    # until D124 the centres without refinement were a check box, stitch_refined: unticked reads as refinement none
+    rewrite_info(path, settings={**settings, "stitch_refined": False})
+    assert load_cache(data, user)[0].settings.refinement == "none"
+    rewrite_info(path, settings={**settings, "stitch_refined": True})
+    assert load_cache(data, user)[0].settings.refinement == "mid-level"
 
 
 def test_a_run_file_without_an_optional_array_added_since_still_opens(tmp_path):

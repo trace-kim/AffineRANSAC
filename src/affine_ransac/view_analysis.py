@@ -169,7 +169,7 @@ def analysis_window(result: AnalysisResult, use_opengl: bool = True, on_restitch
     main, raw = result.sets["uncorrected"], result.stitchings["raw"]
     if result.images is not None:
         stitch_view = StitchViewer(result.images.tiles, result.tile_ids, result.images.design_polygons, raw.stitch,
-                                   result.design_stitch, refined=s.stitch_refined, use_opengl=use_opengl,
+                                   result.design_stitch, use_opengl=use_opengl,
                                    errors=result.images.merged, arrow_scale=s.arrow_scale,
                                    spread_flag_nm=s.spread_flag_nm)
     else:

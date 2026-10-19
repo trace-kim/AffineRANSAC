@@ -27,7 +27,8 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import CHOICES, Settings, analyse_contour_folder, analyse_images, restitch, settings_for
+from affine_ransac.analysis import (CHOICES, Settings, analyse_contour_folder, analyse_images, current_names, restitch,
+                                   settings_for)
 from affine_ransac.io.external import read_external
 from affine_ransac.results_file import load_result, save_result
 from affine_ransac.view_analysis import analysis_window
@@ -350,8 +351,8 @@ class AnalyzerWindow(QtWidgets.QMainWindow):
             saved = json.loads(self.preferences.value("settings", "") or "{}")
         except ValueError:
             saved = {}
-        known = {f.name for f in fields(Settings)}
-        return Settings(**{name: value for name, value in saved.items() if name in known})
+        known = {f.name for f in fields(Settings)}  # in today's names (an unticked stitch_refined: refinement none)
+        return Settings(**{name: value for name, value in current_names(saved).items() if name in known})
 
     def closeEvent(self, event):
         if self.busy and QtWidgets.QMessageBox.question(self, "AffineRANSAC analyzer",

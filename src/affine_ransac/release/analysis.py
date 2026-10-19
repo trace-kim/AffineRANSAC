@@ -44,7 +44,8 @@ from affine_ransac.stitching import placement_corrections
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 4  # 4: edge refinement at the mid-level (D122)
+ANALYSIS = 5  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
+              # design tone with the detected centres too (D124)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -53,7 +54,7 @@ COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched"
           "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + ["detection", "search_px", "refinement", "design_search_nm",
-                                  "design_tolerance_nm", "min_match_fraction", "stitch_refined", "min_contrast", "realign"]}
+                                  "design_tolerance_nm", "min_match_fraction", "min_contrast", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 
@@ -133,7 +134,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         centers = np.array([t.center_nm for t in tiles])
         sizes = np.array([t.fov_nm for t in tiles])
         stripe = tile_stripes(centers)
-        sem_points = [t.sem_points_nm(s.stitch_refined) for t in tiles]
+        sem_points = [t.sem_points_nm() for t in tiles]
         design_points = [t.design_points_nm() for t in tiles]
         design_ok = [t.design.ok for t in tiles]
         neighbours = tile_neighbours(centers, sizes)
@@ -328,8 +329,9 @@ class TileContours:
     start: np.ndarray             # (n + 1,) its first row in detected / refined
     detected: np.ndarray          # (rows, 2) float32, tile-local nm
     refined: np.ndarray           # (rows, 2) float32
-    detected_centres: np.ndarray  # (n, 2) tile-local nm: the centres a run uses with stitch_refined off
-    refined_centres: np.ndarray   # (n, 2): with it on
+    detected_centres: np.ndarray  # (n, 2) tile-local nm, from the detection
+    refined_centres: np.ndarray   # (n, 2): after refinement, the centres the run used (with refinement none: the
+                                  # detected ones)
 
 
 def _tile_contours(arguments: tuple) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
@@ -347,8 +349,8 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
                   log: Callable[[str], None] = lambda text: None) -> TileContours:
     """The contours of an image run (TileContours), found again as the run found them: each SEM image detected and
     refined with the run's settings (process_tile without its design), in worker processes like the tiles. The
-    centres it used (refined or detected, settings.stitch_refined) must be the run's; tiles where they are not (an
-    image changed since the run?) are logged with !!."""
+    centres it used (the refined ones; the detected ones with refinement none) must be the run's; tiles where they
+    are not (an image changed since the run?) are logged with !!."""
     s = result.settings
     arguments = [(path, None, center, size, (s.layer, s.datatype), s.search_px, s.design_search_nm,
                   s.min_match_fraction, s.detection, s.design_tolerance_nm, False, s.min_contrast, s.refinement)
@@ -356,7 +358,7 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
     with ProcessPoolExecutor(max_workers=worker_count()) as pool:
         for k, (found, moved, found_centres, moved_centres) in enumerate(pool.map(_tile_contours, arguments)):
-            used = (moved_centres if s.stitch_refined else found_centres) + result.centers[k]
+            used = moved_centres + result.centers[k]
             if used.shape != result.sem_points[k].shape or not np.allclose(used, result.sem_points[k], atol=0.01):
                 differ.append(result.tile_ids[k])
             tiles.append(np.full(len(found), k))

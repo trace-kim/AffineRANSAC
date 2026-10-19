@@ -11,7 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
-First numbered version. Saved runs: format 3, analysis 4. Runs saved by earlier copies of MaskReg carry no version:
+First numbered version. Saved runs: format 3, analysis 5. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 
 - *File → Folders...*: choose the folder of `maskreg.ini` and the folder where FTP downloads are kept (D96).
@@ -86,5 +86,10 @@ they open, flagged as outdated.
   corrected by the windows of its own stripe (stripes are measured at different times and drift differently); a
   contact seen by two stripes gets the mean of both. The Registration tab's summary says how it was fitted. Off
   by default: runs give the same numbers as before (D123).
+- **Analysis 5.** *Analysis → Parameters*: the check box `stitch_refined` is gone; `refinement` has a third choice,
+  *none* (no refinement: the detected centres, as the unticked check box gave). Parameters and runs saved with it
+  unticked read as *none*. With *none* the design tone is now chosen with the detected centres too (before: the
+  refined ones), so such runs can give other numbers; refined runs do not change. The help texts of `detection`
+  and `refinement` say what each choice does (D124).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

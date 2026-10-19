@@ -536,6 +536,17 @@ def test_detected_and_refined_contours_and_centres_are_layers(tmp_path, monkeypa
     assert not view.layers["Refined contours"].isVisible() and view.layers["Detected contours"].isVisible()
     view.close()
 
+    # D124: a run with refinement none measured with the detected contours, so the refined layers are not offered
+    plain = StitchingView(replace(result, settings=replace(result.settings, refinement="none")), use_opengl=False,
+                          on_load_contours=lambda: None)
+    plain.set_contours(view.contours)
+    assert all(plain.boxes[name].isEnabled() and plain.boxes[name].isChecked()
+               for name in ("Detected contours", "Detected centres"))
+    assert not any(plain.boxes[name].isEnabled() or plain.boxes[name].isChecked()
+                   for name in ("Refined contours", "Refined centres"))
+    assert "Measured (SEM) centres, detected" in [label.text for _, label in plain.plot.legend.items]
+    plain.close()
+
 
 def test_contours_are_loaded_on_request_and_kept(tmp_path, monkeypatch):
     records = write_image_folder(tmp_path)
@@ -576,6 +587,18 @@ def make_window(tmp_path):
     preferences = QtCore.QSettings(str(tmp_path / "preferences.ini"), QtCore.QSettings.Format.IniFormat)
     preferences.setValue("use_opengl", "false")
     return MaskRegWindow(preferences, cache_dir=str(tmp_path / "user cache"))
+
+
+def test_parameters_remembered_with_the_old_check_box_read_as_a_refinement(tmp_path):
+    """D124: STITCH_REFINED is gone from the parameters; unticked, as remembered, it reads as refinement none."""
+    import json
+    assert "stitch_refined" not in PARAMETERS["images"] and "refinement" in PARAMETERS["images"]
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", json.dumps({"stitch_refined": False, "refinement": "mid-level"}))
+    assert window.settings().refinement == "none"
+    window.preferences.setValue("settings", json.dumps({"stitch_refined": True}))
+    assert window.settings().refinement == DEFAULTS.refinement == "mid-level"
+    window.close()
 
 
 def test_realignment_is_a_parameter_of_image_folders():
