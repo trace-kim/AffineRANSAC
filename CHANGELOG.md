@@ -68,5 +68,7 @@ they open, flagged as outdated.
   to, nm; Enter applies) to show both means per row on one fixed scale, kept when you change stripes. A zoom with
   the mouse in either sets it for both; *View all* there goes back to *Auto*. The mean dr per row keeps its own
   (D115).
+- Registration tab: *Copy image* and *Save image* → *dx and dy: maps, profiles, colour bar*: the dx and dy maps
+  with their means per row and per column and their colour bar, as on screen, without the dr graphs (D116).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

@@ -120,9 +120,23 @@ def image_buttons(figure, name: str) -> list[QtWidgets.QPushButton]:
     return [copy, save]
 
 
+class Area:
+    """Graphs taken together as one: the rectangle of the figure that holds them, as laid out (for render_graph;
+    e.g. two maps with their profiles below and beside them)."""
+
+    def __init__(self, items: list):
+        self.items = items
+
+    def sceneBoundingRect(self) -> QtCore.QRectF:
+        rect = QtCore.QRectF()
+        for item in self.items:
+            rect = rect.united(item.sceneBoundingRect())
+        return rect
+
+
 def render_graph(view: pg.GraphicsView, items: list, scale: int = EXPORT_SCALE) -> QtGui.QImage:
-    """Some graphs of a figure as shown (e.g. a map and its colour bar), side by side in one image, at `scale` x
-    their size on screen."""
+    """Some graphs of a figure as shown (e.g. a map and its colour bar; an Area), side by side in one image, at
+    `scale` x their size on screen."""
     # Cut from the whole figure rendered at that scale: rendering a part of the view alone misplaced the axis texts.
     whole = render_image(view, scale)
     sources = [view.mapFromScene(item.sceneBoundingRect()).boundingRect() for item in items]

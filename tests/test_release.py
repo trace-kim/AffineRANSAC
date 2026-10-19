@@ -793,8 +793,18 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
 
     figure, graphs = view.shown_graphs()
     names = [name for name, _ in graphs]
-    assert figure is view.figure and names[:6] == ["arrow map", "dr mean per row", "dr mean per column",
-                                                   "dx map", "dx mean per row", "dx mean per column"]
+    assert figure is view.figure and names[1:7] == ["arrow map", "dr mean per row", "dr mean per column",
+                                                    "dx map", "dx mean per row", "dx mean per column"]
+    # First (after Whole figure): the graphs of dx and dy as laid out, their colour bar, nothing of dr (D116).
+    assert names[0] == "dx and dy: maps, profiles, colour bar"
+    (area,) = dict(graphs)[names[0]]
+    on_screen = lambda item: figure.mapFromScene(item.sceneBoundingRect()).boundingRect()
+    image = style.render_graph(figure, [area])
+    assert (image.width(), image.height()) == (2 * on_screen(area).width(), 2 * on_screen(area).height())
+    assert all(on_screen(area).contains(on_screen(plot)) for plot in area.items)
+    assert on_screen(area).contains(on_screen(view.color_bar))
+    assert not any(on_screen(area).intersects(on_screen(item)) for item in
+                   (view.arrow_panel.map, view.arrow_panel.rows, view.arrow_panel.columns, view.dr_bar))
     assert dict(graphs)["arrow map"][-1] is view.dr_bar
     map_items = dict(graphs)["dx map"]
     assert map_items[-1] is view.color_bar  # a map comes with its colour bar

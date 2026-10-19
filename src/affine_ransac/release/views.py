@@ -19,8 +19,8 @@ profiles beside it (MarginalMap): the mean per row on its right, rotated so that
 map's y, and the mean per column below it, of dr beside the arrows and of its own component beside dx and dy;
 both follow the map's zoom and pan. The maps show their contacts just, each shaped like them, at start and on View
 All (fit, D114). The means per row of dx and dy: Auto, or a range typed in, the same for both (D115). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
-profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure or one graph (also
-in each graph's right-click menu).
+profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx
+and dy together (D116) or one graph (also in each graph's right-click menu).
 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
@@ -1213,8 +1213,11 @@ class RegistrationView(QtWidgets.QWidget):
                 (panel.columns, [panel.columns], f"{profile} mean per column")]
 
     def shown_graphs(self):
-        """For the image menus: the figure and its graphs."""
-        return self.figure, [(name, items) for panel in self.panels for _, items, name in self.graphs_of(panel)] + \
+        """For the image menus: the figure; the graphs of dx and dy, as laid out, without those of dr (D116); each
+        graph."""
+        dx_dy = [plot for panel, _, _ in self.maps for plot in (panel.map, panel.rows, panel.columns)]
+        return self.figure, [("dx and dy: maps, profiles, colour bar", [style.Area(dx_dy + [self.color_bar])])] + \
+            [(name, items) for panel in self.panels for _, items, name in self.graphs_of(panel)] + \
             [("dr colour bar", [self.dr_bar]), ("dx, dy colour bar", [self.color_bar])]
 
     def profiles(self) -> list[list[str]]:
