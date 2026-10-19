@@ -15,7 +15,8 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from affine_ransac.analysis import ContactSizes, Settings
 from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
-from affine_ransac.release.analysis import PARAMETERS, analyse_folder, measure_contact_sizes, read_display_images
+from affine_ransac.release.analysis import (PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
+                                           read_display_images)
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import BACKUPS, CACHE_NAME, cache_paths, load_cache, save_cache
 from affine_ransac.release.views import (NEEDS_TILES, NOT_IMAGES, ContactSizeTab, ContactSizeView, RegistrationView,
@@ -567,3 +568,68 @@ def test_the_contact_size_tab_is_hidden_until_turned_on_and_measures_on_the_tile
     wait(window)
     window.size_action.setChecked(False)  # hidden again: the tab goes, and the tiles with it
     assert window.size_tab is None and window.centralWidget().count() == 2 and window.result.tiles is None
+
+
+def write_folder_measuring_nothing(folder):
+    """The image folder of write_image_folder with its tiles three times as far apart (no overlaps, so each stitching
+    places only its first tile) and no .oas for the first tile (flagged): no tile can be measured."""
+    records = write_image_folder(folder)
+    for r in records:
+        r.center_x_nm, r.center_y_nm = 3 * r.center_x_nm, 3 * r.center_y_nm
+    records[0].oas_path = None
+    return records
+
+
+NOT_MEASURED = {0: "design tone not matched (flagged)", 1: "SEM tile not stitched", 2: "SEM tile not stitched",
+                3: "SEM tile not stitched"}
+
+
+def test_a_run_that_measures_no_contact_fails_with_what_it_found(tmp_path):
+    records = write_folder_measuring_nothing(tmp_path)
+    with pytest.warns(UserWarning), pytest.raises(AnalysisFailed, match="Only 0 measured contact") as failed:
+        analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    error = failed.value
+    assert error.not_measured == NOT_MEASURED
+    r = error.result
+    assert r.moving is None and len(r.design_nm) == 0 and r.image_paths == [str(rec.image_path) for rec in records]
+    assert all(len(points) > 40 for points in r.sem_points) and len(r.stitch.unplaced) == 3
+
+
+def test_a_failed_run_shows_its_tiles_on_the_stitching_tab_and_saves_nothing(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    records = write_folder_measuring_nothing(data)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    shown = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda *args: shown.append(args[2]))
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    window.open_folder(str(data))
+    wait(window)
+
+    tabs = window.centralWidget()
+    assert [tabs.tabText(k) for k in range(tabs.count())] == ["Stitching"]  # nothing measured, nothing else to show
+    assert shown[0].startswith("Only 0 measured contact(s). The Stitching tab shows")
+    assert "ANALYSIS FAILED, nothing saved" in window.status.idle.text() and window.actions["restart"].isEnabled()
+    assert not (data / CACHE_NAME).exists() and window.recent_folders() == []
+
+    view = window.stitching_view
+    layer, box = view.layers["Tiles not measured"], view.boxes["Tiles not measured"]
+    assert not box.isChecked() and not layer.isVisible()  # off at start, like the other failure markers
+    box.setChecked(True)
+    assert layer.isVisible() and np.isfinite(layer.getData()[0]).sum() == 4 * 5  # four closed boxes
+    assert "4 of 4 tiles not measured" in view.status.text() and "SEM tile not stitched (3)" in view.status.text()
+    assert view.tiles_at(window.result.centers[1]) == "T1 (not measured: SEM tile not stitched)"
+
+    window.load_images()  # the SEM images and the design load as for any result
+    wait(window)
+    assert len(view.image_items) == 4
+    window.load_design()
+    wait(window)
+    assert [k for k, _ in view.design_items] == [1, 2, 3]  # the first tile has no .oas
+
+    window.set_gpu(False)  # drawn again: still the failed run, with its images and design
+    assert window.centralWidget().count() == 1 and len(window.stitching_view.image_items) == 4
+    assert "Tiles not measured" in window.stitching_view.boxes
+    window.size_action.setChecked(True)  # no Contact size tab: no contact was measured
+    assert window.centralWidget().count() == 1 and window.size_tab is None

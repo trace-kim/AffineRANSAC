@@ -25,5 +25,8 @@ they open, flagged as outdated.
   folder at start.
 - Automatic updates: at every start MaskReg looks for a newer version on the update server and offers it; Yes installs
   it and restarts MaskReg, No asks again next time. *Help → Check for updates...* (D101).
+- A run that fails for too few measured contacts now shows what it found on the Stitching tab: the tiles, their
+  centres, the SEM images and design on request, and the tiles not measured with the reason (layer *Tiles not
+  measured*; hover a tile). Nothing is saved (D102).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

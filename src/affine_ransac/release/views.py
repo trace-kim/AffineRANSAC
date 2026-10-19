@@ -4,7 +4,9 @@ StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, 
 placement; stitching failures (off at start, D76) and tile names on request; the SEM images on request
 (Load SEM images: the app reads them in the background and calls set_images), with an opacity slider; the design
 pattern on request (Load design: the .oas contacts filled, one colour per stripe, set_design), so that the files of
-neighbouring stripes can be told apart where they overlap.
+neighbouring stripes can be told apart where they overlap. Of a failed run (release.analysis.AnalysisFailed) also
+the tiles not measured, with the count per reason; the cursor line names the tiles under the cursor and why each
+was not measured.
 
 RegistrationView: the error after the moving-window affine, measured (SEM) − design, in one figure: an arrow map
 (arrows coloured by their length dr, jet, own colour bar) and colour maps of dx and dy (jet, shared colour scale,
@@ -25,6 +27,7 @@ Everything is drawn relative to an origin in whole µm (OpenGL works in float32)
 
 import csv
 import io
+from collections import Counter
 
 import numpy as np
 import pyqtgraph as pg
@@ -84,11 +87,14 @@ def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -
 
 
 class StitchingView(QtWidgets.QWidget):
-    def __init__(self, result: ReleaseResult, use_opengl: bool = True, on_load_images=None, on_load_design=None):
+    def __init__(self, result: ReleaseResult, use_opengl: bool = True, on_load_images=None, on_load_design=None,
+                 not_measured: dict[int, str] | None = None):
         """on_load_images(): called by Load SEM images (None, or a result without images: button disabled);
-        on_load_design(): the same for Load design (a result without .oas files: disabled)."""
+        on_load_design(): the same for Load design (a result without .oas files: disabled); not_measured: of a
+        failed run, tile index -> why it was not measured (a layer Tiles not measured; None: no such layer)."""
         super().__init__()
         self.result = result
+        self.not_measured = not_measured
         r = result
         self.origin = np.round(np.concatenate(r.design_points).mean(axis=0), -3)  # whole µm
         self.shifts = {"nominal": (np.zeros_like(r.centers), np.zeros_like(r.centers)),
@@ -117,6 +123,10 @@ class StitchingView(QtWidgets.QWidget):
         failures = [self._boxes(failed, pg.mkPen(style.FAILURE, width=2, style=dash), "Overlaps not matched"),
                     self._boxes([rectangles[k] for k in unplaced], pg.mkPen(style.FAILURE, width=3), "Tiles not stitched")]
         self.layers["Stitching failures"] = failures
+        if not_measured is not None:
+            self.layers["Tiles not measured"] = self._boxes(
+                [rectangles[k] for k in sorted(not_measured)],
+                pg.mkPen(style.FAILURE, width=2, style=QtCore.Qt.PenStyle.DotLine), "Tiles not measured")
         self.names = []
         for name, center in zip(r.tile_ids, r.centers):
             text = pg.TextItem(name, color=style.MUTED, anchor=(0.5, 0.5))
@@ -133,7 +143,7 @@ class StitchingView(QtWidgets.QWidget):
         self.placement.currentIndexChanged.connect(lambda _: self.update_positions())
         controls.addWidget(self.placement)
         controls.addSpacing(16)
-        hidden = {"Stitching failures", "Tile names"}  # off at start (D76)
+        hidden = {"Stitching failures", "Tiles not measured", "Tile names"}  # off at start (D76)
         for name in self.layers:
             box = QtWidgets.QCheckBox(name)
             box.setChecked(name not in hidden)
@@ -211,8 +221,14 @@ class StitchingView(QtWidgets.QWidget):
         incomplete = len(r.stitch.unplaced) or len(r.design_stitch.unplaced) or any(
             f.failed for f in r.stitch.rejected + r.design_stitch.rejected)
         if incomplete:
-            return f"<span style='color:{style.FAILURE}'><b>Stitching incomplete.</b></span> {text} " \
+            text = f"<span style='color:{style.FAILURE}'><b>Stitching incomplete.</b></span> {text} " \
                    f"Tick <i>Stitching failures</i> to see where."
+        if self.not_measured is not None:
+            reasons = Counter(self.not_measured.values()).most_common()
+            text += f"<br><span style='color:{style.FAILURE}'><b>{len(self.not_measured)} of {n} tiles not " \
+                    f"measured:</b></span> " + "; ".join(f"{reason} ({count})" for reason, count in reasons) + \
+                    ". Tick <i>Tiles not measured</i> to see where; the line below the plot names the tiles under " \
+                    "the cursor."
         return text
 
     def mode(self) -> str:
@@ -284,8 +300,16 @@ class StitchingView(QtWidgets.QWidget):
 
     def _show_cursor(self, scene_pos):
         pos = self.plot.vb.mapSceneToView(scene_pos)
-        x, y = (np.array([pos.x(), pos.y()]) + self.origin) / 1000
-        self.cursor_label.setText(f"x = {x:.4f} µm, y = {y:.4f} µm (mask)")
+        point = np.array([pos.x(), pos.y()]) + self.origin
+        tiles = self.tiles_at(point)
+        self.cursor_label.setText(f"x = {point[0] / 1000:.4f} µm, y = {point[1] / 1000:.4f} µm (mask)"
+                                  + (f"   Under the cursor: {tiles}" if tiles else ""))
+
+    def tiles_at(self, point_nm) -> str:
+        """The tiles whose (nominal) box holds the point, mask nm; of a failed run each with why it was not measured."""
+        r, why = self.result, self.not_measured or {}
+        inside = np.flatnonzero(np.all(np.abs(r.centers - point_nm) <= r.sizes / 2, axis=1))
+        return ", ".join(r.tile_ids[k] + (f" (not measured: {why[k]})" if k in why else "") for k in inside)
 
 
 def summary_text(error_nm: np.ndarray) -> str:

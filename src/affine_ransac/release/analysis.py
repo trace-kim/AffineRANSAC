@@ -8,6 +8,9 @@ progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 
 On request (the Contact size tab, hidden unless turned on): an image run keeps its loaded tiles in memory
 (keep_tiles), and measure_contact_sizes measures the area, xCD and yCD of every contact on them.
+
+A run that stitched the tiles but measured too few contacts raises AnalysisFailed, which carries what was found
+(the stitching, every tile's centres) and why each tile was not measured, so the app can show it.
 """
 
 import re
@@ -73,7 +76,7 @@ class ReleaseResult:
     design_stitch: StitchResult
     sem_nm: np.ndarray                # (M, 2) merged contacts, stitched SEM, mask nm
     design_nm: np.ndarray             # (M, 2) merged contacts, stitched design, mask nm
-    moving: MovingWindowResult        # residuals: G_w(SEM) − design per contact
+    moving: MovingWindowResult | None  # residuals: G_w(SEM) − design per contact (None: a failed run)
     image_paths: list[str]            # per tile its SEM image ([] for contour CSVs), shown on request
     log: list[str]
     oas_paths: list[str] = field(default_factory=list)  # per tile its .oas ("" if none; [] for contour CSVs)
@@ -84,6 +87,16 @@ class ReleaseResult:
     tiles: LoadedTiles | None = None           # images run with keep_tiles; not saved
     version: str = __version__                 # the MaskReg that made the run ("": one before versions were saved)
     analysis: int = ANALYSIS                   # and its ANALYSIS (0: before they were saved)
+
+
+class AnalysisFailed(RuntimeError):
+    """A run that stopped after the stitching. result: what was found up to there (tiles, centres, stitchings; no
+    contacts, moving None), to show on the Stitching tab, never saved; not_measured: tile index -> why no error
+    was computed for that tile (registration.design_errors)."""
+
+    def __init__(self, message: str, result: ReleaseResult, not_measured: dict[int, str]):
+        super().__init__(message)
+        self.result, self.not_measured = result, not_measured
 
 
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,
@@ -158,18 +171,21 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                f"{ {tile_ids[k]: reason for k, reason in observations.skipped.items()} }")
     contacts = merge_observations(observations, design_stitch.corrections, s.group_radius_nm)
     record(f"{len(observations.tile)} observations -> {len(contacts.count)} contacts")
+
+    def result(moving, kept=None):
+        return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
+                             sem_points, design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm,
+                             moving, image_paths, lines, oas_paths, oas_centers, tiles=kept)
     if len(contacts.count) < 3:
-        raise RuntimeError(f"Only {len(contacts.count)} measured contact(s): see the tiles not measured above")
+        raise AnalysisFailed(f"Only {len(contacts.count)} measured contact(s). The Stitching tab shows the tiles, "
+                             f"their SEM images and design, and why each tile was not measured",
+                             result(None), observations.skipped)
 
     progress(LOAD_SHARE + 0.15, "Moving-window affine")
     moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
                                   s.moving_step_um * 1000)
     progress(1.0, "Done")
-    kept = LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None
-    return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
-                         sem_points,
-                         design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm, moving,
-                         image_paths, lines, oas_paths, oas_centers, tiles=kept)
+    return result(moving, LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None)
 
 
 def measure_contact_sizes(result: ReleaseResult, roi_width_nm: float = 0.0,

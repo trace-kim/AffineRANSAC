@@ -10,6 +10,9 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   result saved there. File > Open recent: the last folders whose result was shown, opened the same way.
 - Analysis > Restart analysis: analyse the open folder again (current parameters) and save the new result; the old
   one is kept as a backup (the last 5, cache.py).
+- A run that stops after the stitching (too few measured contacts, release.analysis.AnalysisFailed) shows what it
+  found on the Stitching tab alone: the tiles, their centres, the SEM images and design on request, and the tiles
+  not measured with the reason. Nothing is saved; change the parameters and restart.
 - Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart.
 - View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
   Contact size tab (hidden unless turned on; remembered): area, xCD and yCD of every contact, measured on request
@@ -40,8 +43,8 @@ from affine_ransac.analysis import Settings
 from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
-from affine_ransac.release.analysis import (ANALYSIS, DEFAULTS, PARAMETERS, analyse_folder, measure_contact_sizes,
-                                           read_design_images, read_display_images)
+from affine_ransac.release.analysis import (ANALYSIS, DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder,
+                                           measure_contact_sizes, read_design_images, read_display_images)
 from affine_ransac.release.cache import FORMAT, load_cache, made_by, save_cache
 from affine_ransac.release.config import config_path, download_root, read_ftp_config
 from affine_ransac.release.folders_dialog import FoldersDialog
@@ -71,12 +74,12 @@ def opengl_works() -> bool:
 
 class Job(QtCore.QObject):
     """Runs work(log, progress) in a background thread. Log lines (and the library's warnings) arrive as
-    `message`, progress(fraction, stage) as `progress`, the return value as `done`, an error with its traceback
-    as `failed`, all in the GUI thread."""
+    `message`, progress(fraction, stage) as `progress`, the return value as `done`, an error as `failed` (its
+    traceback and the exception), all in the GUI thread."""
     message = QtCore.Signal(str)
     progress = QtCore.Signal(float, str)
     done = QtCore.Signal(object)
-    failed = QtCore.Signal(str)
+    failed = QtCore.Signal(str, object)
 
     def start(self, work):
         threading.Thread(target=self._run, args=(work,), daemon=True).start()
@@ -87,8 +90,8 @@ class Job(QtCore.QObject):
                 warnings.simplefilter("always")
                 warnings.showwarning = lambda message, *_: self.message.emit(f"Warning: {message}")
                 result = work(self.message.emit, self.progress.emit)
-        except Exception:
-            self.failed.emit(traceback.format_exc())
+        except Exception as error:
+            self.failed.emit(traceback.format_exc(), error)
         else:
             self.done.emit(result)
 
@@ -171,6 +174,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.update_found = None  # (version, setup file, size) of a newer MaskReg, until the user is asked
         self.folder = None   # the open folder
         self.result = None   # its ReleaseResult
+        self.failure = None  # the AnalysisFailed whose partial result is shown (None: a complete result)
         self.images = None   # its SEM images, once loaded (kept when the tabs are rebuilt)
         self.design = None   # its design pattern masks, once loaded (the same)
         self.size_tab = None  # the Contact size tab, when shown
@@ -429,7 +433,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def set_size_tab(self, on: bool):
         """Show or hide the Contact size tab (remembered). Hidden, the shown result's tiles are let go (memory)."""
         self.preferences.setValue("contact_size_tab", "true" if on else "false")
-        if self.result is None:
+        if self.result is None or self.failure is not None:  # a failed run measured no contact
             return
         if on:
             self._add_size_tab(self.result, self.gpu_action.isChecked())
@@ -448,7 +452,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def set_gpu(self, on: bool):
         self.preferences.setValue("use_opengl", "true" if on else "false")
         if self.result is not None:
-            self.show_result(self.result)  # draw again with the new choice
+            self.show_result(self.result, self.failure)  # draw again with the new choice
 
     # --- updates (update.py) -----------------------------------------------------------------------
     def check_for_update(self, quiet: bool = True):
@@ -521,29 +525,37 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.stitching_view.set_images(images)
         self.status.set_idle(f"{len(images)} SEM images loaded (Stitching tab, SEM images)")
 
-    def show_result(self, result):
+    def show_result(self, result, failure: AnalysisFailed | None = None):
+        """failure: result is the partial result of that failed run: only its Stitching tab, with the tiles not
+        measured."""
         self.status.set_idle("Drawing...")
         QtWidgets.QApplication.processEvents()
         use_opengl = self.gpu_action.isChecked()
         tabs = QtWidgets.QTabWidget()
-        self.stitching_view = StitchingView(result, use_opengl, self.load_images, self.load_design)
+        self.stitching_view = StitchingView(result, use_opengl, self.load_images, self.load_design,
+                                            None if failure is None else failure.not_measured)
         if self.images is not None:
             self.stitching_view.set_images(self.images)
         if self.design is not None:
             self.stitching_view.set_design(self.design)
-        self.registration_view = RegistrationView(result, use_opengl)
         tabs.addTab(self.stitching_view, "Stitching")
-        tabs.addTab(self.registration_view, "Registration")
         self.tabs, self.size_tab = tabs, None
-        if self.size_action.isChecked():
-            self._add_size_tab(result, use_opengl)
-        tabs.setCurrentIndex(1)
+        if failure is None:
+            self.registration_view = RegistrationView(result, use_opengl)
+            tabs.addTab(self.registration_view, "Registration")
+            if self.size_action.isChecked():
+                self._add_size_tab(result, use_opengl)
+            tabs.setCurrentIndex(1)
         self.setCentralWidget(tabs)
-        self.result = result
-        self.setWindowTitle(f"{TITLE} - {Path(result.folder).name}")
-        self.status.set_idle(f"{Path(result.folder).name}: {len(result.tile_ids)} tiles, {len(result.design_nm)} "
-                             f"contacts ({result.kind} folder)  |  drawing on the {'GPU' if use_opengl else 'CPU'}"
-                             + run_note(result))
+        self.result, self.failure = result, failure
+        name, drawing = Path(result.folder).name, f"drawing on the {'GPU' if use_opengl else 'CPU'}"
+        if failure is None:
+            self.setWindowTitle(f"{TITLE} - {name}")
+            self.status.set_idle(f"{name}: {len(result.tile_ids)} tiles, {len(result.design_nm)} contacts "
+                                 f"({result.kind} folder)  |  {drawing}" + run_note(result))
+        else:
+            self.setWindowTitle(f"{TITLE} - {name} - analysis failed")
+            self.status.set_idle(f"{name}: ANALYSIS FAILED, nothing saved: {failure}  |  {drawing}")
         self.update_actions()
 
     # --- background jobs --------------------------------------------------------------------------
@@ -560,10 +572,14 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.update_actions()
         self.offer_update()  # a newer MaskReg found while the job ran
 
-    def _job_failed(self, text: str):
+    def _job_failed(self, text: str, error: Exception):
         self.busy = False
         self.log(text)
-        self.status.set_idle("Failed - see View > Log")
+        if isinstance(error, AnalysisFailed):  # stopped after the stitching: show what it found
+            self.images = self.design = None  # those of the result shown before
+            self.show_result(error.result, error)
+        else:
+            self.status.set_idle("Failed - see View > Log")
         self.update_actions()
         last = text.strip().splitlines()[-1]  # "SomeError: message"; the log has the whole traceback
         QtWidgets.QMessageBox.critical(self, TITLE, last.partition(": ")[2] or last)
