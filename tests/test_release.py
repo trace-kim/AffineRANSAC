@@ -7,15 +7,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt s
 import time
 from dataclasses import replace
 
+import cv2
 import numpy as np
 import pyqtgraph as pg
 import pytest
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.analysis import ContactSizes, Settings
+from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
-from affine_ransac.release.analysis import (PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
+from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
                                            read_display_images)
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import BACKUPS, CACHE_NAME, cache_paths, load_cache, save_cache
@@ -633,3 +635,30 @@ def test_a_failed_run_shows_its_tiles_on_the_stitching_tab_and_saves_nothing(tmp
     assert "Tiles not measured" in window.stitching_view.boxes
     window.size_action.setChecked(True)  # no Contact size tab: no contact was measured
     assert window.centralWidget().count() == 1 and window.size_tab is None
+
+
+def add_noise(records, sigma: float, seed: int = 0):
+    """Gaussian noise of sigma grey levels added to the folder's images (saved again as JPEG), like a real SEM's."""
+    rng = np.random.default_rng(seed)
+    for r in records:
+        image = load_sem_image(r.image_path).astype(float)
+        noisy = np.clip(image + rng.normal(0, sigma, image.shape), 0, 255).astype(np.uint8)
+        cv2.imencode(".jpg", noisy, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tofile(str(r.image_path))
+
+
+def test_noisy_images_keep_their_contacts_by_default(tmp_path):
+    """D103: on noisy images real contacts stand out by only a few noise sigma, so the contrast check at its old
+    default (5) dropped every one; with realignment on (no sample check), the run then ended in 'Only 0 measured
+    contact(s)' with no SEM centre at all. The check is off unless asked for, and says so when it empties tiles."""
+    records = write_image_folder(tmp_path)
+    add_noise(records, 30.0)  # the contacts stay plain to see
+    settings = replace(DEFAULTS, layer=1, datatype=0, detection="otsu", realign=True)
+    assert settings.min_contrast == 0
+
+    result = analyse_folder(tmp_path, "images", settings, records, log=lambda line: None)
+    assert all(len(points) > 40 for points in result.sem_points) and len(result.design_nm) > 150
+
+    lines = []
+    with pytest.raises(AnalysisFailed, match="Only 0 measured contact"):
+        analyse_folder(tmp_path, "images", replace(settings, min_contrast=5.0), records, log=lines.append)
+    assert any(line.startswith("!! Contrast check") and "removed every contact of 4 tile(s)" in line for line in lines)

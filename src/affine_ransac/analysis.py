@@ -93,9 +93,10 @@ class Settings:
     min_match_fraction: float = setting(0.5, "A design tone is accepted if at least this fraction of the SEM "
                                              "contacts match it")
     stitch_refined: bool = setting(True, "Stitch with the refined centres (off: Otsu centres)")
-    min_contrast: float = setting(5.0, "Drop detected contacts whose mean grey level differs from a 3 px ring "
+    min_contrast: float = setting(0.0, "Drop detected contacts whose mean grey level differs from a 3 px ring "
                                        "around them by less than this many noise sigma (false contacts in images "
-                                       "without pattern); 0 = keep all")
+                                       "without pattern); 0 = off. Noisy images give real contacts only a few "
+                                       "sigma: check the log that it keeps them")
     realign: bool = setting(False, "Images all taken at one wrong offset from their design (failed SEM alignment): "
                                    "stitch the SEM alone, find the offset to the design of all .oas files together "
                                    "(up to half the field), give every image the design in its shifted field "
@@ -371,13 +372,19 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
 
 
 def contrast_summary(tiles: list[TileResult], tile_ids: list[str], min_contrast: float) -> str:
-    """One log line: the contacts the contrast check dropped and the tiles left without any contact."""
+    """One log line: the contacts the contrast check dropped and the tiles left without any contact; with !! if it
+    removed every contact of a tile (right for an image without pattern, wrong for a noisy image of contacts)."""
     if min_contrast <= 0:
         return "Contrast check off (min_contrast 0)"
     dropped = sum(t.low_contrast for t in tiles)
     empty = [tile_ids[k] for k, t in enumerate(tiles) if len(t.refined.centers) == 0]
-    return (f"Contrast check (min_contrast {min_contrast:g} noise sigma): {dropped} detected contact(s) dropped in "
+    emptied = sum(t.low_contrast > 0 and len(t.refined.centers) == 0 for t in tiles)
+    text = (f"Contrast check (min_contrast {min_contrast:g} noise sigma): {dropped} detected contact(s) dropped in "
             f"{sum(t.low_contrast > 0 for t in tiles)} tile(s); {len(empty)} tile(s) without any contact: {empty}")
+    if emptied:
+        return (f"!! {text}. It removed every contact of {emptied} tile(s): right for images without pattern, but if "
+                f"they show contacts, their noise is too high for min_contrast {min_contrast:g}: lower it (0 = off)")
+    return text
 
 
 def timing_summary(tiles: list[TileResult], wall_s: float, sample: list[int], workers: int) -> str:

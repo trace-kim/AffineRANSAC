@@ -28,5 +28,8 @@ they open, flagged as outdated.
 - A run that fails for too few measured contacts now shows what it found on the Stitching tab: the tiles, their
   centres, the SEM images and design on request, and the tiles not measured with the reason (layer *Tiles not
   measured*; hover a tile). Nothing is saved (D102).
+- Fix: on noisy images the contrast check (`min_contrast`, then 5 by default) dropped every real contact, so a folder
+  that used to work found no SEM contact. It is now off by default (0); when turned on, the log warns (`!!`) if it
+  removes every contact of a tile. Parameters saved before keep their value: set it to 0 (D103).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
