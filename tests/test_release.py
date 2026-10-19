@@ -219,10 +219,10 @@ def test_view_all_fits_the_maps_to_the_height_of_their_contacts(tmp_path):
     assert widths[0] == pytest.approx(widths[1], rel=0.1)  # not shaped like the contacts (2 : 3 and 3 : 2)
 
 
-def test_the_means_per_row_of_dx_and_dy_take_a_range_typed_in(tmp_path):
-    """Auto: each fitted to its values, the boxes showing their range; a range typed in: the same for both, kept
-    when the stripes change; a zoom with the mouse in one: its range for both; View All: Auto again. The mean dr per
-    row keeps its own (D115)."""
+def test_each_mean_per_row_takes_a_range_of_its_own(tmp_path):
+    """Boxes just below each mean per row (D119): Auto at start, fitted to its values, the boxes showing its range;
+    a range typed in sets that plot alone, kept when the stripes change; a zoom with the mouse there shows its range
+    in its boxes; View All there: Auto again. The boxes lie over the figure, not in its images."""
     style.setup()
     pg.mkQApp()
     write_contour_folder(tmp_path)
@@ -232,26 +232,35 @@ def test_the_means_per_row_of_dx_and_dy_take_a_range_typed_in(tmp_path):
     view.resize(1400, 900)
     view.show()
     settle()
-    dx, dy = (panel.rows for panel, _, _ in view.maps)
-    x_range = lambda plot: plot.vb.viewRange()[0]
-    boxes = lambda: [box.value() for box in view.row_range]
-    assert view.row_auto.isChecked() and not view.row_range[0].isEnabled()
-    assert boxes() == pytest.approx([min(x_range(dx)[0], x_range(dy)[0]), max(x_range(dx)[1], x_range(dy)[1])], abs=0.01)
+    plots = [panel.rows for panel in view.panels]  # dr, dx, dy
+    x_range = lambda plot: list(plot.vb.viewRange()[0])
+    shown = lambda boxes: [box.value() for box in boxes.boxes]
+    image = style.render_image(view.figure)
+    for plot, boxes in zip(plots, view.row_ranges):
+        assert boxes.auto.isChecked() and shown(boxes) == pytest.approx(x_range(plot), abs=0.01)
+        under = view.figure.mapFromScene(plot.sceneBoundingRect()).boundingRect()
+        assert abs(boxes.y() - under.bottom()) <= 4 and under.left() < boxes.geometry().center().x() < under.right()
+        area = boxes.geometry().translated(-view.figure.viewport().pos())  # in the figure's image, at 2x: blank
+        area = area.intersected(QtCore.QRect(0, 0, image.width() // 2, image.height() // 2))
+        assert all(image.pixelColor(2 * x, 2 * y).name() == "#ffffff"
+                   for x in range(area.left(), area.right(), 4) for y in range(area.top(), area.bottom(), 4))
 
-    view.row_auto.setChecked(False)
-    view.row_range[0].setValue(-3.0)
-    view.row_range[1].setValue(3.0)
-    assert x_range(dx) == pytest.approx([-3.0, 3.0]) and x_range(dy) == pytest.approx([-3.0, 3.0])
+    before = [x_range(plot) for plot in plots]
+    dx = view.row_ranges[1]
+    dx.boxes[0].setValue(-3.0)
+    dx.boxes[1].setValue(3.0)
+    assert x_range(plots[1]) == pytest.approx([-3.0, 3.0]) and not dx.auto.isChecked()
+    assert x_range(plots[0]) == pytest.approx(before[0]) and x_range(plots[2]) == pytest.approx(before[2])
     view.stripes.set_selected([1])
-    assert x_range(dx) == pytest.approx([-3.0, 3.0]) and x_range(dy) == pytest.approx([-3.0, 3.0])
+    assert x_range(plots[1]) == pytest.approx([-3.0, 3.0])
 
-    dy.vb.scaleBy((0.5, 1.0))  # a zoom with the mouse
-    dy.vb.sigRangeChangedManually.emit([True, False])
-    assert x_range(dy) == pytest.approx([-1.5, 1.5]) and x_range(dx) == pytest.approx([-1.5, 1.5])
-    assert boxes() == pytest.approx([-1.5, 1.5]) and not view.row_auto.isChecked()
-    dx.vb.menu.viewAll.trigger()
-    assert view.row_auto.isChecked() and dx.vb.autoRangeEnabled()[0] and dy.vb.autoRangeEnabled()[0]
-    assert view.arrow_panel.rows.vb.autoRangeEnabled()[0]  # the mean dr per row: never set
+    dy = view.row_ranges[2]
+    plots[2].vb.scaleBy((0.5, 1.0))  # a zoom with the mouse
+    plots[2].vb.sigRangeChangedManually.emit([True, False])
+    assert not dy.auto.isChecked() and shown(dy) == pytest.approx(x_range(plots[2]), abs=0.01)
+    assert x_range(plots[1]) == pytest.approx([-3.0, 3.0])
+    plots[2].vb.menu.viewAll.trigger()
+    assert dy.auto.isChecked() and plots[2].vb.autoRangeEnabled()[0] and not dx.auto.isChecked()
     view.close()
 
 

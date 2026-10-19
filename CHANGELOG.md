@@ -63,10 +63,9 @@ they open, flagged as outdated.
   (unless you zoomed or panned: then the area is kept). *View all* in the dx or dy map no longer zooms out a little
   more each time, and the figure no longer runs past the right edge of a narrow window. The maps' titles are now
   *Δx (nm)* etc.; the colour bars say *measured − design* (D114, D117).
-- Registration tab: *Mean per row of Δx and Δy*, below the other controls: untick *Auto* and type the range (from,
-  to, nm; Enter applies) to show both means per row on one fixed scale, kept when you change stripes. A zoom with
-  the mouse in either sets it for both; *View all* there goes back to *Auto*. The mean dr per row keeps its own
-  (D115).
+- Registration tab: each mean per row (dr, dx, dy) has its own range, in boxes just below it: type *from* and *to*
+  (Enter applies) for a fixed range, kept when you change stripes, or tick *Auto*. A zoom with the mouse there shows
+  its range in the boxes; *View all* there goes back to *Auto* (D115, D119).
 - Registration tab: *Copy image* and *Save image* → *dx and dy: maps, profiles, colour bar*: the dx and dy maps
   with their means per row and per column and their colour bar, as on screen, without the dr graphs (D116).
 - Registration tab: the means per column are hidden, and the maps take their height; tick *Mean per column* to
