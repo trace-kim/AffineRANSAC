@@ -247,8 +247,9 @@ def test_overlap_contacts_show_why_an_overlap_was_not_matched(tmp_path):
     the shared contact has a ring (lower-left file) and a cross (upper-right file), each other contact only one."""
     pg.mkQApp()
     records = write_image_folder(tmp_path)
-    result = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, min_matched=2), records,
-                            log=lambda line: None)
+    with pytest.warns(UserWarning, match="design stitching: every tile stitched; 1 overlapping pair"):
+        result = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, min_matched=2), records,
+                                log=lambda line: None)
     assert [(f.i, f.j) for f in result.design_stitch.rejected if f.failed] == [(1, 2)]
     view = StitchingView(result, use_opengl=False)
     used, rings, crosses = view.layers["Design overlap contacts"]
@@ -264,6 +265,49 @@ def test_overlap_contacts_show_why_an_overlap_was_not_matched(tmp_path):
     assert legend == ["Tile outlines (4)", "Overlaps used (4)", "Design centres", "Measured (SEM) centres"]
     view.boxes["Design overlap contacts"].setChecked(True)
     assert "Design contacts not used, upper or right image" in [label.text for _, label in view.plot.legend.items]
+    view.close()
+
+
+def test_a_clicked_tile_is_shown_with_its_overlaps_and_neighbours(tmp_path):
+    """D111: a click selects the tile there (in an overlap: the nearest centre): it, its overlaps and its neighbours
+    are drawn and named, its details shown beside the plot; a click beside every tile clears it. A click on a legend
+    entry unticks its layer."""
+    from types import SimpleNamespace
+    app = pg.mkQApp()
+    records = write_image_folder(tmp_path)
+    with pytest.warns(UserWarning, match="design stitching: every tile stitched; 1 overlapping pair"):
+        result = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, min_matched=2), records,
+                                log=lambda line: None)
+    view = StitchingView(result, use_opengl=False)
+    view.resize(1200, 800)
+    view.show()
+    app.processEvents()
+    assert view.selected is None and view.details.isHidden()
+
+    def click(x_nm, y_nm):
+        scene = view.plot.vb.mapViewToScene(QtCore.QPointF(x_nm - view.origin[0], y_nm - view.origin[1]))
+        view._clicked(SimpleNamespace(button=lambda: QtCore.Qt.MouseButton.LeftButton, double=lambda: False,
+                                      scenePos=lambda: scene))
+    click(0.0, -700.0)  # tile 1 only
+    assert view.selected == 1 and not view.details.isHidden()
+    text = view.details.toPlainText()
+    assert text.startswith("T1 · stripe 1") and "T0 · above" in text and "T3 · right" in text
+    assert "T2 · upper right" in text and "design: not matched: 1 pair(s) among 2 contacts in the overlap" in text
+    names = sorted(item.toPlainText() for item in view.selection_items if isinstance(item, pg.TextItem))
+    assert names == ["T0", "T1", "T2", "T3"]
+    click(330.0, -100.0)  # in tiles 0 and 2: tile 2's centre is the nearer
+    assert view.selected == 2
+    (x0, x1), (y0, y1) = view.plot.vb.viewRange()  # inside the plot, at its left edge: beside every tile
+    beside = np.array([x0 + 0.01 * (x1 - x0), (y0 + y1) / 2]) + view.origin
+    assert not np.any(np.all(np.abs(result.centers - beside) <= result.sizes / 2, axis=1))
+    click(*beside)
+    assert view.selected is None and view.details.isHidden() and view.selection_items == []
+
+    sample, label = view.plot.legend.items[0]
+    assert label.text.startswith("Tile outlines")
+    sample.mouseClickEvent(SimpleNamespace(button=lambda: QtCore.Qt.MouseButton.LeftButton, accept=lambda: None))
+    app.processEvents()
+    assert not view.boxes["Tile outlines"].isChecked() and not view.layers["Tile outlines"].isVisible()
     view.close()
 
 

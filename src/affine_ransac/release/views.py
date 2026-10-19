@@ -36,7 +36,8 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import ContactSizes
-from affine_ransac.pipeline import contact_stripes, lower_left, overlap_contacts, stripe_ranges
+from affine_ransac.pipeline import (PairResult, RejectedPair, StitchResult, contact_stripes, lower_left,
+                                    overlap_contacts, stripe_ranges)
 from affine_ransac.registration import error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
@@ -87,6 +88,62 @@ def design_item(mask: np.ndarray, center_nm, fov_x_nm: float, color: str) -> pg.
     return item
 
 
+def rectangles_item(boxes, pen, brush, name: str | None = None) -> pg.BarGraphItem:
+    """Boxes (x0, x1, y0, y1) as one item that QPainter draws, also on an OpenGL viewport: there pyqtgraph draws plot
+    lines itself, in their colour and width only, so dashed lines came out solid (D107)."""
+    b = np.asarray(boxes, dtype=float).reshape(-1, 4)
+    return pg.BarGraphItem(x0=b[:, 0], y0=b[:, 2], width=b[:, 1] - b[:, 0], height=b[:, 3] - b[:, 2], pen=pen,
+                           brush=brush, name=name)
+
+
+def overlaps_of(stitch: StitchResult, tile: int) -> dict:
+    """The tile's overlaps in a stitching: neighbour -> its PairResult (used) or RejectedPair (not matched, skipped)."""
+    return {o.j if o.i == tile else o.i: o for o in stitch.pairs + stitch.rejected if tile in (o.i, o.j)}
+
+
+def direction(step) -> str:
+    """Where a neighbour lies, from the offset (x, y) of its centre: above, below, left, right, or a corner."""
+    dx, dy = step
+    if abs(dy) > 2 * abs(dx):
+        return "above" if dy > 0 else "below"
+    side = "right" if dx > 0 else "left"
+    return side if abs(dx) > 2 * abs(dy) else f"{'upper' if dy > 0 else 'lower'} {side}"
+
+
+def overlap_status(entry, min_matched: int, color: str) -> str:
+    """One stitching's overlap of a pair, in words: used (tie points of the pairs), not matched or skipped (with the
+    contacts in it: the smaller of the two images' counts, D27)."""
+    if entry is None:
+        return "no overlap"
+    if isinstance(entry, PairResult):
+        return f"used, {int(entry.fit.inliers.sum())} tie points ({len(entry.ia)} pairs)"
+    if entry.failed:
+        return f"<span style='color:{color}'><b>not matched</b></span>: {entry.matched} pair(s) among " \
+               f"{entry.in_box} contacts in the overlap (min_matched {min_matched})"
+    return f"skipped: {entry.in_box} contact(s) in the overlap (min_matched {min_matched})"
+
+
+def tile_details(r: ReleaseResult, tile: int, not_measured: dict | None = None) -> str:
+    """A tile's stitching in words (HTML): stripe, centre, the shift each stitching gave it, and per neighbour where it
+    lies and what each stitching made of their overlap (D111)."""
+    def shift(corrections):
+        c = corrections[tile]
+        return f"<span style='color:{style.FAILURE}'><b>not stitched</b></span>" if np.isnan(c).any() else \
+            f"({c[0]:+.1f}, {c[1]:+.1f}) nm"
+    x, y = r.centers[tile] / 1000
+    lines = [f"<b>{r.tile_ids[tile]}</b> · stripe {int(r.stripe[tile]) + 1} · centre ({x:.3f}, {y:.3f}) µm",
+             f"Stitched shift: measured {shift(r.stitch.corrections)}, design {shift(r.design_stitch.corrections)}"]
+    if not_measured and tile in not_measured:
+        lines.append(f"<span style='color:{style.FAILURE}'><b>Not measured</b></span>: {not_measured[tile]}")
+    overlaps = [overlaps_of(r.stitch, tile), overlaps_of(r.design_stitch, tile)]
+    lines.append("<br><b>Overlaps</b>")
+    for k in sorted(set(overlaps[0]) | set(overlaps[1]), key=lambda k: r.tile_ids[k]):
+        lines.append(f"<br>{r.tile_ids[k]} · {direction(r.centers[k] - r.centers[tile])}")
+        for name, found, color in (("measured", overlaps[0], style.SEM), ("design", overlaps[1], style.DESIGN)):
+            lines.append(f"&nbsp;&nbsp;{name}: {overlap_status(found.get(k), r.settings.min_matched, color)}")
+    return "<br>".join(lines)
+
+
 def name_label(text: str) -> pg.TextItem:
     """A tile's name, centred where it is placed: dark text on a white label, readable over SEM images (grey text on
     grey images was not, D108)."""
@@ -135,6 +192,7 @@ class StitchingView(QtWidgets.QWidget):
         style.legend(self.plot)
         rectangles = [(x0 - self.origin[0], x1 - self.origin[0], y0 - self.origin[1], y1 - self.origin[1])
                       for x0, x1, y0, y1 in tile_rectangles(r.centers, r.sizes)]
+        self.rectangles = rectangles
         self.layers = {}
         self.layers["Tile outlines"] = self._boxes(rectangles, pg.mkPen(style.TILES, width=1), "Tile outlines")
         self.layers["Overlaps used"] = self._boxes([self._local(p.box) for p in r.stitch.pairs],
@@ -247,16 +305,25 @@ class StitchingView(QtWidgets.QWidget):
 
         self.status = QtWidgets.QLabel(self.status_text())
         self.status.setWordWrap(True)
-        self.cursor_label = QtWidgets.QLabel(" ")
+        self.cursor_label = QtWidgets.QLabel("Click a tile to see it, its overlaps and its neighbours.")
         self.cursor_label.setStyleSheet(f"color: {style.MUTED}")
         self.plot.scene().sigMouseMoved.connect(self._show_cursor)
+        # A clicked tile: highlighted with its overlaps and neighbours, its details beside the plot (D111).
+        self.selected, self.selection_items = None, []
+        self.details = QtWidgets.QTextBrowser()
+        self.details.setFixedWidth(400)
+        self.details.hide()
+        self.plot.scene().sigMouseClicked.connect(self._clicked)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(style.figure_bar("Stitching", style.image_buttons(lambda: self.graphics, "stitching")))
         layout.addWidget(self.status)
         layout.addLayout(controls)
         layout.addLayout(loading)
-        layout.addWidget(self.graphics, stretch=1)
+        figure_row = QtWidgets.QHBoxLayout()
+        figure_row.addWidget(self.graphics, stretch=1)
+        figure_row.addWidget(self.details)
+        layout.addLayout(figure_row, stretch=1)
         layout.addWidget(self.cursor_label)
         # The legend lists the layers shown only: with every layer listed it grew long, and its eye icons hid an item
         # without unticking its box.
@@ -274,12 +341,8 @@ class StitchingView(QtWidgets.QWidget):
         return self.plot.plot(x, y, pen=pen, connect="finite", name=f"{name} ({len(boxes)})" if boxes else None)
 
     def _rectangles(self, boxes, pen, brush, name):
-        """Boxes (x0, x1, y0, y1, relative to the origin) as one item that QPainter draws, also on an OpenGL viewport:
-        there pyqtgraph draws plot lines itself, in their colour and width only, so dashed lines came out solid
-        (D107). In the legend with their count."""
-        b = np.asarray(boxes, dtype=float).reshape(-1, 4)
-        item = pg.BarGraphItem(x0=b[:, 0], y0=b[:, 2], width=b[:, 1] - b[:, 0], height=b[:, 3] - b[:, 2], pen=pen,
-                               brush=brush, name=f"{name} ({len(b)})")
+        """rectangles_item of the boxes, in the plot and in the legend with their count."""
+        item = rectangles_item(boxes, pen, brush, f"{name} ({len(boxes)})")
         self.plot.addItem(item)
         return item
 
@@ -338,6 +401,77 @@ class StitchingView(QtWidgets.QWidget):
         for item, name in self.legend_entries:
             if item.isVisible():
                 self.plot.legend.addItem(item, name)
+        for sample, _ in self.plot.legend.items:  # a click on an entry hides it: untick its layer to match
+            sample.sigClicked.connect(self._legend_clicked)
+
+    def _legend_clicked(self, item):
+        """A click on a legend entry hid its item: untick its layer too, once the click is handled (unticking rebuilds
+        the legend, the clicked entry with it)."""
+        for name, items in self.layers.items():
+            if any(item is other for other in (items if isinstance(items, list) else [items])):
+                QtCore.QTimer.singleShot(0, lambda name=name: self.boxes[name].setChecked(False))
+
+    def _clicked(self, event):
+        """A left click on the plot (not on its legend) selects the tile there, or none (select_at)."""
+        position = event.scenePos()
+        if event.button() != QtCore.Qt.MouseButton.LeftButton or event.double() or \
+                not self.plot.vb.sceneBoundingRect().contains(position) or \
+                self.plot.legend.sceneBoundingRect().contains(position):
+            return
+        point = self.plot.vb.mapSceneToView(position)
+        self.select_at(np.array([point.x(), point.y()]) + self.origin)
+
+    def select_at(self, point_nm):
+        """Select the tile whose (nominal) box holds the point, mask nm; of several (an overlap), the one whose centre
+        is nearest; none: clear the selection."""
+        r = self.result
+        inside = np.flatnonzero(np.all(np.abs(r.centers - point_nm) <= r.sizes / 2, axis=1))
+        self.select(int(inside[np.argmin(np.linalg.norm(r.centers[inside] - point_nm, axis=1))]) if len(inside) else None)
+
+    def select(self, tile: int | None):
+        """Highlight a tile (None: none) with its overlaps and its neighbours, all named, and show its details beside
+        the plot (tile_details, D111). Overlaps filled: green used, orange / blue not matched (measured / design); grey
+        dashed outline: skipped (too few contacts)."""
+        for item in self.selection_items:
+            self.plot.removeItem(item)
+        self.selection_items, self.selected = [], tile
+        if tile is None:
+            self.details.hide()
+            return
+        r = self.result
+        overlaps = [overlaps_of(r.stitch, tile), overlaps_of(r.design_stitch, tile)]
+        neighbours = sorted(set(overlaps[0]) | set(overlaps[1]))
+        boxes = {"used": [], "measured": [], "design": [], "skipped": []}
+        for k in neighbours:
+            entries = [found.get(k) for found in overlaps]
+            box = self._local(next(e for e in entries if e is not None).box)
+            if any(isinstance(e, PairResult) for e in entries):
+                boxes["used"].append(box)
+            for kind, e in zip(("measured", "design"), entries):
+                if isinstance(e, RejectedPair) and e.failed:
+                    boxes[kind].append(box)
+            if all(isinstance(e, RejectedPair) and not e.failed for e in entries if e is not None):
+                boxes["skipped"].append(box)
+        dash = QtCore.Qt.PenStyle.DashLine
+        looks = {"used": (pg.mkPen(style.OVERLAPS, width=2.5), translucent(style.OVERLAPS, 60)),
+                 "measured": (pg.mkPen(style.SEM, width=2.5), translucent(style.SEM, 110)),
+                 "design": (pg.mkPen(style.DESIGN, width=2.5), translucent(style.DESIGN, 110)),
+                 "skipped": (pg.mkPen(style.MUTED, width=2, style=dash), pg.mkBrush(None))}
+        for kind, (pen, brush) in looks.items():
+            self.selection_items.append(rectangles_item(boxes[kind], pen, brush))
+        for tiles, width in ((neighbours, 1.5), ([tile], 3)):  # black on white: seen on any image
+            for color, extra in (("w", 3), ("k", 0)):
+                self.selection_items.append(rectangles_item([self.rectangles[k] for k in tiles],
+                                                            pg.mkPen(color, width=width + extra), pg.mkBrush(None)))
+        for k in neighbours + [tile]:
+            label = name_label(r.tile_ids[k])
+            label.setPos(*(r.centers[k] - self.origin))
+            self.selection_items.append(label)
+        for item in self.selection_items:
+            item.setZValue(50)
+            self.plot.addItem(item)
+        self.details.setHtml(tile_details(r, tile, self.not_measured))
+        self.details.show()
 
     def set_images(self, images: list[tuple[np.ndarray, tuple]]):
         """Show the SEM images: per tile (image, shape of the full image), from the app's loader."""
