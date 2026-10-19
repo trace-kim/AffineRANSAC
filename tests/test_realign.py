@@ -100,19 +100,33 @@ def test_realign_tiles_finds_an_offset_of_any_size_on_a_single_stripe():
     assert sum(t.design.ok for t in realigned) >= 8  # the images past the end of the .oas files find nothing
 
 
-def test_realign_tiles_refuses_a_fully_periodic_pattern():
-    """Every whole-pitch shift fits a repeating pattern as well: the offset cannot be told from the contacts, so the
-    run stops instead of guessing (D104; it used to go on with the best by chance)."""
-    with pytest.raises(ValueError, match="no offset is clearly the best"):
-        realign_tiles(misaligned_tiles(mask_contacts(missing=0.0)), Settings(realign=True), lambda line: None)
+def test_realign_tiles_on_a_repeating_pattern_measures_every_image_with_the_true_offsets_errors():
+    """D105: on a repeating pattern every whole-pitch shift of the true offset fits as well. The design is ideal, so
+    each gives the same errors; only where on the mask they lie is not known. The one pairing the most contacts is
+    taken: here every image stays on the .oas files."""
+    lines = []
+
+    realigned = realign_tiles(misaligned_tiles(mask_contacts(missing=0.0)), Settings(realign=True), lines.append)
+
+    pitches = (realigned[0].center_nm - CENTERS[0] - OFFSET) / PITCH
+    np.testing.assert_allclose(pitches, np.round(pitches), atol=0.05)  # the true offset up to whole pitches
+    assert all(t.design.ok for t in realigned)
+    for t in realigned:  # every design contact the image sees pairs within the stage error: the true offset's errors
+        inner = inside(t.design_points_nm(), t.center_nm, margin=40) + t.center_nm
+        ia, _ = match_points(inner, t.sem_points_nm(), 15.0)
+        assert len(ia) == len(inner) > 0
+    assert any("fit as well" in line for line in lines) and not any(line.startswith("!!") for line in lines)
 
 
-def test_realign_tiles_refuses_images_outside_the_area_of_the_oas_files():
-    """Images 1.5 images across a single stripe from their .oas files show nothing those files hold: some wrong offsets
-    fit partly (a lattice with missing contacts), none clearly: the run stops instead of using one."""
-    with pytest.raises(ValueError, match="no offset is clearly the best"):
-        realign_tiles(misaligned_tiles(mask_contacts(missing=0.15), centers=STRIPE, offset=np.array([1500.0, -3300.0])),
-                      Settings(realign=True), lambda line: None)
+def test_realign_tiles_stops_when_no_offset_fits():
+    """Images showing none of the design's pattern (false contacts at random places): at no offset do half of the
+    contacts compared pair up, so the run stops."""
+    rng = np.random.default_rng(3)
+    tiles = [tile(t.center_nm, t.design.centers, rng.uniform(-FOV / 2 + 30, FOV / 2 - 30, (80, 2)))
+             for t in misaligned_tiles(mask_contacts(missing=0.15))]
+
+    with pytest.raises(ValueError, match="no offset fits"):
+        realign_tiles(tiles, Settings(realign=True), lambda line: None)
 
 
 def test_merge_close_keeps_one_mean_point_per_group():

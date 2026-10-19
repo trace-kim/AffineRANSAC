@@ -11,7 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
-First numbered version. Saved runs: format 3, analysis 2. Runs saved by earlier copies of MaskReg carry no version:
+First numbered version. Saved runs: format 3, analysis 3. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 
 - *File → Folders...*: choose the folder of `maskreg.ini` and the folder where FTP downloads are kept (D96).
@@ -28,12 +28,12 @@ they open, flagged as outdated.
 - A run that fails for too few measured contacts now shows what it found on the Stitching tab: the tiles, their
   centres, the SEM images and design on request, and the tiles not measured with the reason (layer *Tiles not
   measured*; hover a tile). Nothing is saved (D102).
-- **Analysis 2.** Fix: realignment (`realign`) no longer limits the offset to half the field (across a single stripe
-  that was half an image, so offsets of several µm could not be found, and on a repeating pattern it could move every
-  image far off, e.g. −166 µm). It now searches offsets of any size, and stops the run with a message when no offset
-  is clearly the best (a repeating pattern, or images outside the area the `.oas` files cover) instead of using a
-  guess (D104). Runs saved with analysis 1 open flagged as outdated; analysed again, only those made with
-  `realign` on give other numbers.
+- **Analysis 3.** Fix: realignment (`realign`) no longer limits the offset to half the field. Across a single stripe
+  that was half an image, so offsets of several µm could not be found, and a run could move every image to the limit
+  (e.g. −166 µm). It now searches offsets of any size. On a repeating pattern, where many offsets fit equally and give
+  the same errors (the design is ideal), it takes the one that pairs the most contacts and logs that the others fit as
+  well. It stops only when no offset fits (D104, D105). Runs saved with an earlier analysis open flagged as outdated;
+  analysed again, only those made with `realign` on give other numbers.
 - The contrast check (`min_contrast`, 5 by default since D93) is now off by default (0): on noisy images it can drop
   every real contact (seen on noisy synthetic images). When turned on, the log warns (`!!`) if it removes every
   contact of a tile. Parameters saved before keep their value (D103).

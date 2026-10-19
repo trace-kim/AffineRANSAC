@@ -99,8 +99,8 @@ class Settings:
                                        "sigma: check the log that it keeps them")
     realign: bool = setting(False, "Images all taken at one wrong offset from their design (failed SEM alignment): "
                                    "stitch the SEM alone, find the offset to the design of all .oas files together "
-                                   "(any size; the run stops if no offset is clearly the best), give every image the "
-                                   "design in its shifted field (normal tone only)")
+                                   "(any size; on a repeating pattern, of the equally fitting ones the one pairing the "
+                                   "most contacts), give every image the design in its shifted field (normal tone only)")
     spread_flag_nm: float = setting(2.0, "Stitch viewer: ring merged contacts whose SEM observations differ by more")
     arrow_scale: float = setting(10.0, "Stitch viewer: error lines are drawn this many times longer than the error")
 

@@ -47,6 +47,14 @@ RESULTS = {
                                      -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
         "images": [196, 0.054032238, 0.049703496, 0.184937517, 0.140998837, 0.017220172, 0.013214268,
                    6.451748645, 6.84837345, 0.0, 0.0]},
+    # 3 (D105): of the realignment offsets that fit equally (a repeating pattern), the one pairing the most
+    # contacts, no stop; these folders do not realign, so their numbers are those of 1.
+    3: {"contour CSV": [2360, 0.097645195, 0.097127712, 0.387878965, 0.376539609, 0.022559669, -0.052001588,
+                        8.149617877, 8.95389255, 12.5, 11.5],
+        "contour CSV, 3 um window": [2360, 0.09756319, 0.096903189, 0.38584456, 0.384917053, 0.024032299,
+                                     -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
+        "images": [196, 0.054032238, 0.049703496, 0.184937517, 0.140998837, 0.017220172, 0.013214268,
+                   6.451748645, 6.84837345, 0.0, 0.0]},
 }
 
 # Per FORMAT: the arrays (without the optional contact_sizes/*) and the info keys of a run file.
