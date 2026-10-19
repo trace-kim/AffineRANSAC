@@ -20,18 +20,20 @@ from typing import Callable
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
 from affine_ransac.analysis import (ContactSizes, Settings, check_settings, detect_layer, load_image_tiles,
                                    merged_contact_sizes, report_stitching)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.geometry.frames import tile_nm_to_pixel
+from affine_ransac.geometry.polygon import polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import (StitchResult, TileResult, measurement_pairs, slipped_pairs, stitch_design,
-                                    stitch_tiles, stripe_directions,
-                                    tile_boxes_from_points, tile_neighbours, tile_stripes)
+from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, measurement_pairs,
+                                    outlines_inside_frame, slipped_pairs, stitch_design, stitch_tiles,
+                                    stripe_directions, tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
@@ -253,9 +255,10 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log, tile_ids) -
 
 def read_design_images(result: ReleaseResult, progress: Callable[[float, str], None] = lambda fraction, stage: None
                        ) -> list[np.ndarray | None]:
-    """The design pattern for display: per tile, its .oas contacts (merged shapes, as drawn: normal tone) filled
-    into a uint8 mask (1 = contact, rows down, like an SEM image) covering the tile's field of view; None for a
-    tile without an .oas. Pixels per tile side from IMAGE_BUDGET_PX, at most 1024."""
+    """The design pattern for display: per tile, its .oas contacts (drawn_outlines) filled into a uint8 mask
+    (1 = contact, rows down, like an SEM image) covering the tile's field of view; None for a tile without an .oas.
+    Realigned tiles (their design is cut from every file) show their own file in normal tone, as the realignment
+    reads it. Pixels per tile side from IMAGE_BUDGET_PX, at most 1024."""
     s, n = result.settings, len(result.oas_paths)
     side = int(min(1024, np.sqrt(IMAGE_BUDGET_PX / max(n, 1))))
     masks = []
@@ -266,13 +269,38 @@ def read_design_images(result: ReleaseResult, progress: Callable[[float, str], N
             pixel_nm = fov[0] / side
             shape = (max(1, round(fov[1] / pixel_nm)), side)
             mask = np.zeros(shape, np.uint8)
-            outlines = contact_outlines(load_layout(path), s.layer, s.datatype)
+            layout, layer = load_layout(path), (s.layer, s.datatype)
+            outlines = contact_outlines(layout, *layer) if s.realign else \
+                drawn_outlines(layout, layer, fov, result.design_points[k] - result.oas_centers[k])
             polygons = [np.round(tile_nm_to_pixel(o, shape, pixel_nm) * 16).astype(np.int32) for o in outlines]
             if polygons:
                 cv2.fillPoly(mask, polygons, 1, shift=4)  # 4 fractional bits: sub-pixel edges
             masks.append(mask)
         progress((k + 1) / n, f"Reading design {k + 1} of {n}")
     return masks
+
+
+def drawn_outlines(layout, layer: tuple[int, int], fov_nm, centres_nm: np.ndarray) -> list[np.ndarray]:
+    """The contacts of one tile's .oas to draw, as outlines in tile-local nm: its merged shapes as drawn (normal
+    tone), or, if the analysis read the file tone reversed, its holes. A reversed file draws the area around the
+    holes, and filling that shape gave a solid block (D106). The tone is the one whose contacts are the tile's
+    design centres (centres_nm, tile-local nm: what the analysis kept; choose_design_contacts picked the tone)."""
+    drawn = contact_outlines(layout, *layer)
+    if same_contacts(outlines_inside_frame(drawn, fov_nm), centres_nm):
+        return drawn
+    holes = design_outlines(layout, layer, fov_nm, tone_reversed=True)
+    return holes if same_contacts(holes, centres_nm) else drawn
+
+
+def same_contacts(outlines: list[np.ndarray], centres_nm: np.ndarray) -> bool:
+    """Whether the outlines are the contacts at centres_nm: as many, every centre within 1 nm of an outline's
+    centroid."""
+    if len(outlines) != len(centres_nm):
+        return False
+    if not outlines:
+        return True
+    distance, _ = cKDTree([polygon_centroid(o) for o in outlines]).query(centres_nm)
+    return bool((distance < 1.0).all())
 
 
 def read_display_images(paths: list[str], progress: Callable[[float, str], None] = lambda fraction, stage: None

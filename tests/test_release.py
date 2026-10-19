@@ -19,7 +19,7 @@ from affine_ransac.pipeline import process_tile
 from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
 from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
-                                           read_display_images)
+                                           read_design_images, read_display_images)
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import BACKUPS, CACHE_NAME, cache_paths, load_cache, save_cache
 from affine_ransac.release.views import (NEEDS_TILES, NOT_IMAGES, ContactSizeTab, ContactSizeView, RegistrationView,
@@ -294,6 +294,24 @@ def test_the_design_pattern_is_loaded_on_request_in_stripe_colours(tmp_path, mon
         assert tuple(item.lut[1][:3]) == (color.red(), color.green(), color.blue())
     reopened, _ = load_cache(tmp_path, str(tmp_path / "user cache"))
     assert reopened.oas_paths == r.oas_paths and np.allclose(reopened.oas_centers, r.oas_centers)
+
+
+def test_tone_reversed_design_files_show_their_contacts_not_a_block(tmp_path):
+    """D106: a tone-reversed .oas draws the area around the holes as one shape; filling it showed a solid block.
+    Load design now shows the holes, the contacts the analysis read."""
+    from test_pipeline import LATTICE, NOMINAL, visible, write_design
+    records = write_image_folder(tmp_path)
+    normal = [str(r.oas_path) for r in records]
+    for k, r in enumerate(records):  # the same contacts, drawn as the frame minus the holes
+        r.oas_path = tmp_path / f"{k}_reversed.oas"
+        write_design(r.oas_path, visible(LATTICE - NOMINAL[k], margin=0), reversed=True)
+    result = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    assert len(result.design_nm) > 150  # the analysis reads them tone reversed
+
+    masks = read_design_images(result)
+    for drawn, expected in zip(masks, read_design_images(replace(result, oas_paths=normal))):
+        assert 0.1 < drawn.mean() < 0.3  # contacts, not a block (it was 1.0)
+        np.testing.assert_array_equal(drawn, expected)
 
 
 def write_layers(path, layers, empty=()):

@@ -121,12 +121,17 @@ def design_outlines(layout, layer: tuple[int, int], fov_nm, tone_reversed: bool)
     fov_nm = np.asarray(fov_nm, dtype=float)
     if tone_reversed:
         return contact_outlines(layout, *layer, tone_reversed=True, frame_nm=tuple(fov_nm))
-    outlines = contact_outlines(layout, *layer)
+    return outlines_inside_frame(contact_outlines(layout, *layer), fov_nm)
+
+
+def outlines_inside_frame(outlines: list[np.ndarray], fov_nm) -> list[np.ndarray]:
+    """The normal-tone outlines (tile-local nm) whose bounding box stays inside the FOV frame (inside_frame): the
+    contacts choose_design_contacts keeps in normal tone."""
     if not outlines:
         return []
     centers = np.array([polygon_centroid(o) for o in outlines])
     sizes = np.array([o.max(axis=0) - o.min(axis=0) for o in outlines])
-    return [o for o, keep in zip(outlines, inside_frame(centers, sizes, fov_nm)) if keep]
+    return [o for o, keep in zip(outlines, inside_frame(centers, sizes, np.asarray(fov_nm, dtype=float))) if keep]
 
 
 @dataclass

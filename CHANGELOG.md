@@ -37,5 +37,7 @@ they open, flagged as outdated.
 - The contrast check (`min_contrast`, 5 by default since D93) is now off by default (0): on noisy images it can drop
   every real contact (seen on noisy synthetic images). When turned on, the log warns (`!!`) if it removes every
   contact of a tile. Parameters saved before keep their value (D103).
+- Fix: *Load design* showed a solid block of colour for `.oas` files drawn tone reversed (the area around the
+  holes). It now shows their contacts, in the tone the analysis read each file. Runs saved before show it too (D106).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
