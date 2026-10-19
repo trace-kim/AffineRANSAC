@@ -54,5 +54,9 @@ they open, flagged as outdated.
   not matched. With *Overlaps not matched* shown, click a box (or *show why*) to see only its two images and each
   one's contacts in it, filled and hollow, named in the legend, with the verdict in words. The legend lists only
   the layers shown (D112).
+- Stitching tab: *Load contours* finds every contact's contour again, from the detection and after edge
+  refinement, as the analysis did, and shows them as layers like the others: *Detected contours*, *Refined
+  contours*, *Detected centres* and *Refined centres*, to compare the two methods that *stitch_refined* switches
+  between. Contours are drawn for the contacts in view; zoom in if there are too many (D113).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

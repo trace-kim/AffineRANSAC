@@ -7,13 +7,16 @@ at the stitched placement, merged over the overlaps, then the moving-window affi
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 
 On request (the Contact size tab, hidden unless turned on): an image run keeps its loaded tiles in memory
-(keep_tiles), and measure_contact_sizes measures the area, xCD and yCD of every contact on them.
+(keep_tiles), and measure_contact_sizes measures the area, xCD and yCD of every contact on them. For display on
+request: the SEM images (read_display_images), the design pattern (read_design_images) and every contact's contour
+from the detection and after refinement (read_contours).
 
 A run that stitched the tiles but measured too few contacts raises AnalysisFailed, which carries what was found
 (the stitching, every tile's centres) and why each tile was not measured, so the app can show it.
 """
 
 import re
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -24,15 +27,15 @@ from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
 from affine_ransac.analysis import (ContactSizes, Settings, check_settings, detect_layer, load_image_tiles,
-                                   merged_contact_sizes, report_stitching)
+                                   merged_contact_sizes, report_stitching, worker_count)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
-from affine_ransac.geometry.frames import tile_nm_to_pixel
+from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, measurement_pairs,
-                                    outlines_inside_frame, slipped_pairs, stitch_design, stitch_tiles,
+                                    outlines_inside_frame, process_tile, slipped_pairs, stitch_design, stitch_tiles,
                                     stripe_directions, tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
@@ -306,6 +309,67 @@ def same_contacts(outlines: list[np.ndarray], centres_nm: np.ndarray) -> bool:
         return True
     distance, _ = cKDTree([polygon_centroid(o) for o in outlines]).query(centres_nm)
     return bool((distance < 1.0).all())
+
+
+@dataclass
+class TileContours:
+    """Every contact's contour from the detection and after edge refinement, for the contour layers (D113). Contact k
+    lies in tile tile[k]; its contour is rows start[k]:start[k + 1] of `detected` and of `refined` (the same number of
+    points: refinement moves each detected point along its normal), tile-local nm, closed (its first point again) and
+    followed by a NaN row, so that all of them can be drawn as one line with connect="finite"."""
+    tile: np.ndarray              # (n,) tile of each contact
+    start: np.ndarray             # (n + 1,) its first row in detected / refined
+    detected: np.ndarray          # (rows, 2) float32, tile-local nm
+    refined: np.ndarray           # (rows, 2) float32
+    detected_centres: np.ndarray  # (n, 2) tile-local nm: the centres a run uses with stitch_refined off
+    refined_centres: np.ndarray   # (n, 2): with it on
+
+
+def _tile_contours(arguments: tuple) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
+    """process_tile(*arguments) reduced to what TileContours needs, tile-local nm: (detected contours, refined
+    contours, detected centres, refined centres); at module level so that worker processes can run it."""
+    tile = process_tile(*arguments)
+
+    def local(points):
+        return pixel_to_tile_nm(np.asarray(points, dtype=float).reshape(-1, 2), tile.image.shape, tile.pixel_size_nm)
+    return ([local(c) for c in tile.otsu.contours], [local(c) for c in tile.refined.contours],
+            local(tile.otsu.centers), local(tile.refined.centers))
+
+
+def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] = lambda fraction, stage: None,
+                  log: Callable[[str], None] = lambda text: None) -> TileContours:
+    """The contours of an image run (TileContours), found again as the run found them: each SEM image detected and
+    refined with the run's settings (process_tile without its design), in worker processes like the tiles. The
+    centres it used (refined or detected, settings.stitch_refined) must be the run's; tiles where they are not (an
+    image changed since the run?) are logged with !!."""
+    s = result.settings
+    arguments = [(path, None, center, size, (s.layer, s.datatype), s.search_px, s.design_search_nm,
+                  s.min_match_fraction, s.detection, s.design_tolerance_nm, False, s.min_contrast)
+                 for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
+    tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
+    with ProcessPoolExecutor(max_workers=worker_count()) as pool:
+        for k, (found, moved, found_centres, moved_centres) in enumerate(pool.map(_tile_contours, arguments)):
+            used = (moved_centres if s.stitch_refined else found_centres) + result.centers[k]
+            if used.shape != result.sem_points[k].shape or not np.allclose(used, result.sem_points[k], atol=0.01):
+                differ.append(result.tile_ids[k])
+            tiles.append(np.full(len(found), k))
+            detected += found
+            refined += moved
+            detected_centres.append(found_centres)
+            refined_centres.append(moved_centres)
+            progress((k + 1) / len(arguments), f"Contours of tile {k + 1} of {len(arguments)}")
+    if differ:
+        log(f"!! The contours of {len(differ)} tile(s) do not give the centres of the run (an image changed since the "
+            f"run?): {differ}")
+
+    def drawable(contours):  # each closed and followed by a NaN row
+        nan = np.full((1, 2), np.nan)
+        return np.concatenate([np.vstack([c, c[:1], nan]) for c in contours]).astype(np.float32) if contours \
+            else np.empty((0, 2), np.float32)
+    start = np.concatenate([[0], np.cumsum([len(c) + 2 for c in detected])]).astype(np.int64)
+    return TileContours(np.concatenate(tiles) if tiles else np.empty(0, int), start, drawable(detected),
+                        drawable(refined), np.concatenate(detected_centres).reshape(-1, 2),
+                        np.concatenate(refined_centres).reshape(-1, 2))
 
 
 def read_display_images(paths: list[str], progress: Callable[[float, str], None] = lambda fraction, stage: None

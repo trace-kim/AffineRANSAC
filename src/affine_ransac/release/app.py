@@ -44,7 +44,8 @@ from affine_ransac.app import SettingsDialog, folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
 from affine_ransac.release.analysis import (ANALYSIS, DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder,
-                                           measure_contact_sizes, read_design_images, read_display_images)
+                                           measure_contact_sizes, read_contours, read_design_images,
+                                           read_display_images)
 from affine_ransac.release.cache import FORMAT, load_cache, made_by, save_cache
 from affine_ransac.release.config import config_path, download_root, read_ftp_config
 from affine_ransac.release.folders_dialog import FoldersDialog
@@ -177,6 +178,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.failure = None  # the AnalysisFailed whose partial result is shown (None: a complete result)
         self.images = None   # its SEM images, once loaded (kept when the tabs are rebuilt)
         self.design = None   # its design pattern masks, once loaded (the same)
+        self.contours = None  # its contours from the detection and refined (TileContours), once loaded (the same)
         self.size_tab = None  # the Contact size tab, when shown
         self.busy = False
         self.setWindowTitle(TITLE)
@@ -400,6 +402,17 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.log(f"=== Loading the design of {len(result.oas_paths)} tiles")
         self.run("Loading the design", lambda log, progress: read_design_images(result, progress), self.show_design)
 
+    def load_contours(self):
+        result = self.result
+        self.log(f"=== Loading the contours of {len(result.image_paths)} SEM images")
+        self.run("Loading contours", lambda log, progress: read_contours(result, progress, log), self.show_contours)
+
+    def show_contours(self, contours):
+        self.contours = contours
+        self.stitching_view.set_contours(contours)
+        self.status.set_idle(f"Contours of {len(contours.tile)} contacts loaded (Stitching tab: Detected and Refined "
+                             f"contours and centres)")
+
     def show_design(self, masks):
         self.design = masks
         self.stitching_view.set_design(masks)
@@ -516,7 +529,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     # --- showing a result -------------------------------------------------------------------------
     def show_new_result(self, result):
-        self.images = self.design = None  # those of another result
+        self.images = self.design = self.contours = None  # those of another result
         self.show_result(result)
         self.remember_folder(result.folder)
 
@@ -533,11 +546,13 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         use_opengl = self.gpu_action.isChecked()
         tabs = QtWidgets.QTabWidget()
         self.stitching_view = StitchingView(result, use_opengl, self.load_images, self.load_design,
-                                            None if failure is None else failure.not_measured)
+                                            None if failure is None else failure.not_measured, self.load_contours)
         if self.images is not None:
             self.stitching_view.set_images(self.images)
         if self.design is not None:
             self.stitching_view.set_design(self.design)
+        if self.contours is not None:
+            self.stitching_view.set_contours(self.contours)
         tabs.addTab(self.stitching_view, "Stitching")
         self.tabs, self.size_tab = tabs, None
         if failure is None:
@@ -576,7 +591,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.busy = False
         self.log(text)
         if isinstance(error, AnalysisFailed):  # stopped after the stitching: show what it found
-            self.images = self.design = None  # those of the result shown before
+            self.images = self.design = self.contours = None  # those of the result shown before
             self.show_result(error.result, error)
         else:
             self.status.set_idle("Failed - see View > Log")
@@ -599,6 +614,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
                 not self.busy and self.images is None and bool(self.result.image_paths))
             self.stitching_view.design_button.setEnabled(
                 not self.busy and self.design is None and any(self.result.oas_paths))
+            self.stitching_view.contours_button.setEnabled(
+                not self.busy and self.contours is None and bool(self.result.image_paths))
 
     def log(self, text: str):
         self.log_view.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")

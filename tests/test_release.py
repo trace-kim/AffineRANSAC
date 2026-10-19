@@ -19,7 +19,7 @@ from affine_ransac.pipeline import process_tile
 from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
 from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
-                                           read_design_images, read_display_images)
+                                           read_contours, read_design_images, read_display_images)
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import BACKUPS, CACHE_NAME, cache_paths, load_cache, save_cache
 from affine_ransac.release.views import (NEEDS_TILES, NOT_IMAGES, ContactSizeTab, ContactSizeView, RegistrationView,
@@ -341,6 +341,89 @@ def test_a_box_not_matched_shows_why(tmp_path):
     corner = np.array([300.0, -300.0]) - view.origin
     assert x0 < corner[0] < x1 and y0 < corner[1] < y1 and y1 - y0 < 1000.0
     view.close()
+
+
+def test_the_contours_are_found_again_as_the_run_found_them(tmp_path):
+    """D113: read_contours detects and refines every image again with the run's settings: the same contacts per tile,
+    and the centres the run used (refined) are exactly the run's. An image changed since the run is named with !!."""
+    records = write_image_folder(tmp_path)
+    result = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    lines = []
+    c = read_contours(result, log=lines.append)
+
+    assert lines == [] and np.bincount(c.tile).tolist() == [len(p) for p in result.sem_points]
+    for k in range(4):
+        np.testing.assert_array_equal(c.refined_centres[c.tile == k] + result.centers[k], result.sem_points[k])
+    shift = np.linalg.norm(c.refined_centres - c.detected_centres, axis=1)
+    assert 0 < np.median(shift) < 1.0  # the two methods differ, a little on these clean images
+    first = c.detected[c.start[0]:c.start[1]]
+    assert np.array_equal(first[0], first[-2]) and np.isnan(first[-1]).all()  # closed, then a NaN row
+    assert c.start[-1] == len(c.detected) == len(c.refined) and int(np.isnan(c.detected[:, 0]).sum()) == len(c.tile)
+
+    cv2.imencode(".jpg", np.full((512, 512), 110, np.uint8))[1].tofile(str(records[2].image_path))  # blank now
+    lines = []
+    read_contours(result, log=lines.append)
+    assert lines == ["!! The contours of 1 tile(s) do not give the centres of the run (an image changed since the "
+                     "run?): ['T2']"]
+
+
+def test_detected_and_refined_contours_and_centres_are_layers(tmp_path, monkeypatch):
+    """D113: once loaded, four layers like the others (ticked then): the contours and centres from the detection and
+    after refinement, at the placement shown. Contours are drawn for the contacts in view only, none if more than
+    MAX_CONTOURS are, with a note to zoom in."""
+    from affine_ransac.release import views
+    pg.mkQApp()
+    records = write_image_folder(tmp_path)
+    result = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    view = StitchingView(result, use_opengl=False, on_load_contours=lambda: None)
+    view.resize(1200, 800)
+    view.show()
+    assert view.contours_button.isEnabled()
+    assert not any(view.boxes[name].isEnabled() for name in views.CONTOURS) and "Detected contours" not in view.layers
+
+    view.set_contours(read_contours(result))
+    assert all(view.boxes[name].isEnabled() and view.boxes[name].isChecked() for name in views.CONTOURS)
+    assert not view.contours_button.isEnabled()
+    legend = [label.text for _, label in view.plot.legend.items]
+    assert legend[-4:] == ["Detected contours (otsu)", "Refined contours", "Detected centres (otsu)", "Refined centres"]
+    assert "Measured (SEM) centres, refined" in legend
+    x, _ = view.layers["Detected contours"].getData()
+    assert int(np.isnan(x).sum()) == len(view.contours.tile)  # all 225 contacts in view: each contour drawn
+    refined = np.column_stack(view.layers["Refined centres"].getData())
+    np.testing.assert_allclose(refined + view.origin,
+                               np.concatenate(result.sem_points) + view.shifts["stitched"][0][view.contours.tile])
+
+    view.placement.setCurrentIndex(1)  # nominal: the centres are the run's, as measured
+    np.testing.assert_allclose(np.column_stack(view.layers["Refined centres"].getData()) + view.origin,
+                               np.concatenate(result.sem_points))
+    monkeypatch.setattr(views, "MAX_CONTOURS", 100)
+    view.update_contours()
+    x, _ = view.layers["Detected contours"].getData()
+    assert x is None or len(x) == 0  # pyqtgraph gives None for no data
+    assert view.contours_note.text() == "Zoom in to see the contours"
+    view.plot.vb.setRange(xRange=(-100.0, 100.0), yRange=(-100.0, 100.0), padding=0)  # a few contacts
+    view.update_contours()
+    x, _ = view.layers["Refined contours"].getData()
+    assert 0 < int(np.isnan(x).sum()) <= 100 and view.contours_note.text() == ""
+    view.boxes["Refined contours"].setChecked(False)
+    assert not view.layers["Refined contours"].isVisible() and view.layers["Detected contours"].isVisible()
+    view.close()
+
+
+def test_contours_are_loaded_on_request_and_kept(tmp_path, monkeypatch):
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    window.open_folder(str(tmp_path))
+    wait(window)
+    assert window.stitching_view.contours_button.isEnabled()
+    window.load_contours()
+    wait(window)
+    assert window.contours is not None and window.stitching_view.boxes["Refined contours"].isChecked()
+    window.set_gpu(False)  # drawn again: the contours loaded are kept
+    assert window.stitching_view.contours is window.contours
+    assert not window.stitching_view.contours_button.isEnabled()
 
 
 def test_the_overlaps_paired_one_row_off_are_saved_with_the_run(tmp_path):

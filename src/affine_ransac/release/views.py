@@ -5,7 +5,8 @@ placement, under a status line that grades the stitching (stitching_verdict, D10
 the overlaps not matched (filled in the colour of their stitching, D107), the tiles not stitched (thick red outline)
 and the tile names (D108); the SEM images on request (Load SEM images: the app reads them in the background and calls
 set_images), with an opacity slider; the design pattern on request (Load design: the .oas contacts filled, one colour
-per stripe, set_design), so that the files of neighbouring stripes can be told apart where they overlap. A click
+per stripe, set_design), so that the files of neighbouring stripes can be told apart where they overlap; the contours
+and centres from the detection and after edge refinement on request (Load contours, set_contours, D113). A click
 selects a tile (which image is this?) or a box of an overlap not matched (why?), drawn on top and explained beside
 the plot (draw_selection, D112). Of a failed run (release.analysis.AnalysisFailed) also the tiles not measured, with
 the count per reason; the cursor line names the tiles under the cursor and why each was not measured.
@@ -54,6 +55,8 @@ LAYER_TIPS = {  # the Stitching tab's check boxes
     "Tiles not stitched": "Tiles that no used overlap links to the others: they have no position and are not measured",
 }
 HINT = "Click a tile to see which image it is. With Overlaps not matched shown, click a box to see why it was not matched."
+CONTOURS = ("Detected contours", "Refined contours", "Detected centres", "Refined centres")  # layers on request
+MAX_CONTOURS = 5000  # contacts in view whose contours are drawn; more are too small to read and slow to draw
 
 
 def mask_plot(origin_nm: np.ndarray, title: str = "", data_unit_nm: float = 1.0) -> pg.PlotItem:
@@ -213,13 +216,15 @@ def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -
 
 class StitchingView(QtWidgets.QWidget):
     def __init__(self, result: ReleaseResult, use_opengl: bool = True, on_load_images=None, on_load_design=None,
-                 not_measured: dict[int, str] | None = None):
+                 not_measured: dict[int, str] | None = None, on_load_contours=None):
         """on_load_images(): called by Load SEM images (None, or a result without images: button disabled);
-        on_load_design(): the same for Load design (a result without .oas files: disabled); not_measured: of a
-        failed run, tile index -> why it was not measured (a layer Tiles not measured; None: no such layer)."""
+        on_load_design(): the same for Load design (a result without .oas files: disabled); on_load_contours(): the
+        same for Load contours (no images: disabled); not_measured: of a failed run, tile index -> why it was not
+        measured (a layer Tiles not measured; None: no such layer)."""
         super().__init__()
         self.result = result
         self.not_measured = not_measured
+        self.contours = None  # TileContours, once loaded (set_contours)
         r = result
         self.origin = np.round(np.concatenate(r.design_points).mean(axis=0), -3)  # whole µm
         self.shifts = {"nominal": (np.zeros_like(r.centers), np.zeros_like(r.centers)),
@@ -241,8 +246,9 @@ class StitchingView(QtWidgets.QWidget):
                                                    pg.mkPen(style.OVERLAPS, width=1.5), "Overlaps used")
         self.layers["Design centres"] = self.plot.plot(pen=None, symbol="o", symbolSize=4, symbolPen=None,
                                                        symbolBrush=style.DESIGN, name="Design centres")
+        used = "refined" if r.settings.stitch_refined else "detected"  # the centres the run used (stitch_refined)
         self.layers["Measured centres"] = self.plot.plot(pen=None, symbol="o", symbolSize=3, symbolPen=None,
-                                                         symbolBrush=style.SEM, name="Measured (SEM) centres")
+                                                         symbolBrush=style.SEM, name=f"Measured (SEM) centres, {used}")
         # Failures: overlaps not matched filled in the colour of their stitching (measured or design), tiles not
         # stitched outlined thick in red, tiles not measured (a failed run) hatched in red.
         self.layers["Overlaps not matched"] = [
@@ -318,7 +324,29 @@ class StitchingView(QtWidgets.QWidget):
         if can_load_design:
             self.design_button.clicked.connect(on_load_design)
         loading.addWidget(self.design_button)
+        loading.addSpacing(16)
+        for name in CONTOURS:  # enabled once loaded (set_contours)
+            box = QtWidgets.QCheckBox(name)
+            box.setEnabled(False)
+            box.toggled.connect(self.update_visibility)
+            loading.addWidget(box)
+            self.boxes[name] = box
+        self.contours_button = QtWidgets.QPushButton("Load contours")
+        can_load_contours = on_load_contours is not None and bool(r.image_paths)
+        self.contours_button.setEnabled(can_load_contours)
+        self.contours_button.setToolTip(
+            "Detect and refine the contacts of every SEM image again, as the analysis did, and show both contours "
+            "and centres" if can_load_contours else "No SEM images: this folder holds contour CSVs")
+        if can_load_contours:
+            self.contours_button.clicked.connect(on_load_contours)
+        loading.addWidget(self.contours_button)
+        self.contours_note = QtWidgets.QLabel("")
+        self.contours_note.setStyleSheet(f"color: {style.MUTED}")
+        loading.addWidget(self.contours_note)
         loading.addStretch(1)
+        self.redraw_contours = QtCore.QTimer(self, singleShot=True, interval=50)  # after a zoom or pan
+        self.redraw_contours.timeout.connect(self.update_contours)
+        self.plot.vb.sigRangeChanged.connect(lambda *_: self.redraw_contours.start())
 
         self.status = QtWidgets.QLabel(self.status_text())
         self.status.setWordWrap(True)
@@ -403,7 +431,13 @@ class StitchingView(QtWidgets.QWidget):
             item.setPos(*sem_shift[k])
         for k, item in self.design_items:  # a realigned tile's design is not its own file: the files stay put
             item.setPos(*(design_shift[k] if not r.settings.realign else (0.0, 0.0)))
-        self.draw_selection()  # its contacts follow the placement; images loaded since come to the front
+        if self.contours is not None:
+            c = self.contours
+            for name, centres in (("Detected centres", c.detected_centres), ("Refined centres", c.refined_centres)):
+                xy = centres + self._contour_offsets()
+                self.layers[name].setData(xy[:, 0], xy[:, 1])
+            self.update_contours()
+        self.draw_selection()  # images loaded since come to the front
 
     def update_visibility(self, *_):
         for name, items in self.layers.items():
@@ -577,6 +611,60 @@ class StitchingView(QtWidgets.QWidget):
         self.design_button.setEnabled(False)
         self.update_positions()
         self.update_visibility()
+
+    def set_contours(self, contours):
+        """Show the contours and centres from the detection and after edge refinement (release.analysis
+        read_contours, TileContours; D113) as four layers, ticked once loaded; they follow the placement."""
+        r, self.contours = self.result, contours
+        for name, color in zip(CONTOURS, (style.DETECTED, style.REFINED) * 2):
+            if name in self.layers:
+                self.plot.removeItem(self.layers[name])
+                self.legend_entries = [(item, label) for item, label in self.legend_entries
+                                       if item is not self.layers[name]]
+            label = f"{name} ({r.settings.detection})" if name.startswith("Detected") else name
+            if name.endswith("contours"):
+                item = pg.PlotDataItem(pen=pg.mkPen(color, width=1.5), connect="finite")
+            else:
+                item = pg.PlotDataItem(pen=None, symbol="+", symbolSize=9, symbolPen=pg.mkPen(color, width=1.5))
+            self.plot.addItem(item)
+            self.legend_entries.append((item, label))
+            self.layers[name] = item
+            self.boxes[name].setEnabled(True)
+            self.boxes[name].setChecked(True)
+        self.contours_button.setEnabled(False)
+        self.update_positions()
+        self.update_visibility()
+
+    def _contour_offsets(self) -> np.ndarray:
+        """(n, 2) what turns each loaded contact's tile-local nm into plot data: its tile's centre and shift at the
+        placement shown, minus the origin."""
+        tile = self.contours.tile
+        return self.result.centers[tile] + self.shifts[self.mode()][0][tile] - self.origin
+
+    def update_contours(self):
+        """Draw the contours of the contacts in view (with a margin), at the placement shown; none if more than
+        MAX_CONTOURS are in view (too small to read, and slow to draw), and the note beside the button says to zoom
+        in."""
+        c = self.contours
+        if c is None:
+            return
+        offsets = self._contour_offsets()
+        centres = c.refined_centres + offsets
+        (x0, x1), (y0, y1) = self.plot.vb.viewRange()
+        margin = 0.05 * max(x1 - x0, y1 - y0)
+        inside = np.flatnonzero((centres[:, 0] > x0 - margin) & (centres[:, 0] < x1 + margin)
+                                & (centres[:, 1] > y0 - margin) & (centres[:, 1] < y1 + margin))
+        too_many = len(inside) > MAX_CONTOURS
+        shown = self.boxes["Detected contours"].isChecked() or self.boxes["Refined contours"].isChecked()
+        self.contours_note.setText("Zoom in to see the contours" if too_many and shown else "")
+        if too_many:
+            inside = inside[:0]
+        lengths = c.start[inside + 1] - c.start[inside]
+        rows = np.repeat(c.start[inside] - np.cumsum(lengths) + lengths, lengths) + np.arange(lengths.sum())
+        offset = np.repeat(offsets[inside], lengths, axis=0)
+        for name, points in (("Detected contours", c.detected), ("Refined contours", c.refined)):
+            xy = points[rows] + offset
+            self.layers[name].setData(xy[:, 0], xy[:, 1], connect="finite")
 
     def set_opacity(self, percent: int):
         """Opacity of the SEM images, 0 (transparent) to 100 %."""
