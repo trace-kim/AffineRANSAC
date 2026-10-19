@@ -166,6 +166,40 @@ def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     view.close()
 
 
+def result_with_failures(folder):
+    """The contour test folder analysed, with failures made up for the Stitching tab to draw (the stitching itself is
+    left as it was): two measured overlaps and one design overlap not matched, one tile not stitched (design)."""
+    from affine_ransac.pipeline import RejectedPair
+    write_contour_folder(folder)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(folder, "contour CSV", Settings(), log=lambda line: None)
+    for p in result.stitch.pairs[:2]:
+        result.stitch.rejected.append(RejectedPair(p.i, p.j, p.box, 9, 1, True))
+    p = result.design_stitch.pairs[1]
+    result.design_stitch.rejected.append(RejectedPair(p.i, p.j, p.box, 9, 0, True))
+    result.design_stitch.corrections[5] = np.nan
+    return result
+
+
+def test_overlaps_not_matched_and_tiles_not_stitched_are_layers_of_their_own(tmp_path):
+    """D107: on an OpenGL viewport pyqtgraph draws plot lines in their colour and width only, so the dashed overlaps
+    not matched looked like the tiles not stitched. Now filled boxes in the colour of their stitching, and thick red
+    outlines, drawn by QPainter; each its own check box, off at start."""
+    view = StitchingView(result_with_failures(tmp_path), use_opengl=False)
+    measured, design = view.layers["Overlaps not matched"]
+    tiles = view.layers["Tiles not stitched"]
+    assert [len(item.opts["x0"]) for item in (measured, design, tiles)] == [2, 1, 1]
+    for item, color in ((measured, style.SEM), (design, style.DESIGN)):
+        assert isinstance(item, pg.BarGraphItem) and item.opts["brush"].color().name() == color
+        assert not item.isVisible()
+    assert isinstance(tiles, pg.BarGraphItem) and tiles.opts["pen"].widthF() == 3 and not tiles.isVisible()
+    view.boxes["Overlaps not matched"].setChecked(True)
+    assert measured.isVisible() and design.isVisible() and not tiles.isVisible()
+    view.boxes["Tiles not stitched"].setChecked(True)
+    assert tiles.isVisible()
+    view.close()
+
+
 def arrow_points(view) -> int:
     """The points of all arrows drawn, over every colour."""
     return sum(len(item.getData()[0]) for item in view.arrows)
@@ -638,7 +672,7 @@ def test_a_failed_run_shows_its_tiles_on_the_stitching_tab_and_saves_nothing(tmp
     layer, box = view.layers["Tiles not measured"], view.boxes["Tiles not measured"]
     assert not box.isChecked() and not layer.isVisible()  # off at start, like the other failure markers
     box.setChecked(True)
-    assert layer.isVisible() and np.isfinite(layer.getData()[0]).sum() == 4 * 5  # four closed boxes
+    assert layer.isVisible() and len(layer.opts["x0"]) == 4  # four hatched boxes
     assert "4 of 4 tiles not measured" in view.status.text() and "SEM tile not stitched (3)" in view.status.text()
     assert view.tiles_at(window.result.centers[1]) == "T1 (not measured: SEM tile not stitched)"
 

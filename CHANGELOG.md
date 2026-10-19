@@ -39,5 +39,8 @@ they open, flagged as outdated.
   contact of a tile. Parameters saved before keep their value (D103).
 - Fix: *Load design* showed a solid block of colour for `.oas` files drawn tone reversed (the area around the
   holes). It now shows their contacts, in the tone the analysis read each file. Runs saved before show it too (D106).
+- Stitching tab: the failure markers can be told apart, also when drawn with the GPU, where dashed lines came out
+  solid. Overlaps not matched are filled boxes, orange for the measured stitching and blue for the design; tiles not
+  stitched have a thick red outline. Each has its own check box (D107).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

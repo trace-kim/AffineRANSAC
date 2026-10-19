@@ -1,7 +1,8 @@
 """The release's tabs (docs/SPEC.md D77), pyqtgraph, presentation style (style.py).
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
-placement; stitching failures (off at start, D76) and tile names on request; the SEM images on request
+placement; on request (off at start, D76) the overlaps not matched (filled in the colour of their stitching, D107),
+the tiles not stitched (thick red outline) and the tile names; the SEM images on request
 (Load SEM images: the app reads them in the background and calls set_images), with an opacity slider; the design
 pattern on request (Load design: the .oas contacts filled, one colour per stripe, set_design), so that the files of
 neighbouring stripes can be told apart where they overlap. Of a failed run (release.analysis.AnalysisFailed) also
@@ -75,6 +76,13 @@ def design_item(mask: np.ndarray, center_nm, fov_x_nm: float, color: str) -> pg.
     return item
 
 
+def translucent(color: str, alpha: int = 70) -> QtGui.QBrush:
+    """A fill of this colour that lets what is below show through (alpha of 255)."""
+    fill = QtGui.QColor(color)
+    fill.setAlpha(alpha)
+    return QtGui.QBrush(fill)
+
+
 def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -> pg.ImageItem:
     """A (possibly downsampled) SEM image covering its tile: pixel size = FOV / image width of the full image
     (full_shape, as the pipeline), image centre at center_nm, image rows downwards (y up on the plot)."""
@@ -117,16 +125,20 @@ class StitchingView(QtWidgets.QWidget):
                                                        symbolBrush=style.DESIGN, name="Design centres")
         self.layers["Measured centres"] = self.plot.plot(pen=None, symbol="o", symbolSize=3, symbolPen=None,
                                                          symbolBrush=style.SEM, name="Measured (SEM) centres")
-        failed = [self._local(f.box) for f in r.stitch.rejected + r.design_stitch.rejected if f.failed]
+        # Failures: overlaps not matched filled in the colour of their stitching (measured or design), tiles not
+        # stitched outlined thick in red, tiles not measured (a failed run) hatched in red.
+        self.layers["Overlaps not matched"] = [
+            self._rectangles([self._local(f.box) for f in stitch.rejected if f.failed], pg.mkPen(color, width=1),
+                             translucent(color), f"{name} overlaps not matched")
+            for name, stitch, color in (("Measured", r.stitch, style.SEM), ("Design", r.design_stitch, style.DESIGN))]
         unplaced = sorted(set(r.stitch.unplaced.tolist()) | set(r.design_stitch.unplaced.tolist()))
-        dash = QtCore.Qt.PenStyle.DashLine
-        failures = [self._boxes(failed, pg.mkPen(style.FAILURE, width=2, style=dash), "Overlaps not matched"),
-                    self._boxes([rectangles[k] for k in unplaced], pg.mkPen(style.FAILURE, width=3), "Tiles not stitched")]
-        self.layers["Stitching failures"] = failures
+        self.layers["Tiles not stitched"] = self._rectangles(
+            [rectangles[k] for k in unplaced], pg.mkPen(style.FAILURE, width=3), pg.mkBrush(None), "Tiles not stitched")
         if not_measured is not None:
-            self.layers["Tiles not measured"] = self._boxes(
-                [rectangles[k] for k in sorted(not_measured)],
-                pg.mkPen(style.FAILURE, width=2, style=QtCore.Qt.PenStyle.DotLine), "Tiles not measured")
+            hatch = QtGui.QBrush(QtGui.QColor(style.FAILURE), QtCore.Qt.BrushStyle.BDiagPattern)
+            self.layers["Tiles not measured"] = self._rectangles(
+                [rectangles[k] for k in sorted(not_measured)], pg.mkPen(style.FAILURE, width=1), hatch,
+                "Tiles not measured")
         self.names = []
         for name, center in zip(r.tile_ids, r.centers):
             text = pg.TextItem(name, color=style.MUTED, anchor=(0.5, 0.5))
@@ -136,32 +148,34 @@ class StitchingView(QtWidgets.QWidget):
         self.layers["Tile names"] = self.names
 
         self.boxes = {}
-        controls = QtWidgets.QHBoxLayout()
+        controls = QtWidgets.QHBoxLayout()  # the placement and the layers
         controls.addWidget(QtWidgets.QLabel("Placement:"))
         self.placement = QtWidgets.QComboBox()
         self.placement.addItems(PLACEMENTS.values())
         self.placement.currentIndexChanged.connect(lambda _: self.update_positions())
         controls.addWidget(self.placement)
         controls.addSpacing(16)
-        hidden = {"Stitching failures", "Tiles not measured", "Tile names"}  # off at start (D76)
+        hidden = {"Overlaps not matched", "Tiles not stitched", "Tiles not measured", "Tile names"}  # off at start (D76)
         for name in self.layers:
             box = QtWidgets.QCheckBox(name)
             box.setChecked(name not in hidden)
             box.toggled.connect(self.update_visibility)
             controls.addWidget(box)
             self.boxes[name] = box
+        controls.addStretch(1)
+        loading = QtWidgets.QHBoxLayout()  # what is read on request: SEM images, design
         self.images_box = QtWidgets.QCheckBox("SEM images")
         self.images_box.setEnabled(False)
         self.images_box.toggled.connect(self.update_visibility)
-        controls.addWidget(self.images_box)
+        loading.addWidget(self.images_box)
         self.opacity = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, minimum=0, maximum=100, value=100)
         self.opacity.setFixedWidth(120)
         self.opacity.setEnabled(False)
         self.opacity.setToolTip("Opacity of the SEM images")
         self.opacity.valueChanged.connect(self.set_opacity)
         self.opacity_label = QtWidgets.QLabel("100 %")
-        controls.addWidget(self.opacity)
-        controls.addWidget(self.opacity_label)
+        loading.addWidget(self.opacity)
+        loading.addWidget(self.opacity_label)
         self.load_button = QtWidgets.QPushButton("Load SEM images")
         can_load = on_load_images is not None and bool(r.image_paths)
         self.load_button.setEnabled(can_load)
@@ -170,12 +184,13 @@ class StitchingView(QtWidgets.QWidget):
                                     "Not available")
         if can_load:
             self.load_button.clicked.connect(on_load_images)
-        controls.addWidget(self.load_button)
+        loading.addWidget(self.load_button)
+        loading.addSpacing(16)
         self.design_box = QtWidgets.QCheckBox("Design pattern")
         self.design_box.setEnabled(False)
         self.design_box.setToolTip("The .oas contacts, one colour per stripe")
         self.design_box.toggled.connect(self.update_visibility)
-        controls.addWidget(self.design_box)
+        loading.addWidget(self.design_box)
         self.design_button = QtWidgets.QPushButton("Load design")
         can_load_design = on_load_design is not None and any(r.oas_paths)
         self.design_button.setEnabled(can_load_design)
@@ -183,8 +198,8 @@ class StitchingView(QtWidgets.QWidget):
                                       if can_load_design else "No .oas files")
         if can_load_design:
             self.design_button.clicked.connect(on_load_design)
-        controls.addWidget(self.design_button)
-        controls.addStretch(1)
+        loading.addWidget(self.design_button)
+        loading.addStretch(1)
 
         self.status = QtWidgets.QLabel(self.status_text())
         self.status.setWordWrap(True)
@@ -196,6 +211,7 @@ class StitchingView(QtWidgets.QWidget):
         layout.addLayout(style.figure_bar("Stitching", style.image_buttons(lambda: self.graphics, "stitching")))
         layout.addWidget(self.status)
         layout.addLayout(controls)
+        layout.addLayout(loading)
         layout.addWidget(self.graphics, stretch=1)
         layout.addWidget(self.cursor_label)
         self.update_positions()
@@ -210,6 +226,16 @@ class StitchingView(QtWidgets.QWidget):
         x, y = box_outlines(boxes)
         return self.plot.plot(x, y, pen=pen, connect="finite", name=f"{name} ({len(boxes)})" if boxes else None)
 
+    def _rectangles(self, boxes, pen, brush, name):
+        """Boxes (x0, x1, y0, y1, relative to the origin) as one item that QPainter draws, also on an OpenGL viewport:
+        there pyqtgraph draws plot lines itself, in their colour and width only, so dashed lines came out solid
+        (D107). In the legend with their count."""
+        b = np.asarray(boxes, dtype=float).reshape(-1, 4)
+        item = pg.BarGraphItem(x0=b[:, 0], y0=b[:, 2], width=b[:, 1] - b[:, 0], height=b[:, 3] - b[:, 2], pen=pen,
+                               brush=brush, name=f"{name} ({len(b)})")
+        self.plot.addItem(item)
+        return item
+
     def status_text(self) -> str:
         r, parts = self.result, []
         n = len(r.tile_ids)
@@ -222,7 +248,7 @@ class StitchingView(QtWidgets.QWidget):
             f.failed for f in r.stitch.rejected + r.design_stitch.rejected)
         if incomplete:
             text = f"<span style='color:{style.FAILURE}'><b>Stitching incomplete.</b></span> {text} " \
-                   f"Tick <i>Stitching failures</i> to see where."
+                   f"Tick <i>Overlaps not matched</i> and <i>Tiles not stitched</i> to see where."
         if self.not_measured is not None:
             reasons = Counter(self.not_measured.values()).most_common()
             text += f"<br><span style='color:{style.FAILURE}'><b>{len(self.not_measured)} of {n} tiles not " \
