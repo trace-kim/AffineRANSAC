@@ -20,7 +20,7 @@ map's y, and the mean per column below it (hidden unless ticked, D118), of dr be
 component beside dx and dy; both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
 them, as wide as they are (fit, D117). Each mean per row: Auto, or a range typed in the boxes just below it (D119). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
 profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx
-and dy together (D116) or one graph (also in each graph's right-click menu).
+and dy together (D116) or one graph (also in each graph's right-click menu and its Copy button, D120).
 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
@@ -872,11 +872,47 @@ class RowRange(QtWidgets.QWidget):
 
     def place(self):
         """Just below the plot, centred on its graph."""
-        graph = self.figure.mapFromScene(self.plot.vb.sceneBoundingRect()).boundingRect()
-        bottom = self.figure.mapFromScene(self.plot.sceneBoundingRect()).boundingRect().bottom()
         size = self.sizeHint()
-        corner = QtCore.QPoint(graph.center().x() - size.width() // 2, bottom + 2)
-        self.setGeometry(QtCore.QRect(self.figure.viewport().mapTo(self.figure, corner), size))
+        left = on_figure(self.figure, self.plot.vb).center().x() - size.width() // 2
+        self.setGeometry(QtCore.QRect(QtCore.QPoint(left, on_figure(self.figure, self.plot).bottom() + 2), size))
+
+
+class CopyButton(QtWidgets.QToolButton):
+    """A small Copy button over a graph's top-left corner, above its y axis (D120): copies the graph, with the items
+    given (a map's colour bar), to the clipboard. Over the figure (a child of it), so not in its images; shown while
+    the graph is."""
+
+    def __init__(self, plot: pg.PlotItem, items: list, figure: pg.GraphicsView, name: str):
+        super().__init__(figure)
+        self.plot, self.figure = plot, figure
+        self.setIcon(copy_icon())  # an icon: "Copy" covered the start of a mean per row's title
+        self.setToolTip(f"Copy the {name} to the clipboard (paste it into a slide)")
+        self.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setImage(style.render_graph(figure, items)))
+        plot.geometryChanged.connect(self.place)
+        plot.visibleChanged.connect(lambda: self.setVisible(plot.isVisible()))
+
+    def place(self):
+        self.setGeometry(QtCore.QRect(on_figure(self.figure, self.plot).topLeft() + QtCore.QPoint(2, 2),
+                                      self.sizeHint()))
+
+
+def copy_icon() -> QtGui.QIcon:
+    """Two sheets, one over the other: the usual sign for copy (drawn at twice its size, for sharp high-DPI)."""
+    pixmap = QtGui.QPixmap(32, 32)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    painter.setPen(QtGui.QPen(QtGui.QColor(style.MUTED), 2.5))
+    painter.setBrush(QtGui.QColor("white"))
+    painter.drawRoundedRect(QtCore.QRectF(4, 3, 17, 20), 3, 3)
+    painter.drawRoundedRect(QtCore.QRectF(11, 9, 17, 20), 3, 3)
+    painter.end()
+    return QtGui.QIcon(pixmap)
+
+
+def on_figure(figure: pg.GraphicsView, item) -> QtCore.QRect:
+    """A graphics item's rectangle on the figure widget, where widgets over it are placed."""
+    return figure.mapFromScene(item.sceneBoundingRect()).boundingRect().translated(figure.viewport().pos())
 
 
 ARROW_COLOURS = 32  # arrows are coloured by their length in this many steps of the colour scale
@@ -1058,9 +1094,11 @@ class RegistrationView(QtWidgets.QWidget):
         copy_profiles.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.profiles_text("\t")))
         export_profiles = QtWidgets.QPushButton("Export profiles CSV...")
         export_profiles.clicked.connect(self.export_profiles)
+        self.copy_buttons = []  # one over every graph (D120)
         for panel in self.panels:
             for plot, items, name in self.graphs_of(panel):
                 style.graph_actions(plot, self.figure, items, name)
+                self.copy_buttons.append(CopyButton(plot, items, self.figure, name))
 
         controls = QtWidgets.QHBoxLayout()
         for widget in (self.stripes, QtWidgets.QLabel("   Values:"), self.values, QtWidgets.QLabel("cell"), self.cell,

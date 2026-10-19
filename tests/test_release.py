@@ -824,6 +824,44 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
     view.close()
 
 
+def test_every_graph_has_a_copy_button_over_its_corner(tmp_path):
+    """A Copy button over the top-left corner of every map and profile (D120), shown while its graph is: a map's
+    copies it with its colour bar, a profile's the profile alone. Over the figure, not in its images."""
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    settle()
+    buttons = {button.plot: button for button in view.copy_buttons}
+    graphs = [(plot, items) for panel in view.panels for plot, items, _ in view.graphs_of(panel)]
+    assert len(buttons) == len(graphs) == 9
+    image = style.render_image(view.figure)
+    for plot, items in graphs:
+        button = buttons[plot]
+        assert button.isVisible() == plot.isVisible() == (plot not in [panel.columns for panel in view.panels])
+        if not plot.isVisible():
+            continue
+        corner = view.figure.mapFromScene(plot.sceneBoundingRect()).boundingRect().topLeft()
+        assert (button.geometry().topLeft() - corner).manhattanLength() <= 6  # over its top-left corner
+        area = button.geometry().translated(-view.figure.viewport().pos())
+        assert all(image.pixelColor(2 * x, 2 * y).name() == "#ffffff"  # not in the figure's image
+                   for x in range(area.left(), area.right(), 3) for y in range(area.top(), area.bottom(), 3))
+        button.click()
+        copied = QtWidgets.QApplication.clipboard().image()
+        assert copied.size() == style.render_graph(view.figure, items).size()
+    assert buttons[view.maps[0][0].map].toolTip().startswith("Copy the dx map")
+    assert view.graphs_of(view.maps[0][0])[0][1] == [view.maps[0][0].map, view.color_bar]  # with its colour bar
+
+    view.columns_box.setChecked(True)
+    settle()
+    assert all(buttons[panel.columns].isVisible() for panel in view.panels)
+    view.close()
+
+
 def test_the_means_per_column_are_hidden_unless_ticked(tmp_path):
     """Hidden at start: out of the layout, so that the maps take their height, and out of the image menus. Ticked:
     below their maps again, aligned with them (D118)."""

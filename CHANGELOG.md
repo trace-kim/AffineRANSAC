@@ -70,5 +70,7 @@ they open, flagged as outdated.
   with their means per row and per column and their colour bar, as on screen, without the dr graphs (D116).
 - Registration tab: the means per column are hidden, and the maps take their height; tick *Mean per column* to
   show them (D118).
+- Registration tab: a copy button (the two-sheets icon) over the top-left corner of every map and graph copies it
+  to the clipboard, a map with its colour bar (D120).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
