@@ -792,8 +792,8 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
 
     figure, graphs = view.shown_graphs()
     names = [name for name, _ in graphs]
-    assert figure is view.figure and names[1:7] == ["arrow map", "dr mean per row", "dr mean per column",
-                                                    "dx map", "dx mean per row", "dx mean per column"]
+    assert figure is view.figure and names[1:7] == ["arrow map", "dr mean per row", "dx map", "dx mean per row",
+                                                    "dy map", "dy mean per row"]  # no mean per column: hidden
     # First (after Whole figure): the graphs of dx and dy as laid out, their colour bar, nothing of dr (D116).
     assert names[0] == "dx and dy: maps, profiles, colour bar"
     (area,) = dict(graphs)[names[0]]
@@ -803,7 +803,7 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
     assert all(on_screen(area).contains(on_screen(plot)) for plot in area.items)
     assert on_screen(area).contains(on_screen(view.color_bar))
     assert not any(on_screen(area).intersects(on_screen(item)) for item in
-                   (view.arrow_panel.map, view.arrow_panel.rows, view.arrow_panel.columns, view.dr_bar))
+                   (view.arrow_panel.map, view.arrow_panel.rows, view.dr_bar))
     assert dict(graphs)["arrow map"][-1] is view.dr_bar
     map_items = dict(graphs)["dx map"]
     assert map_items[-1] is view.color_bar  # a map comes with its colour bar
@@ -812,6 +812,38 @@ def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
     assert image.width() == 2 * on_screen
     menu = [a.text() for a in view.maps[0][0].rows.vb.menu.actions()]
     assert "Copy this graph" in menu and "Save this graph..." in menu
+    view.close()
+
+
+def test_the_means_per_column_are_hidden_unless_ticked(tmp_path):
+    """Hidden at start: out of the layout, so that the maps take their height, and out of the image menus. Ticked:
+    below their maps again, aligned with them (D118)."""
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    settle()
+    panel = view.maps[0][0]
+    names = lambda: [name for name, _ in view.shown_graphs()[1]]
+    assert not view.columns_box.isChecked() and not panel.columns.isVisible()
+    assert not any("per column" in name for name in names())
+    tall = panel.map.vb.height()
+
+    view.columns_box.setChecked(True)
+    settle()
+    assert panel.columns.isVisible() and "dx mean per column" in names()
+    assert panel.map.vb.height() < 0.9 * tall  # room for the means per column
+    on_screen = lambda plot: view.figure.mapFromScene(plot.vb.sceneBoundingRect()).boundingRect()
+    assert abs(on_screen(panel.columns).left() - on_screen(panel.map).left()) <= 1
+    assert panel.columns.vb.viewRange()[0] == pytest.approx(panel.map.vb.viewRange()[0])  # the map's x
+
+    view.columns_box.setChecked(False)
+    settle()
+    assert panel.map.vb.height() == pytest.approx(tall)
     view.close()
 
 

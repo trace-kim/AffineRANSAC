@@ -16,8 +16,8 @@ RegistrationView: the error after the moving-window affine, measured (SEM) − d
 rasterized to the screen like the research view; draw_map), side by side and showing the same area; values of
 every contact, or their mean per cell of a square grid (grid_means); grid lines (on at start). Every map has its
 profiles beside it (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the
-map's y, and the mean per column below it, of dr beside the arrows and of its own component beside dx and dy;
-both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
+map's y, and the mean per column below it (hidden unless ticked, D118), of dr beside the arrows and of its own
+component beside dx and dy; both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
 them, as wide as they are (fit, D117). The means per row of dx and dy: Auto, or a range typed in, the same for both (D115). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
 profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx
 and dy together (D116) or one graph (also in each graph's right-click menu).
@@ -973,6 +973,9 @@ class RegistrationView(QtWidgets.QWidget):
         low, high = stripe_ranges(r.centers, r.sizes, r.stripe)
         self.stripes = StripeSelector([f"Stripe {k + 1}  (x {a / 1000:.1f} to {b / 1000:.1f} µm)"
                                        for k, (a, b) in enumerate(zip(low, high))], self.select_stripes)
+        self.columns_box = QtWidgets.QCheckBox("Mean per column")
+        self.columns_box.setToolTip("Show the mean per column below each map")
+        self.columns_box.toggled.connect(self.show_columns)
         # The error range of the dx and dy means per row (D115): Auto, each fitted to its values; or the same for both.
         self.row_auto = QtWidgets.QCheckBox("Auto")
         self.row_auto.setChecked(True)
@@ -1009,7 +1012,8 @@ class RegistrationView(QtWidgets.QWidget):
         for button in [copy_profiles, export_profiles] + style.image_menus(self.shown_graphs):
             controls.addWidget(button)
         row_controls = QtWidgets.QHBoxLayout()
-        for widget in (QtWidgets.QLabel("Mean per row of Δx and Δy:"), self.row_auto, QtWidgets.QLabel("  from"),
+        for widget in (self.columns_box, QtWidgets.QLabel("    Mean per row of Δx and Δy:"), self.row_auto,
+                       QtWidgets.QLabel("  from"),
                        self.row_range[0], QtWidgets.QLabel("to"), self.row_range[1]):
             row_controls.addWidget(widget)
         row_controls.addStretch(1)
@@ -1022,6 +1026,7 @@ class RegistrationView(QtWidgets.QWidget):
         self.values.currentIndexChanged.connect(self.set_values)
         self.cell.valueChanged.connect(self.set_values)
         self.show_grid_lines(True)
+        self.show_columns(False)
         self.select_stripes()
         self.set_row_range()
 
@@ -1107,6 +1112,17 @@ class RegistrationView(QtWidgets.QWidget):
         for panel in self.panels:
             panel.map.showGrid(x=on, y=on, alpha=0.35)
 
+    def show_columns(self, on: bool):
+        """The means per column below the maps, hidden unless ticked (D118). Hidden, they are taken out of the
+        layout, which kept their room otherwise, and the maps get their height."""
+        grid = self.figure.ci.layout
+        for panel in self.panels:
+            if on:
+                grid.addItem(panel.columns, 1, panel.col)
+            else:
+                grid.removeItem(panel.columns)
+            panel.columns.setVisible(on)
+
     def set_row_range(self, *_):
         """The error range of the dx and dy means per row: Auto, each fitted to its values (the boxes show their
         range), or from the first box to the second, the same for both (D115)."""
@@ -1180,10 +1196,12 @@ class RegistrationView(QtWidgets.QWidget):
 
     def shown_graphs(self):
         """For the image menus: the figure; the graphs of dx and dy, as laid out, without those of dr (D116); each
-        graph."""
-        dx_dy = [plot for panel, _, _ in self.maps for plot in (panel.map, panel.rows, panel.columns)]
+        graph shown (a mean per column only while ticked, D118)."""
+        shown = [(plot, items, name) for panel in self.panels for plot, items, name in self.graphs_of(panel)
+                 if plot.isVisible()]
+        dx_dy = [plot for plot, _, name in shown if name.startswith(("dx", "dy"))]
         return self.figure, [("dx and dy: maps, profiles, colour bar", [style.Area(dx_dy + [self.color_bar])])] + \
-            [(name, items) for panel in self.panels for _, items, name in self.graphs_of(panel)] + \
+            [(name, items) for _, items, name in shown] + \
             [("dr colour bar", [self.dr_bar]), ("dx, dy colour bar", [self.color_bar])]
 
     def profiles(self) -> list[list[str]]:
