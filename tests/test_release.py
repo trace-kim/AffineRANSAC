@@ -197,6 +197,8 @@ def test_overlaps_not_matched_and_tiles_not_stitched_are_layers_of_their_own(tmp
     assert measured.isVisible() and design.isVisible() and not tiles.isVisible()
     view.boxes["Tiles not stitched"].setChecked(True)
     assert tiles.isVisible()
+    label = view.names[0]  # D108: dark text on a white label, readable over the SEM images
+    assert label.color.name() == style.TEXT and label.fill.color().alpha() > 200
     view.close()
 
 

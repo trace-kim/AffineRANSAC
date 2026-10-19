@@ -42,5 +42,6 @@ they open, flagged as outdated.
 - Stitching tab: the failure markers can be told apart, also when drawn with the GPU, where dashed lines came out
   solid. Overlaps not matched are filled boxes, orange for the measured stitching and blue for the design; tiles not
   stitched have a thick red outline. Each has its own check box (D107).
+- Stitching tab: tile names are dark text on white labels, readable over the SEM images (D108).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

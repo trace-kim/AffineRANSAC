@@ -76,6 +76,13 @@ def design_item(mask: np.ndarray, center_nm, fov_x_nm: float, color: str) -> pg.
     return item
 
 
+def name_label(text: str) -> pg.TextItem:
+    """A tile's name, centred where it is placed: dark text on a white label, readable over SEM images (grey text on
+    grey images was not, D108)."""
+    return pg.TextItem(text, color=style.TEXT, anchor=(0.5, 0.5), fill=pg.mkBrush(255, 255, 255, 220),
+                       border=pg.mkPen(style.MUTED))
+
+
 def translucent(color: str, alpha: int = 70) -> QtGui.QBrush:
     """A fill of this colour that lets what is below show through (alpha of 255)."""
     fill = QtGui.QColor(color)
@@ -141,7 +148,7 @@ class StitchingView(QtWidgets.QWidget):
                 "Tiles not measured")
         self.names = []
         for name, center in zip(r.tile_ids, r.centers):
-            text = pg.TextItem(name, color=style.MUTED, anchor=(0.5, 0.5))
+            text = name_label(name)
             text.setPos(*(center - self.origin))
             self.plot.addItem(text)
             self.names.append(text)
