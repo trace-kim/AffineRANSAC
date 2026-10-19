@@ -3,7 +3,8 @@ moving window tabs show. No corrections (in-image map, drift curves), no RANSAC.
 
 Steps: load the tiles (images: detection + design; contour CSVs: the paired centres), stitch the SEM and the
 design (translation per tile; settings.stitch_method), the error of every contact (measured SEM − design)
-at the stitched placement, merged over the overlaps, then the moving-window affine.
+at the stitched placement, merged over the overlaps, then the moving-window affine (settings.moving_window_per_stripe:
+each stripe on its own, every image corrected by its own stripe's windows).
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 
 On request (the Contact size tab, hidden unless turned on): an image run keeps its loaded tiles in memory
@@ -28,7 +29,7 @@ from scipy.spatial import cKDTree
 from affine_ransac import __version__
 from affine_ransac.analysis import (ContactSizes, Settings, check_settings, detect_layer, load_image_tiles,
                                    merged_contact_sizes, report_stitching, worker_count)
-from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
+from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout
@@ -49,7 +50,7 @@ DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they di
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
 # it is detected from the file numbers, which follow the measurement order (user; scan_direction).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
-          "moving_window_um", "moving_step_um", "stitch_method"]
+          "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + ["detection", "search_px", "refinement", "design_search_nm",
                                   "design_tolerance_nm", "min_match_fraction", "stitch_refined", "min_contrast", "realign"]}
@@ -190,8 +191,14 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                              result(None), observations.skipped)
 
     progress(LOAD_SHARE + 0.15, "Moving-window affine")
-    moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
-                                  s.moving_step_um * 1000)
+    if s.moving_window_per_stripe:  # every image by its own stripe's windows, on the observations (D123)
+        moving = moving_window_per_stripe(observations.sem_nm, observations.design_nm, stripe[observations.tile],
+                                          contacts.members, s.moving_window_um * 1000, s.moving_step_um * 1000)
+        record(f"Moving-window affine per stripe: {len(moving.centres_nm)} windows in {len(set(moving.stripe))} "
+               f"stripe(s)")
+    else:
+        moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
+                                      s.moving_step_um * 1000)
     progress(1.0, "Done")
     return result(moving, LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None)
 

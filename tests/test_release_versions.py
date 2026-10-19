@@ -73,7 +73,7 @@ STITCH = ["corrections", "pairs/box", "pairs/center", "pairs/ia/data", "pairs/ia
 LAYOUT = {
     3: {"arrays": sorted(["centers", "design_nm", "design_points/data", "design_points/lengths", "info",
                           "moving/centres_nm", "moving/counts", "moving/models", "moving/references", "moving/residuals",
-                          "moving/window", "oas_centers", "sem_nm", "sem_points/data", "sem_points/lengths", "sizes",
+                          "moving/stripe", "moving/window", "oas_centers", "sem_nm", "sem_points/data", "sem_points/lengths", "sizes",
                           "slipped", "stripe"] + [f"stitch/{name}" for name in STITCH] + [f"design_stitch/{name}" for name in STITCH]),
         "info": ["analysis", "folder", "format", "image_paths", "kind", "log", "oas_paths", "saved", "settings",
                  "tile_ids", "version"]},
@@ -180,6 +180,20 @@ def test_a_run_saved_before_a_setting_existed_says_what_it_did(tmp_path):
         settings = json.loads(str(arrays["info"]))["settings"]
     rewrite_info(path, settings={name: value for name, value in settings.items() if name != "refinement"})
     assert load_cache(data, user)[0].settings.refinement == "steepest gradient"
+
+
+def test_a_run_file_without_an_optional_array_added_since_still_opens(tmp_path):
+    # moving/stripe (D123) was added to format 3: a file saved before has none and opens with an empty one.
+    data, user = tmp_path / "data", tmp_path / "user"
+    data.mkdir()
+    path = save_cache(analyse_contours(data), user)
+    with np.load(path) as arrays:
+        content = {name: arrays[name] for name in arrays.files if name != "moving/stripe"}
+    with open(path, "wb") as f:
+        np.savez_compressed(f, **content)
+
+    run, _ = load_cache(data, user)
+    assert run.moving.stripe.size == 0 and len(run.moving.residuals) == len(run.design_nm)
 
 
 def test_an_outdated_run_is_shown_flagged_and_analysed_again_if_the_user_agrees(tmp_path, monkeypatch):

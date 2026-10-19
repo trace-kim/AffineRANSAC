@@ -71,6 +71,9 @@ class Settings:
     row_gap_nm: float = setting(10.0, "Rows: a new row starts where the sorted design y jumps by more than this")
     moving_window_um: float = setting(40.0, "Moving-window affine: window height along y")
     moving_step_um: float = setting(5.0, "Moving-window affine: the window moves up this much each step")
+    moving_window_per_stripe: bool = setting(False, "Moving-window affine fitted per stripe: every image corrected by "
+                                                    "the windows of its own stripe (stripes are measured at different "
+                                                    "times and drift differently); off: every window spans all stripes")
     intrafield_nodes: int = setting(9, "In-image distortion map: nodes per axis over the image, edge to edge")
     drift_window_um: float = setting(40.0, "Drift curve: height of the local straight-line fit along y")
     first_stripe_upward: bool = setting(True, "Serpentine scan: the first stripe (smallest x) was measured from its "
@@ -110,6 +113,7 @@ class Settings:
 
 
 CSV_ONLY = {"tile_margin_nm"}
+RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis only (release/analysis.py)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale", "min_contrast",
                "realign"}
@@ -135,8 +139,8 @@ def saved_settings(values: dict) -> Settings:
 
 
 def settings_for(kind: str) -> list[str]:
-    """Names of the settings a folder of this kind ("contour CSV" or "images") uses."""
-    unused = IMAGES_ONLY if kind == "contour CSV" else CSV_ONLY
+    """Names of the settings this analysis uses for a folder of this kind ("contour CSV" or "images")."""
+    unused = (IMAGES_ONLY if kind == "contour CSV" else CSV_ONLY) | RELEASE_ONLY
     return [f.name for f in fields(Settings) if f.name not in unused]
 
 

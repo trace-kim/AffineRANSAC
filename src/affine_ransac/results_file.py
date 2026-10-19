@@ -11,7 +11,7 @@ FORMAT changes whenever the layout does; a file of another format is refused wit
 """
 
 import json
-from dataclasses import asdict, fields
+from dataclasses import MISSING, asdict, fields
 from pathlib import Path
 
 import numpy as np
@@ -102,7 +102,10 @@ def _put_fields(arrays: dict, name: str, record):
 
 
 def _get_fields(arrays, name: str, cls):
-    values = {f.name: arrays[f"{name}/{f.name}"] for f in fields(cls)}
+    """The dataclass `cls` saved by _put_fields. A field with a default that the file lacks (added to the class since
+    it was saved) takes that default; any other missing field raises KeyError."""
+    values = {f.name: arrays[f"{name}/{f.name}"] for f in fields(cls)
+              if f"{name}/{f.name}" in arrays or (f.default is MISSING and f.default_factory is MISSING)}
     return cls(**{key: value.item() if value.ndim == 0 else value for key, value in values.items()})
 
 

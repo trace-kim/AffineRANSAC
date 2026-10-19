@@ -1137,7 +1137,8 @@ class RegistrationView(QtWidgets.QWidget):
 
     def select_stripes(self):
         """Show the contacts of the ticked stripes: their maps, profiles, colour scales and summary, the view on
-        them. The errors stay those of the moving-window affine fitted on every contact."""
+        them. The errors stay those of the run's moving-window affine (every contact, or per stripe), not fitted
+        again."""
         r, s = self.result, self.result.settings
         selected = self.stripes.selected()
         shown = self.in_stripe[:, selected].any(axis=1)
@@ -1156,12 +1157,14 @@ class RegistrationView(QtWidgets.QWidget):
         self.dr_bar.setLevels((0.0, float(np.percentile(length, 99)) or 1.0))
 
         window = f"moving-window affine: window {s.moving_window_um:g} µm, step {s.moving_step_um:g} µm"
+        fitted = "fitted per stripe, every image by its own stripe's windows" if s.moving_window_per_stripe else \
+            "fitted on every contact"
         total = self.in_stripe.shape[1]
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
         self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.row_y)} rows, "
                              f"{len(self.column_x)} columns. Error = measured (SEM) − design after the {window}, "
-                             f"fitted on every contact: {summary_text(self.error_nm)}.")
+                             f"{fitted}: {summary_text(self.error_nm)}.")
         self.fitted = True  # show them all
         self.set_values()
 

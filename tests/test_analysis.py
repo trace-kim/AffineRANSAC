@@ -138,6 +138,7 @@ def test_settings_for_each_kind_of_folder():
     assert "tile_margin_nm" in settings_for("contour CSV") and "detection" not in settings_for("contour CSV")
     assert "detection" in settings_for("images") and "tile_margin_nm" not in settings_for("images")
     assert "max_match_nm" in settings_for("contour CSV") and "max_match_nm" in settings_for("images")
+    assert "moving_window_per_stripe" not in settings_for("images")  # the release's only (RELEASE_ONLY)
 
 
 def write_image_folder(folder, design=None):

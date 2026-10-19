@@ -56,6 +56,34 @@ def test_the_error_is_measured_minus_design(tmp_path):
     assert np.all(result.moving.residuals[bumped, 0] > 3.0)
 
 
+def test_the_moving_window_can_be_fitted_per_stripe(tmp_path):
+    """D123: with moving_window_per_stripe every image is corrected by the windows of its own stripe (here one window
+    per stripe: the field is shorter than a window), kept when saved, and the Registration tab says so."""
+    def drift(k, local, mask):  # the stripes measured at different times: each its own x scale (tiles 0-2: left)
+        scale, centre = (300e-6, 0.0) if k < 3 else (-300e-6, 2600.0)
+        return np.column_stack([scale * (mask[:, 0] - centre), np.zeros(len(mask))])
+    write_contour_folder(tmp_path, sem_error=drift)
+    lines = []
+    with pytest.warns(UserWarning):
+        together = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    with pytest.warns(UserWarning):
+        apart = analyse_folder(tmp_path, "contour CSV", replace(Settings(), moving_window_per_stripe=True),
+                               log=lines.append)
+
+    assert together.moving.stripe.size == 0 and apart.moving.stripe.tolist() == [0, 1]
+    assert "Moving-window affine per stripe: 2 windows in 2 stripe(s)" in lines
+    # one affine for both stripes leaves their x scales (0.26 nm rms); one per stripe leaves the 0.1 nm noise
+    assert np.sqrt((together.moving.residuals[:, 0] ** 2).mean()) > 0.2
+    assert np.sqrt((apart.moving.residuals ** 2).mean(axis=0)).max() < 0.11
+    save_cache(apart, tmp_path / "user")
+    loaded, _ = load_cache(tmp_path, tmp_path / "user")
+    np.testing.assert_array_equal(loaded.moving.stripe, apart.moving.stripe)
+    pg.mkQApp()
+    view = RegistrationView(loaded, use_opengl=False)
+    assert "fitted per stripe, every image by its own stripe's windows" in view.summary.text()
+    view.close()
+
+
 def test_image_folder_reports_progress_per_tile_and_keeps_the_image_paths(tmp_path):
     records = write_image_folder(tmp_path)
     stages = []

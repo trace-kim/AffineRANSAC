@@ -82,5 +82,9 @@ they open, flagged as outdated.
   `refinement` *steepest gradient*, gives the previous results. Runs saved with an earlier analysis open flagged as
   outdated; analysed again, image folders give other numbers (contour CSV folders do not change). The *Refined
   contours* and *Refined centres* layers name the rule (D122).
+- *Analysis → Parameters*, `moving_window_per_stripe`: the moving-window affine fitted per stripe, every image
+  corrected by the windows of its own stripe (stripes are measured at different times and drift differently); a
+  contact seen by two stripes gets the mean of both. The Registration tab's summary says how it was fitted. Off
+  by default: runs give the same numbers as before (D123).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
