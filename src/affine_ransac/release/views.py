@@ -36,7 +36,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import ContactSizes
-from affine_ransac.pipeline import contact_stripes, stripe_ranges
+from affine_ransac.pipeline import contact_stripes, lower_left, overlap_contacts, stripe_ranges
 from affine_ransac.registration import error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
@@ -46,6 +46,17 @@ from affine_ransac.view_points import box_outlines, tile_rectangles
 from affine_ransac.view_registration import JET, colorize, draw_map
 
 PLACEMENTS = {"stitched": "Stitched", "nominal": "Nominal"}
+LAYER_TIPS = {  # the Stitching tab's check boxes
+    "Overlaps not matched": "Overlaps where both images (orange) or both .oas files (blue) have at least min_matched "
+                            "contacts, but fewer of them pair up: left out of the stitching",
+    "Measured overlap contacts": "Measured contacts in each overlap: green = used to stitch it; red = not used there "
+                                 "(no partner within max_match_nm, or an outlier), a ring from the lower or left image, "
+                                 "a cross from the upper or right one. Ring and cross together: both images have the "
+                                 "contact; alone: only one image has it",
+    "Design overlap contacts": "The same for the .oas contacts (squares), stitching the design files "
+                               "(partner within design_max_match_nm)",
+    "Tiles not stitched": "Tiles that no used overlap links to the others: they have no position and are not measured",
+}
 
 
 def mask_plot(origin_nm: np.ndarray, title: str = "", data_unit_nm: float = 1.0) -> pg.PlotItem:
@@ -138,6 +149,30 @@ class StitchingView(QtWidgets.QWidget):
             self._rectangles([self._local(f.box) for f in stitch.rejected if f.failed], pg.mkPen(color, width=1),
                              translucent(color), f"{name} overlaps not matched")
             for name, stitch, color in (("Measured", r.stitch, style.SEM), ("Design", r.design_stitch, style.DESIGN))]
+        # The contacts in each used or not-matched overlap, per stitching (D110): green if used to stitch that overlap,
+        # else red, a ring from the lower or left image of the pair and a cross from the upper or right one; so a
+        # contact both images have shows ring and cross together, one only one image has a ring or a cross alone.
+        self.overlap_parts = {}  # stitching -> (its points per tile, {marker: [(tile, indices), ...]}, {marker: item})
+        for name, points, stitch, symbol in (("Measured", r.sem_points, r.stitch, "o"),
+                                             ("Design", r.design_points, r.design_stitch, "s")):
+            parts = {"used": [], "lower": [], "upper": []}
+            for o in overlap_contacts(points, stitch):
+                first = "lower" if lower_left(r.centers, o.i, o.j) else "upper"
+                second = "upper" if first == "lower" else "lower"
+                parts["used"] += [(o.i, o.tie_i), (o.j, o.tie_j)]
+                parts[first].append((o.i, np.setdiff1d(o.in_i, o.tie_i)))
+                parts[second].append((o.j, np.setdiff1d(o.in_j, o.tie_j)))
+            unused = pg.mkPen(style.FAILURE, width=1.5)
+            items = {"used": self.plot.plot(pen=None, symbol=symbol, symbolSize=5, symbolPen=None,
+                                            symbolBrush=style.OVERLAPS, name=f"{name} contacts used to stitch"),
+                     "lower": self.plot.plot(pen=None, symbol=symbol, symbolSize=11, symbolPen=unused,
+                                             symbolBrush=pg.mkBrush(None),
+                                             name=f"{name} contacts not used, lower or left image"),
+                     "upper": self.plot.plot(pen=None, symbol="x", symbolSize=11, symbolPen=None,
+                                             symbolBrush=style.FAILURE,
+                                             name=f"{name} contacts not used, upper or right image")}
+            self.overlap_parts[name] = (points, parts, items)
+            self.layers[f"{name} overlap contacts"] = list(items.values())
         unplaced = sorted(set(r.stitch.unplaced.tolist()) | set(r.design_stitch.unplaced.tolist()))
         self.layers["Tiles not stitched"] = self._rectangles(
             [rectangles[k] for k in unplaced], pg.mkPen(style.FAILURE, width=3), pg.mkBrush(None), "Tiles not stitched")
@@ -162,9 +197,11 @@ class StitchingView(QtWidgets.QWidget):
         self.placement.currentIndexChanged.connect(lambda _: self.update_positions())
         controls.addWidget(self.placement)
         controls.addSpacing(16)
-        hidden = {"Overlaps not matched", "Tiles not stitched", "Tiles not measured", "Tile names"}  # off at start (D76)
+        hidden = {"Overlaps not matched", "Measured overlap contacts", "Design overlap contacts", "Tiles not stitched",
+                  "Tiles not measured", "Tile names"}  # off at start (D76)
         for name in self.layers:
             box = QtWidgets.QCheckBox(name)
+            box.setToolTip(LAYER_TIPS.get(name, ""))
             box.setChecked(name not in hidden)
             box.toggled.connect(self.update_visibility)
             controls.addWidget(box)
@@ -221,6 +258,9 @@ class StitchingView(QtWidgets.QWidget):
         layout.addLayout(loading)
         layout.addWidget(self.graphics, stretch=1)
         layout.addWidget(self.cursor_label)
+        # The legend lists the layers shown only: with every layer listed it grew long, and its eye icons hid an item
+        # without unticking its box.
+        self.legend_entries = [(sample.item, label.text) for sample, label in self.plot.legend.items]
         self.update_positions()
         self.update_visibility()
         self.plot.autoRange()
@@ -276,6 +316,11 @@ class StitchingView(QtWidgets.QWidget):
         design = np.concatenate([p + design_shift[k] for k, p in enumerate(r.design_points)]) - self.origin
         self.layers["Measured centres"].setData(sem[:, 0], sem[:, 1])
         self.layers["Design centres"].setData(design[:, 0], design[:, 1])
+        for name, (points, parts, items) in self.overlap_parts.items():
+            shift = sem_shift if name == "Measured" else design_shift
+            for marker, item in items.items():
+                xy = np.concatenate([np.empty((0, 2))] + [points[k][index] + shift[k] for k, index in parts[marker]])
+                item.setData(xy[:, 0] - self.origin[0], xy[:, 1] - self.origin[1])
         for k, item in enumerate(self.image_items):
             item.setPos(*sem_shift[k])
         for k, item in self.design_items:  # a realigned tile's design is not its own file: the files stay put
@@ -289,6 +334,10 @@ class StitchingView(QtWidgets.QWidget):
             item.setVisible(self.images_box.isChecked())
         for _, item in self.design_items:
             item.setVisible(self.design_box.isChecked())
+        self.plot.legend.clear()
+        for item, name in self.legend_entries:
+            if item.isVisible():
+                self.plot.legend.addItem(item, name)
 
     def set_images(self, images: list[tuple[np.ndarray, tuple]]):
         """Show the SEM images: per tile (image, shape of the full image), from the app's loader."""

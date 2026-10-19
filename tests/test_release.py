@@ -241,6 +241,32 @@ def test_the_stitching_status_says_how_serious_it_is(tmp_path):
     assert "saved before MaskReg kept the check" in status(result)
 
 
+def test_overlap_contacts_show_why_an_overlap_was_not_matched(tmp_path):
+    """D110: with min_matched 2, a corner where two .oas files each have 2 contacts but share only one is not matched:
+    each file dropped the other's second contact, which lies on its own frame edge. Design overlap contacts shows it:
+    the shared contact has a ring (lower-left file) and a cross (upper-right file), each other contact only one."""
+    pg.mkQApp()
+    records = write_image_folder(tmp_path)
+    result = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, min_matched=2), records,
+                            log=lambda line: None)
+    assert [(f.i, f.j) for f in result.design_stitch.rejected if f.failed] == [(1, 2)]
+    view = StitchingView(result, use_opengl=False)
+    used, rings, crosses = view.layers["Design overlap contacts"]
+    assert not view.boxes["Design overlap contacts"].isChecked() and not rings.isVisible()  # off at start
+
+    def has(item, point):
+        return np.linalg.norm(np.column_stack(item.getData()) + view.origin - point, axis=1).min() < 1.0
+    assert has(rings, [270.0, -270.0]) and has(crosses, [270.0, -270.0])  # in both files
+    assert has(rings, [270.0, -360.0]) and not has(crosses, [270.0, -360.0])  # in tile 1's file only (lower left)
+    assert has(crosses, [360.0, -270.0]) and not has(rings, [360.0, -270.0])  # in tile 2's file only
+    assert len(used.getData()[0]) > 40
+    legend = [label.text for _, label in view.plot.legend.items]  # the layers shown only
+    assert legend == ["Tile outlines (4)", "Overlaps used (4)", "Design centres", "Measured (SEM) centres"]
+    view.boxes["Design overlap contacts"].setChecked(True)
+    assert "Design contacts not used, upper or right image" in [label.text for _, label in view.plot.legend.items]
+    view.close()
+
+
 def test_the_overlaps_paired_one_row_off_are_saved_with_the_run(tmp_path):
     write_contour_folder(tmp_path)
     with pytest.warns(UserWarning):

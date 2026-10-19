@@ -48,5 +48,9 @@ they open, flagged as outdated.
   stitched, whose contacts are missing from the Registration tab. Otherwise *Stitching OK*, with a note when
   overlaps were not matched (every tile is still stitched and measured). The log says "STITCHING INCOMPLETE" only
   when tiles are not stitched. Each run keeps its check for overlaps paired one row off (D109).
+- Stitching tab: *Measured overlap contacts* and *Design overlap contacts* show why an overlap was not matched. In
+  every overlap, green marks the contacts used to stitch it and red those not used there: a ring from the lower or
+  left image, a cross from the upper or right one. A ring or a cross alone is a contact only one image has (e.g. cut
+  off by the other's frame). The legend lists only the layers shown (D110).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
