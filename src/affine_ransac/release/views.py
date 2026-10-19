@@ -18,7 +18,7 @@ every contact, or their mean per cell of a square grid (grid_means); grid lines 
 profiles beside it (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the
 map's y, and the mean per column below it, of dr beside the arrows and of its own component beside dx and dy;
 both follow the map's zoom and pan. The maps show their contacts just, each shaped like them, at start and on View
-All (fit, D114). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
+All (fit, D114). The means per row of dx and dy: Auto, or a range typed in, the same for both (D115). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
 profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure or one graph (also
 in each graph's right-click menu).
 
@@ -980,6 +980,20 @@ class RegistrationView(QtWidgets.QWidget):
         low, high = stripe_ranges(r.centers, r.sizes, r.stripe)
         self.stripes = StripeSelector([f"Stripe {k + 1}  (x {a / 1000:.1f} to {b / 1000:.1f} µm)"
                                        for k, (a, b) in enumerate(zip(low, high))], self.select_stripes)
+        # The error range of the dx and dy means per row (D115): Auto, each fitted to its values; or the same for both.
+        self.row_auto = QtWidgets.QCheckBox("Auto")
+        self.row_auto.setChecked(True)
+        self.row_auto.setToolTip("Each mean per row fitted to its values. Untick to give the means per row of Δx "
+                                 "and Δy the range in the boxes (Enter applies)")
+        self.row_range = [QtWidgets.QDoubleSpinBox(decimals=2, minimum=-1e4, maximum=1e4, singleStep=0.5, suffix=" nm",
+                                                   keyboardTracking=False) for _ in range(2)]
+        self.row_auto.toggled.connect(self.set_row_range)
+        for box in self.row_range:
+            box.valueChanged.connect(self.set_row_range)
+        for panel, _, _ in self.maps:
+            panel.rows.vb.sigXRangeChanged.connect(lambda *_: self.show_row_range())
+            panel.rows.vb.sigRangeChangedManually.connect(lambda *_, plot=panel.rows: self.row_range_from(plot))
+            panel.rows.vb.view_all = self.auto_row_range
 
         self.summary = QtWidgets.QLabel()
         self.summary.setWordWrap(True)
@@ -1001,15 +1015,22 @@ class RegistrationView(QtWidgets.QWidget):
         controls.addStretch(1)
         for button in [copy_profiles, export_profiles] + style.image_menus(self.shown_graphs):
             controls.addWidget(button)
+        row_controls = QtWidgets.QHBoxLayout()
+        for widget in (QtWidgets.QLabel("Mean per row of Δx and Δy:"), self.row_auto, QtWidgets.QLabel("  from"),
+                       self.row_range[0], QtWidgets.QLabel("to"), self.row_range[1]):
+            row_controls.addWidget(widget)
+        row_controls.addStretch(1)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.summary)
         layout.addLayout(controls)
+        layout.addLayout(row_controls)
         layout.addWidget(self.figure, stretch=1)
 
         self.values.currentIndexChanged.connect(self.set_values)
         self.cell.valueChanged.connect(self.set_values)
         self.show_grid_lines(True)
         self.select_stripes()
+        self.set_row_range()
 
     def select_stripes(self):
         """Show the contacts of the ticked stripes: their maps, profiles, colour scales and summary, the view on
@@ -1119,6 +1140,47 @@ class RegistrationView(QtWidgets.QWidget):
     def show_grid_lines(self, on: bool):
         for panel in self.panels:
             panel.map.showGrid(x=on, y=on, alpha=0.35)
+
+    def set_row_range(self, *_):
+        """The error range of the dx and dy means per row: Auto, each fitted to its values (the boxes show their
+        range), or from the first box to the second, the same for both (D115)."""
+        auto = self.row_auto.isChecked()
+        for box in self.row_range:
+            box.setEnabled(not auto)
+        low, high = (box.value() for box in self.row_range)
+        for panel, _, _ in self.maps:
+            if auto:
+                panel.rows.vb.enableAutoRange(x=True)
+            elif low < high:
+                panel.rows.setXRange(low, high, padding=0)
+        self.show_row_range()
+
+    def show_row_range(self):
+        """While Auto, the boxes show the range of the dx and dy means per row (the widest of both): where a fixed
+        range starts from."""
+        if not self.row_auto.isChecked():
+            return
+        ranges = np.array([panel.rows.vb.viewRange()[0] for panel, _, _ in self.maps])
+        self.set_boxes(ranges[:, 0].min(), ranges[:, 1].max())
+
+    def set_boxes(self, low: float, high: float):
+        for box, value in zip(self.row_range, (low, high)):
+            box.blockSignals(True)
+            box.setValue(value)
+            box.blockSignals(False)
+
+    def row_range_from(self, plot: pg.PlotItem):
+        """A zoom or pan with the mouse in the dx or dy mean per row: its range, for both; no longer Auto."""
+        self.set_boxes(*plot.vb.viewRange()[0])
+        self.row_auto.blockSignals(True)
+        self.row_auto.setChecked(False)
+        self.row_auto.blockSignals(False)
+        self.set_row_range()
+
+    def auto_row_range(self):
+        """View All in the dx or dy mean per row: back to Auto."""
+        self.row_auto.setChecked(True)
+        self.set_row_range()
 
     def draw_maps(self):
         for panel, image, component in self.maps:

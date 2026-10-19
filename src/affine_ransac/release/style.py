@@ -21,7 +21,6 @@ STRIPES = ["#2a78d6", "#9b4dca", "#1baf7a", "#c7951a"]  # design pattern: one co
 FONT = "Segoe UI"
 TICK_PT, LABEL_PT, TITLE_PT = 10, 11, 12
 EXPORT_SCALE = 2  # Copy / Save image: pixels per screen pixel
-TICK_PX = 50  # a mask axis's labelled ticks at least this far apart, so that their labels fit side by side
 
 
 class MaskAxis(pg.AxisItem):
@@ -38,15 +37,24 @@ class MaskAxis(pg.AxisItem):
         return [f"{v * scale + self.origin_um:.{decimals}f}" for v in values]
 
     def tickSpacing(self, minVal, maxVal, size):
-        """pyqtgraph's spacing, with the labelled ticks at least TICK_PX apart (1, 2, 5 x 10^k): pyqtgraph puts
-        two or more on any axis, and on a narrow map their labels ran into each other (D114)."""
+        """pyqtgraph's spacing, with the labelled ticks far enough apart for their labels (1, 2, 5 x 10^k):
+        pyqtgraph puts two or more on any axis, and on a narrow map their labels ran into each other (D114)."""
         levels = super().tickSpacing(minVal, maxVal, size)
         if not levels or size <= 0 or maxVal == minVal:
             return levels
         major = levels[0][0]
-        while major * size / abs(maxVal - minVal) < TICK_PX:
+        while major * size / abs(maxVal - minVal) < self.label_px(minVal, maxVal, major):
             major *= 2.5 if round(major / 10 ** np.floor(np.log10(major))) == 2 else 2  # 1 -> 2 -> 5 -> 10
         return [(major, 0)] + levels[1:]
+
+    def label_px(self, low: float, high: float, spacing: float) -> float:
+        """Room a tick label takes along the axis, px, with a gap: the widest label at the axis ends (bottom, top)
+        or a line of text (left, right). low, high, spacing as tickSpacing has them (scaled)."""
+        metrics = QtGui.QFontMetrics(self.style["tickFont"] or QtGui.QFont())
+        if self.orientation in ("left", "right"):
+            return metrics.height() + 8
+        labels = self.tickStrings([low / self.scale, high / self.scale], self.scale, spacing / self.scale)
+        return max(metrics.horizontalAdvance(label) for label in labels) + 12
 
 
 def setup():

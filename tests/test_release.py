@@ -220,6 +220,42 @@ def test_the_maps_show_their_contacts_just(tmp_path):
         view.close()
 
 
+def test_the_means_per_row_of_dx_and_dy_take_a_range_typed_in(tmp_path):
+    """Auto: each fitted to its values, the boxes showing their range; a range typed in: the same for both, kept
+    when the stripes change; a zoom with the mouse in one: its range for both; View All: Auto again. The mean dr per
+    row keeps its own (D115)."""
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    settle()
+    dx, dy = (panel.rows for panel, _, _ in view.maps)
+    x_range = lambda plot: plot.vb.viewRange()[0]
+    boxes = lambda: [box.value() for box in view.row_range]
+    assert view.row_auto.isChecked() and not view.row_range[0].isEnabled()
+    assert boxes() == pytest.approx([min(x_range(dx)[0], x_range(dy)[0]), max(x_range(dx)[1], x_range(dy)[1])], abs=0.01)
+
+    view.row_auto.setChecked(False)
+    view.row_range[0].setValue(-3.0)
+    view.row_range[1].setValue(3.0)
+    assert x_range(dx) == pytest.approx([-3.0, 3.0]) and x_range(dy) == pytest.approx([-3.0, 3.0])
+    view.stripes.set_selected([1])
+    assert x_range(dx) == pytest.approx([-3.0, 3.0]) and x_range(dy) == pytest.approx([-3.0, 3.0])
+
+    dy.vb.scaleBy((0.5, 1.0))  # a zoom with the mouse
+    dy.vb.sigRangeChangedManually.emit([True, False])
+    assert x_range(dy) == pytest.approx([-1.5, 1.5]) and x_range(dx) == pytest.approx([-1.5, 1.5])
+    assert boxes() == pytest.approx([-1.5, 1.5]) and not view.row_auto.isChecked()
+    dx.vb.menu.viewAll.trigger()
+    assert view.row_auto.isChecked() and dx.vb.autoRangeEnabled()[0] and dy.vb.autoRangeEnabled()[0]
+    assert view.arrow_panel.rows.vb.autoRangeEnabled()[0]  # the mean dr per row: never set
+    view.close()
+
+
 def result_with_failures(folder):
     """The contour test folder analysed, with failures made up for the Stitching tab to draw (the stitching itself is
     left as it was): two measured overlaps and one design overlap not matched, one tile not stitched (design)."""
