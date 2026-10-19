@@ -54,7 +54,7 @@ EXTRA_COLORS = [("#e0c040", "#40d040"), ("#ff60ff", "#40e0e0"), ("#c080ff", "#a0
 EXTERNAL_COLORS = [("#ffffff", "#b0b0b0"), ("#ffa0c0", "#ffd080")]  # (dx, dy) lines of the 1st, 2nd... add_external set
 
 
-def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: int) -> np.ndarray:
+def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: float) -> np.ndarray:
     """Mean of values (N,) drawn as disks of radius_px around points (N, 2) on a (rows, cols) grid
     covering rect = (left, bottom, width, height); row 0 is the bottom. NaN where nothing is drawn."""
     left, bottom, width, height = rect
@@ -62,9 +62,9 @@ def rasterize(points: np.ndarray, values: np.ndarray, rect, shape, radius_px: in
     ix = np.floor((points[:, 0] - left) / width * cols).astype(int)
     iy = np.floor((points[:, 1] - bottom) / height * rows).astype(int)
     total, count = np.zeros(shape), np.zeros(shape)
-    r = int(radius_px)
-    for dy in range(-r, r + 1):
-        for dx in range(-r, r + 1):
+    r = float(radius_px)
+    for dy in range(-int(r), int(r) + 1):
+        for dx in range(-int(r), int(r) + 1):
             if dx * dx + dy * dy > r * r:
                 continue
             x, y = ix + dx, iy + dy
@@ -103,19 +103,23 @@ def colorize(grid: np.ndarray, levels, transparent: bool = False, background: in
 
 
 def draw_map(plot, image, position_um: np.ndarray, values: np.ndarray, levels, dot_um: float,
-             device_ratio: float, transparent: bool = False, background: int = 0) -> float | None:
+             device_ratio: float, transparent: bool = False, background: int = 0, size_px: float = 0) -> float | None:
     """Draw the contacts in plot's view into image (rasterize, colorize), one image pixel per DEVICE
     pixel (with Windows display scaling, e.g. 150 %, a logical pixel is 1.5 device pixels; an image made
     per logical pixel would be enlarged and the contact lattice would alias). position_um (N, 2), values
-    (N,); each contact a disk of radius dot_um (at least one pixel, at most MAX_DOT_PX). Returns the disk
-    radius in logical px, None if the view has no size yet. transparent, background: see colorize."""
+    (N,); each contact a disk of radius dot_um (at least one pixel, at most MAX_DOT_PX), or size_px
+    (logical) pixels across at every zoom if given. Returns the disk radius in logical px, None if the view
+    has no size yet. transparent, background: see colorize."""
     view = plot.vb.viewRect()
     pixel_um = np.array(plot.vb.viewPixelSize()) / device_ratio  # (x, y) µm per device pixel
     if pixel_um[0] <= 0 or pixel_um[1] <= 0:
         return None
     cols = int(min(4000, max(1, np.ceil(view.width() / pixel_um[0]))))
     rows = int(min(4000, max(1, np.ceil(view.height() / pixel_um[1]))))
-    radius_px = int(np.clip(round(dot_um / pixel_um[0]), 0, MAX_DOT_PX))
+    if size_px > 0:
+        radius_px = max(0.0, (size_px * device_ratio - 1) / 2)
+    else:
+        radius_px = int(np.clip(round(dot_um / pixel_um[0]), 0, MAX_DOT_PX))
     margin = (radius_px + 1) * max(pixel_um)
     x, y = position_um[:, 0], position_um[:, 1]
     near = ((x > view.left() - margin) & (x < view.right() + margin)

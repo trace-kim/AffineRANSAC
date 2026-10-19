@@ -72,5 +72,8 @@ they open, flagged as outdated.
   show them (D118).
 - Registration tab: a copy button (the two-sheets icon) over the top-left corner of every map and graph copies it
   to the clipboard, a map with its colour bar (D120).
+- Registration tab: *Symbol size* sets the size of the contacts on the dx and dy maps in screen pixels (*Auto*: as
+  before, a disk of 0.8 × the pitch that grows as you zoom in); *Line width* sets the width of the profiles' lines
+  (D121).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

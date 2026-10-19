@@ -862,6 +862,39 @@ def test_every_graph_has_a_copy_button_over_its_corner(tmp_path):
     view.close()
 
 
+def test_symbol_size_and_line_width(tmp_path):
+    """Symbol size: Auto (a disk of 0.8 x the pitch) or every contact that many pixels across at every zoom, off in
+    grid average; line width: the lines of every profile (D121)."""
+    from affine_ransac.view_registration import rasterize
+    one = rasterize(np.array([[5.5, 5.5]]), np.array([1.0]), (0, 0, 11, 11), (11, 11), 1.5)
+    assert np.isfinite(one).sum() == 9  # a radius of 1.5 px: 3 x 3 pixels (a symbol 4 px across)
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    settle()
+    assert view.symbol_size.value() == 0 and view.symbol_size.text() == "Auto"
+    vb = view.maps[0][0].map.vb
+    centre = view.position_um.mean(axis=0)
+    vb.setRange(xRange=(centre[0] - 0.5, centre[0] + 0.5), yRange=(centre[1] - 0.5, centre[1] + 0.5), padding=0)
+    covered = []
+    for size in (0, 3, 9):  # Auto, then 3 and 9 px
+        view.symbol_size.setValue(size)
+        view.draw_maps()
+        covered.append(np.mean(~(view.maps[0][1].image[..., :3] == 255).all(axis=-1)))
+    assert covered[1] < covered[2] < covered[0]  # zoomed in: 3 px dots < 9 px dots < disks of 0.8 x the pitch
+    view.values.setCurrentIndex(1)
+    assert not view.symbol_size.isEnabled()
+
+    view.line_width.setValue(5)
+    assert [line.opts["pen"].width() for lines in view.map_profiles + view.arrow_profiles for line in lines] == [5] * 6
+    view.close()
+
+
 def test_the_means_per_column_are_hidden_unless_ticked(tmp_path):
     """Hidden at start: out of the layout, so that the maps take their height, and out of the image menus. Ticked:
     below their maps again, aligned with them (D118)."""

@@ -13,14 +13,16 @@ the count per reason; the cursor line names the tiles under the cursor and why e
 
 RegistrationView: the error after the moving-window affine, measured (SEM) − design, in one figure: an arrow map
 (arrows coloured by their length dr, jet, own colour bar) and colour maps of dx and dy (jet, shared colour scale,
-rasterized to the screen like the research view; draw_map), side by side and showing the same area; values of
-every contact, or their mean per cell of a square grid (grid_means); grid lines (on at start). Every map has its
-profiles beside it (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the
-map's y, and the mean per column below it (hidden unless ticked, D118), of dr beside the arrows and of its own
-component beside dx and dy; both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
-them, as wide as they are (fit, D117). Each mean per row: Auto, or a range typed in the boxes just below it (D119). Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy
-profiles / Export profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx
-and dy together (D116) or one graph (also in each graph's right-click menu and its Copy button, D120).
+rasterized to the screen like the research view; draw_map), side by side and showing the same area; values of every
+contact (Auto: disks of 0.8 x the pitch, or a symbol size in pixels, D121), or their mean per cell of a square grid
+(grid_means); grid lines (on at start); the profiles' line width (D121). Every map has its profiles beside it
+(MarginalMap): the mean per row on its right, rotated so that y runs down the side like the map's y, and the mean
+per column below it (hidden unless ticked, D118), of dr beside the arrows and of its own component beside dx and dy;
+both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
+them, at the maps' own width (fit, D117). Each mean per row: Auto, or a range typed in the boxes just below it (D119).
+Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy profiles / Export
+profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx and dy together
+(D116) or one graph (also in each graph's right-click menu and its Copy button, D120).
 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
@@ -1079,6 +1081,13 @@ class RegistrationView(QtWidgets.QWidget):
         self.columns_box = QtWidgets.QCheckBox("Mean per column")
         self.columns_box.setToolTip("Show the mean per column below each map")
         self.columns_box.toggled.connect(self.show_columns)
+        self.symbol_size = QtWidgets.QSpinBox(minimum=0, maximum=50, suffix=" px", specialValueText="Auto")
+        self.symbol_size.setToolTip("Size of the contacts on the dx and dy maps, pixels across at every zoom. Auto: "
+                                    "a disk of 0.8 x the pitch, which grows as you zoom in")
+        self.symbol_size.valueChanged.connect(lambda *_: self.draw_maps())
+        self.line_width = QtWidgets.QSpinBox(minimum=1, maximum=10, value=2, suffix=" px")
+        self.line_width.setToolTip("Width of the lines of the means per row and per column")
+        self.line_width.valueChanged.connect(self.set_line_width)
         # Each mean per row has its error range in boxes just below it (D119), in a row of the figure left for them.
         self.row_ranges = [RowRange(panel.rows, self.figure) for panel in self.panels]
         room = QtWidgets.QGraphicsWidget()
@@ -1109,7 +1118,9 @@ class RegistrationView(QtWidgets.QWidget):
         for button in [copy_profiles, export_profiles] + style.image_menus(self.shown_graphs):
             controls.addWidget(button)
         row_controls = QtWidgets.QHBoxLayout()
-        row_controls.addWidget(self.columns_box)
+        for widget in (self.columns_box, QtWidgets.QLabel("    Symbol size"), self.symbol_size,
+                       QtWidgets.QLabel("   Line width"), self.line_width):
+            row_controls.addWidget(widget)
         row_controls.addStretch(1)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.summary)
@@ -1160,6 +1171,7 @@ class RegistrationView(QtWidgets.QWidget):
         """Every contact or the grid average: the grid computed again, the arrow scale reset, the maps fitted again
         unless zoomed, then drawn."""
         self.cell.setEnabled(self.grid_mode())
+        self.symbol_size.setEnabled(not self.grid_mode())  # grid average: cells, no symbols
         corner, mean, _ = grid_means(self.design_nm, self.error_nm, self.cell.value() * 1000)
         self.grid_corner_um, self.grid_mean = (corner - self.origin) / 1000, mean
         vectors = self.arrow_vectors()[1]
@@ -1226,7 +1238,13 @@ class RegistrationView(QtWidgets.QWidget):
                 image.setRect(QtCore.QRectF(*self.grid_corner_um, cols * cell, rows * cell))
             else:
                 draw_map(panel.map, image, self.position_um, self.error_nm[:, component], self.color_bar.levels(),
-                         self.dot_um, self.devicePixelRatioF(), background=255)
+                         self.dot_um, self.devicePixelRatioF(), background=255, size_px=self.symbol_size.value())
+
+    def set_line_width(self, width: int):
+        """The lines of the means per row and per column, this many pixels wide (D121)."""
+        for lines, color in zip(self.map_profiles + self.arrow_profiles, (style.DX, style.DY, style.DR)):
+            for line in lines:
+                line.setPen(pg.mkPen(color, width=width))
 
     def draw_arrows(self):
         """The arrows, each coloured by its length (its error's dr) on the dr colour bar."""
