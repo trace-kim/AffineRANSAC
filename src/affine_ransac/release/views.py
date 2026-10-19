@@ -2,13 +2,13 @@
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
 placement, under a status line that grades the stitching (stitching_verdict, D109); on request (off at start, D76)
-the overlaps not matched (filled in the colour of their stitching, D107), the contacts in each overlap, used to
-stitch it or not (D110), the tiles not stitched (thick red outline) and the tile names (D108); the SEM images on
-request (Load SEM images: the app reads them in the background and calls set_images), with an opacity slider; the
-design pattern on request (Load design: the .oas contacts filled, one colour per stripe, set_design), so that the files
-of neighbouring stripes can be told apart where they overlap. A click on a tile shows it with its overlaps and
-neighbours, its details beside the plot (D111). Of a failed run (release.analysis.AnalysisFailed) also the tiles not
-measured, with the count per reason; the cursor line names the tiles under the cursor and why each was not measured.
+the overlaps not matched (filled in the colour of their stitching, D107), the tiles not stitched (thick red outline)
+and the tile names (D108); the SEM images on request (Load SEM images: the app reads them in the background and calls
+set_images), with an opacity slider; the design pattern on request (Load design: the .oas contacts filled, one colour
+per stripe, set_design), so that the files of neighbouring stripes can be told apart where they overlap. A click
+selects a tile (which image is this?) or a box of an overlap not matched (why?), drawn on top and explained beside
+the plot (draw_selection, D112). Of a failed run (release.analysis.AnalysisFailed) also the tiles not measured, with
+the count per reason; the cursor line names the tiles under the cursor and why each was not measured.
 
 RegistrationView: the error after the moving-window affine, measured (SEM) − design, in one figure: an arrow map
 (arrows coloured by their length dr, jet, own colour bar) and colour maps of dx and dy (jet, shared colour scale,
@@ -37,8 +37,8 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import ContactSizes
-from affine_ransac.pipeline import (PairResult, RejectedPair, StitchResult, contact_stripes, lower_left,
-                                    overlap_contacts, stripe_ranges)
+from affine_ransac.overlap import points_in_box
+from affine_ransac.pipeline import PairResult, RejectedPair, StitchResult, contact_stripes, pair_kind, stripe_ranges
 from affine_ransac.registration import error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
@@ -50,15 +50,10 @@ from affine_ransac.view_registration import JET, colorize, draw_map
 PLACEMENTS = {"stitched": "Stitched", "nominal": "Nominal"}
 LAYER_TIPS = {  # the Stitching tab's check boxes
     "Overlaps not matched": "Overlaps where both images (orange) or both .oas files (blue) have at least min_matched "
-                            "contacts, but fewer of them pair up: left out of the stitching",
-    "Measured overlap contacts": "Measured contacts in each overlap: green = used to stitch it; red = not used there "
-                                 "(no partner within max_match_nm, or an outlier), a ring from the lower or left image, "
-                                 "a cross from the upper or right one. Ring and cross together: both images have the "
-                                 "contact; alone: only one image has it",
-    "Design overlap contacts": "The same for the .oas contacts (squares), stitching the design files "
-                               "(partner within design_max_match_nm)",
+                            "contacts, but fewer of them pair up: left out of the stitching. Click one to see why",
     "Tiles not stitched": "Tiles that no used overlap links to the others: they have no position and are not measured",
 }
+HINT = "Click a tile to see which image it is. With Overlaps not matched shown, click a box to see why it was not matched."
 
 
 def mask_plot(origin_nm: np.ndarray, title: str = "", data_unit_nm: float = 1.0) -> pg.PlotItem:
@@ -111,37 +106,83 @@ def direction(step) -> str:
     return side if abs(dx) > 2 * abs(dy) else f"{'upper' if dy > 0 else 'lower'} {side}"
 
 
-def overlap_status(entry, min_matched: int, color: str) -> str:
-    """One stitching's overlap of a pair, in words: used (tie points of the pairs), not matched or skipped (with the
-    contacts in it: the smaller of the two images' counts, D27)."""
-    if entry is None:
-        return "no overlap"
-    if isinstance(entry, PairResult):
-        return f"used, {int(entry.fit.inliers.sum())} tie points ({len(entry.ia)} pairs)"
-    if entry.failed:
-        return f"<span style='color:{color}'><b>not matched</b></span>: {entry.matched} pair(s) among " \
-               f"{entry.in_box} contacts in the overlap (min_matched {min_matched})"
-    return f"skipped: {entry.in_box} contact(s) in the overlap (min_matched {min_matched})"
+STITCHINGS = (  # name, the result's stitching and points, the gate that pairs contacts, plot symbol, text marks
+    ("Measured", lambda r: r.stitch, lambda r: r.sem_points, "max_match_nm", "o", "●○"),
+    ("Design", lambda r: r.design_stitch, lambda r: r.design_points, "design_max_match_nm", "s", "■□"))
+
+
+def not_matched_in(r: ReleaseResult, i: int, j: int) -> list[str]:
+    """The stitchings ("Measured", "Design") in which the overlap of tiles i and j was not matched."""
+    return [name for name, stitch, *_ in STITCHINGS
+            if isinstance(e := overlaps_of(stitch(r), i).get(j), RejectedPair) and e.failed]
 
 
 def tile_details(r: ReleaseResult, tile: int, not_measured: dict | None = None) -> str:
-    """A tile's stitching in words (HTML): stripe, centre, the shift each stitching gave it, and per neighbour where it
-    lies and what each stitching made of their overlap (D111)."""
+    """A tile in words (HTML, D112): name, stripe, centre and the shift each stitching gave it; then its overlaps
+    not matched (in which stitching, with a link overlap:i:j to show why), and the neighbours of the others."""
     def shift(corrections):
         c = corrections[tile]
-        return f"<span style='color:{style.FAILURE}'><b>not stitched</b></span>" if np.isnan(c).any() else \
-            f"({c[0]:+.1f}, {c[1]:+.1f}) nm"
+        return f"<span style='color:{style.FAILURE}'><b>not stitched</b></span> (no position, not measured)" \
+            if np.isnan(c).any() else f"({c[0]:+.1f}, {c[1]:+.1f}) nm"
+
+    def where(k):
+        return f"{r.tile_ids[k]} ({direction(r.centers[k] - r.centers[tile])})"
     x, y = r.centers[tile] / 1000
-    lines = [f"<b>{r.tile_ids[tile]}</b> · stripe {int(r.stripe[tile]) + 1} · centre ({x:.3f}, {y:.3f}) µm",
-             f"Stitched shift: measured {shift(r.stitch.corrections)}, design {shift(r.design_stitch.corrections)}"]
+    lines = [f"<span style='font-size:13pt'><b>{r.tile_ids[tile]}</b></span>",
+             f"stripe {int(r.stripe[tile]) + 1}, centre ({x:.3f}, {y:.3f}) µm",
+             f"Shift from the stitching: measured {shift(r.stitch.corrections)}, design "
+             f"{shift(r.design_stitch.corrections)}"]
     if not_measured and tile in not_measured:
         lines.append(f"<span style='color:{style.FAILURE}'><b>Not measured</b></span>: {not_measured[tile]}")
     overlaps = [overlaps_of(r.stitch, tile), overlaps_of(r.design_stitch, tile)]
-    lines.append("<br><b>Overlaps</b>")
-    for k in sorted(set(overlaps[0]) | set(overlaps[1]), key=lambda k: r.tile_ids[k]):
-        lines.append(f"<br>{r.tile_ids[k]} · {direction(r.centers[k] - r.centers[tile])}")
-        for name, found, color in (("measured", overlaps[0], style.SEM), ("design", overlaps[1], style.DESIGN)):
-            lines.append(f"&nbsp;&nbsp;{name}: {overlap_status(found.get(k), r.settings.min_matched, color)}")
+    neighbours = sorted(set(overlaps[0]) | set(overlaps[1]), key=lambda k: r.tile_ids[k])
+    failed = [(k, not_matched_in(r, tile, k)) for k in neighbours if not_matched_in(r, tile, k)]
+    used = [k for k in neighbours if k not in dict(failed)
+            and any(isinstance(found.get(k), PairResult) for found in overlaps)]
+    skipped = [k for k in neighbours if k not in dict(failed) and k not in used]
+    lines.append(f"<br><b>Overlaps with {len(neighbours)} images</b>")
+    if failed:
+        lines.append(f"<span style='color:{style.CAUTION}'><b>Not matched</b></span>, so not used to stitch; this image "
+                     f"is placed through its other overlaps:")
+        lines += [f"&nbsp;• {where(k)}, {' and '.join(names).lower()}: <a href='overlap:{tile}:{k}'>show why</a>"
+                  for k, names in failed]
+    else:
+        lines.append(f"<span style='color:{style.OK}'>Nothing wrong:</span> every overlap with enough contacts "
+                     f"was matched.")
+    if used:
+        lines.append("Used: " + ", ".join(where(k) for k in used))
+    if skipped:
+        lines.append("Skipped, too few contacts (fewer than min_matched): " + ", ".join(where(k) for k in skipped))
+    return "<br>".join(lines)
+
+
+def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
+    """One overlap in words (HTML, D112): what each stitching made of it (not matched: pairs found and needed, each
+    image's contacts in it), how to read the contacts drawn, links back to both tiles (tile:k)."""
+    a, b = r.tile_ids[i], r.tile_ids[j]
+    corner = pair_kind(r.centers, i, j) == "corner"
+    lines = [f"<span style='font-size:13pt'><b>Overlap {a} – {b}</b></span>",
+             f"{b} lies {direction(r.centers[j] - r.centers[i])} of {a}"
+             + (": a corner overlap, a small area with few contacts." if corner else ".")]
+    for name, stitch, points, gate, _, marks in STITCHINGS:
+        e = overlaps_of(stitch(r), i).get(j)
+        what = "images" if name == "Measured" else ".oas files"
+        if isinstance(e, PairResult):
+            lines.append(f"<br><b>{name}</b>: used, {len(e.ia)} pairs.")
+        elif e is not None and e.failed:
+            count_a, count_b = (len(points_in_box(points(r)[k], e.box)) for k in (i, j))
+            lines.append(f"<br><b>{name}</b>: <span style='color:{style.CAUTION}'><b>not matched</b></span>. "
+                         f"{e.matched} pair(s) found, {r.settings.min_matched} needed (min_matched): a pair is a "
+                         f"contact in both {what}, the two within {getattr(r.settings, gate):g} nm ({gate}). "
+                         f"{a} has {count_a} contact(s) in the overlap ({marks[0]}), {b} has {count_b} ({marks[1]}).")
+        elif e is not None:
+            lines.append(f"<br><b>{name}</b>: skipped, only {e.in_box} contact(s) in the overlap.")
+    if not_matched_in(r, i, j):
+        lines.append(f"<br><b>On the plot</b>, each one's contacts in the overlap, where they were compared: filled for "
+                     f"{a} (solid outline), hollow for {b} (dashed outline). Filled inside hollow: the contact is in "
+                     f"both. Filled or hollow alone: in one only; next to the other's edge this is normal, as each "
+                     f"leaves out the contacts its own edge cuts.")
+    lines.append(f"<br>Back to <a href='tile:{i}'>{a}</a> or <a href='tile:{j}'>{b}</a>")
     return "<br>".join(lines)
 
 
@@ -208,30 +249,6 @@ class StitchingView(QtWidgets.QWidget):
             self._rectangles([self._local(f.box) for f in stitch.rejected if f.failed], pg.mkPen(color, width=1),
                              translucent(color), f"{name} overlaps not matched")
             for name, stitch, color in (("Measured", r.stitch, style.SEM), ("Design", r.design_stitch, style.DESIGN))]
-        # The contacts in each used or not-matched overlap, per stitching (D110): green if used to stitch that overlap,
-        # else red, a ring from the lower or left image of the pair and a cross from the upper or right one; so a
-        # contact both images have shows ring and cross together, one only one image has a ring or a cross alone.
-        self.overlap_parts = {}  # stitching -> (its points per tile, {marker: [(tile, indices), ...]}, {marker: item})
-        for name, points, stitch, symbol in (("Measured", r.sem_points, r.stitch, "o"),
-                                             ("Design", r.design_points, r.design_stitch, "s")):
-            parts = {"used": [], "lower": [], "upper": []}
-            for o in overlap_contacts(points, stitch):
-                first = "lower" if lower_left(r.centers, o.i, o.j) else "upper"
-                second = "upper" if first == "lower" else "lower"
-                parts["used"] += [(o.i, o.tie_i), (o.j, o.tie_j)]
-                parts[first].append((o.i, np.setdiff1d(o.in_i, o.tie_i)))
-                parts[second].append((o.j, np.setdiff1d(o.in_j, o.tie_j)))
-            unused = pg.mkPen(style.FAILURE, width=1.5)
-            items = {"used": self.plot.plot(pen=None, symbol=symbol, symbolSize=5, symbolPen=None,
-                                            symbolBrush=style.OVERLAPS, name=f"{name} contacts used to stitch"),
-                     "lower": self.plot.plot(pen=None, symbol=symbol, symbolSize=11, symbolPen=unused,
-                                             symbolBrush=pg.mkBrush(None),
-                                             name=f"{name} contacts not used, lower or left image"),
-                     "upper": self.plot.plot(pen=None, symbol="x", symbolSize=11, symbolPen=None,
-                                             symbolBrush=style.FAILURE,
-                                             name=f"{name} contacts not used, upper or right image")}
-            self.overlap_parts[name] = (points, parts, items)
-            self.layers[f"{name} overlap contacts"] = list(items.values())
         unplaced = sorted(set(r.stitch.unplaced.tolist()) | set(r.design_stitch.unplaced.tolist()))
         self.layers["Tiles not stitched"] = self._rectangles(
             [rectangles[k] for k in unplaced], pg.mkPen(style.FAILURE, width=3), pg.mkBrush(None), "Tiles not stitched")
@@ -256,8 +273,7 @@ class StitchingView(QtWidgets.QWidget):
         self.placement.currentIndexChanged.connect(lambda _: self.update_positions())
         controls.addWidget(self.placement)
         controls.addSpacing(16)
-        hidden = {"Overlaps not matched", "Measured overlap contacts", "Design overlap contacts", "Tiles not stitched",
-                  "Tiles not measured", "Tile names"}  # off at start (D76)
+        hidden = {"Overlaps not matched", "Tiles not stitched", "Tiles not measured", "Tile names"}  # off at start (D76)
         for name in self.layers:
             box = QtWidgets.QCheckBox(name)
             box.setToolTip(LAYER_TIPS.get(name, ""))
@@ -306,13 +322,15 @@ class StitchingView(QtWidgets.QWidget):
 
         self.status = QtWidgets.QLabel(self.status_text())
         self.status.setWordWrap(True)
-        self.cursor_label = QtWidgets.QLabel("Click a tile to see it, its overlaps and its neighbours.")
+        self.cursor_label = QtWidgets.QLabel(HINT)
         self.cursor_label.setStyleSheet(f"color: {style.MUTED}")
         self.plot.scene().sigMouseMoved.connect(self._show_cursor)
-        # A clicked tile: highlighted with its overlaps and neighbours, its details beside the plot (D111).
-        self.selected, self.selection_items = None, []
+        # What a click selected (D112): None, ("tile", k) or ("overlap", i, j); drawn on top, explained beside the plot.
+        self.selection, self.selection_items, self.selection_legend = None, [], []
         self.details = QtWidgets.QTextBrowser()
         self.details.setFixedWidth(400)
+        self.details.setOpenLinks(False)
+        self.details.anchorClicked.connect(self._link)
         self.details.hide()
         self.plot.scene().sigMouseClicked.connect(self._clicked)
 
@@ -360,7 +378,8 @@ class StitchingView(QtWidgets.QWidget):
                  (("Overlaps not matched", any(f.failed for f in r.stitch.rejected + r.design_stitch.rejected)),
                   ("Tiles not stitched", len(r.stitch.unplaced) or len(r.design_stitch.unplaced))) if shown]
         if ticks:
-            text += f" Tick {' and '.join(ticks)} to see where."
+            text += f" Tick {' and '.join(ticks)} to see where" + \
+                    ("; click a box to see why." if "<i>Overlaps not matched</i>" in ticks else ".")
         if self.not_measured is not None:
             reasons = Counter(self.not_measured.values()).most_common()
             text += f"<br><span style='color:{style.FAILURE}'><b>{len(self.not_measured)} of {n} tiles not " \
@@ -380,15 +399,11 @@ class StitchingView(QtWidgets.QWidget):
         design = np.concatenate([p + design_shift[k] for k, p in enumerate(r.design_points)]) - self.origin
         self.layers["Measured centres"].setData(sem[:, 0], sem[:, 1])
         self.layers["Design centres"].setData(design[:, 0], design[:, 1])
-        for name, (points, parts, items) in self.overlap_parts.items():
-            shift = sem_shift if name == "Measured" else design_shift
-            for marker, item in items.items():
-                xy = np.concatenate([np.empty((0, 2))] + [points[k][index] + shift[k] for k, index in parts[marker]])
-                item.setData(xy[:, 0] - self.origin[0], xy[:, 1] - self.origin[1])
         for k, item in enumerate(self.image_items):
             item.setPos(*sem_shift[k])
         for k, item in self.design_items:  # a realigned tile's design is not its own file: the files stay put
             item.setPos(*(design_shift[k] if not r.settings.realign else (0.0, 0.0)))
+        self.draw_selection()  # its contacts follow the placement; images loaded since come to the front
 
     def update_visibility(self, *_):
         for name, items in self.layers.items():
@@ -399,7 +414,7 @@ class StitchingView(QtWidgets.QWidget):
         for _, item in self.design_items:
             item.setVisible(self.design_box.isChecked())
         self.plot.legend.clear()
-        for item, name in self.legend_entries:
+        for item, name in self.legend_entries + self.selection_legend:
             if item.isVisible():
                 self.plot.legend.addItem(item, name)
         for sample, _ in self.plot.legend.items:  # a click on an entry hides it: untick its layer to match
@@ -413,7 +428,7 @@ class StitchingView(QtWidgets.QWidget):
                 QtCore.QTimer.singleShot(0, lambda name=name: self.boxes[name].setChecked(False))
 
     def _clicked(self, event):
-        """A left click on the plot (not on its legend) selects the tile there, or none (select_at)."""
+        """A left click on the plot (not on its legend) selects what is there (select_at)."""
         position = event.scenePos()
         if event.button() != QtCore.Qt.MouseButton.LeftButton or event.double() or \
                 not self.plot.vb.sceneBoundingRect().contains(position) or \
@@ -423,55 +438,108 @@ class StitchingView(QtWidgets.QWidget):
         self.select_at(np.array([point.x(), point.y()]) + self.origin)
 
     def select_at(self, point_nm):
-        """Select the tile whose (nominal) box holds the point, mask nm; of several (an overlap), the one whose centre
-        is nearest; none: clear the selection."""
+        """Select what a click at this point (mask nm) is on (D112): with Overlaps not matched shown, a not-matched
+        overlap whose box holds it (the smallest, e.g. a corner inside a strip); else the tile whose box holds it (in
+        an overlap, the one whose centre is nearer); else nothing."""
         r = self.result
-        inside = np.flatnonzero(np.all(np.abs(r.centers - point_nm) <= r.sizes / 2, axis=1))
-        self.select(int(inside[np.argmin(np.linalg.norm(r.centers[inside] - point_nm, axis=1))]) if len(inside) else None)
 
-    def select(self, tile: int | None):
-        """Highlight a tile (None: none) with its overlaps and its neighbours, all named, and show its details beside
-        the plot (tile_details, D111). Overlaps filled: green used, orange / blue not matched (measured / design); grey
-        dashed outline: skipped (too few contacts)."""
+        def holds(box):
+            return box[0] <= point_nm[0] <= box[1] and box[2] <= point_nm[1] <= box[3]
+        if self.boxes["Overlaps not matched"].isChecked():
+            boxes = [f for f in r.stitch.rejected + r.design_stitch.rejected if f.failed and holds(f.box)]
+            if boxes:
+                f = min(boxes, key=lambda f: (f.box[1] - f.box[0]) * (f.box[3] - f.box[2]))
+                return self.select(("overlap", f.i, f.j))
+        inside = np.flatnonzero(np.all(np.abs(r.centers - point_nm) <= r.sizes / 2, axis=1))
+        nearest = inside[np.argmin(np.linalg.norm(r.centers[inside] - point_nm, axis=1))] if len(inside) else None
+        self.select(None if nearest is None else ("tile", int(nearest)))
+
+    def _link(self, url: QtCore.QUrl):
+        """A link in the details beside the plot: tile:k or overlap:i:j; an overlap is then shown whole."""
+        kind, *numbers = url.toString().split(":")
+        numbers = [int(n) for n in numbers]
+        self.select((kind, *numbers))
+        if kind == "overlap":
+            i, j = numbers
+            x0, x1, y0, y1 = self._local((overlaps_of(self.result.stitch, i).get(j)
+                                          or overlaps_of(self.result.design_stitch, i)[j]).box)
+            margin = 0.6 * max(x1 - x0, y1 - y0) + 100  # nm: a corner overlap is only a few hundred nm wide
+            self.plot.vb.setRange(xRange=(x0 - margin, x1 + margin), yRange=(y0 - margin, y1 + margin), padding=0)
+
+    def select(self, selection):
+        """Select None, ("tile", k) or ("overlap", i, j) and draw it (draw_selection)."""
+        self.selection = selection
+        self.draw_selection()
+
+    def draw_selection(self):
+        """Draw the selection on top and explain it beside the plot (D112).
+        A tile: only its outline (black on white, seen on any image) and its name; its SEM image and design pattern
+        come to the front, so that it is its own image that shows in its overlaps (tile_details).
+        An overlap not matched: only its two tiles, the first outlined solid and the second dashed, both named; the
+        overlap's box in the colour of each stitching that did not match it; and each tile's contacts in that box
+        where they were compared (nominal placement, as the box), filled for the first and hollow for the second
+        (circles measured, squares design), named in the legend (overlap_details)."""
         for item in self.selection_items:
             self.plot.removeItem(item)
-        self.selection_items, self.selected = [], tile
-        if tile is None:
+        self.selection_items, self.selection_legend = [], []
+        for item in self.image_items:
+            item.setZValue(-10)
+        for _, item in self.design_items:
+            item.setZValue(-5)
+        if self.selection is None:
             self.details.hide()
-            return
-        r = self.result
-        overlaps = [overlaps_of(r.stitch, tile), overlaps_of(r.design_stitch, tile)]
-        neighbours = sorted(set(overlaps[0]) | set(overlaps[1]))
-        boxes = {"used": [], "measured": [], "design": [], "skipped": []}
-        for k in neighbours:
-            entries = [found.get(k) for found in overlaps]
-            box = self._local(next(e for e in entries if e is not None).box)
-            if any(isinstance(e, PairResult) for e in entries):
-                boxes["used"].append(box)
-            for kind, e in zip(("measured", "design"), entries):
-                if isinstance(e, RejectedPair) and e.failed:
-                    boxes[kind].append(box)
-            if all(isinstance(e, RejectedPair) and not e.failed for e in entries if e is not None):
-                boxes["skipped"].append(box)
-        dash = QtCore.Qt.PenStyle.DashLine
-        looks = {"used": (pg.mkPen(style.OVERLAPS, width=2.5), translucent(style.OVERLAPS, 60)),
-                 "measured": (pg.mkPen(style.SEM, width=2.5), translucent(style.SEM, 110)),
-                 "design": (pg.mkPen(style.DESIGN, width=2.5), translucent(style.DESIGN, 110)),
-                 "skipped": (pg.mkPen(style.MUTED, width=2, style=dash), pg.mkBrush(None))}
-        for kind, (pen, brush) in looks.items():
-            self.selection_items.append(rectangles_item(boxes[kind], pen, brush))
-        for tiles, width in ((neighbours, 1.5), ([tile], 3)):  # black on white: seen on any image
-            for color, extra in (("w", 3), ("k", 0)):
-                self.selection_items.append(rectangles_item([self.rectangles[k] for k in tiles],
-                                                            pg.mkPen(color, width=width + extra), pg.mkBrush(None)))
-        for k in neighbours + [tile]:
-            label = name_label(r.tile_ids[k])
-            label.setPos(*(r.centers[k] - self.origin))
-            self.selection_items.append(label)
+        elif self.selection[0] == "tile":
+            self._draw_tile(self.selection[1])
+        else:
+            self._draw_overlap(*self.selection[1:])
         for item in self.selection_items:
             item.setZValue(50)
             self.plot.addItem(item)
-        self.details.setHtml(tile_details(r, tile, self.not_measured))
+        if hasattr(self, "legend_entries"):  # not while the view is being built
+            self.update_visibility()
+
+    def _outline(self, tile: int, dashed: bool = False):
+        """A tile's outline, black on a white halo, and its name."""
+        line = QtCore.Qt.PenStyle.DashLine if dashed else QtCore.Qt.PenStyle.SolidLine
+        box = [self.rectangles[tile]]
+        label = name_label(self.result.tile_ids[tile])
+        label.setPos(*(self.result.centers[tile] - self.origin))
+        self.selection_items += [rectangles_item(box, pg.mkPen("w", width=6), pg.mkBrush(None)),
+                                 rectangles_item(box, pg.mkPen("k", width=3, style=line), pg.mkBrush(None)), label]
+
+    def _draw_tile(self, tile: int):
+        self._outline(tile)
+        if self.image_items:
+            self.image_items[tile].setZValue(-9)
+        for k, item in self.design_items:
+            if k == tile:
+                item.setZValue(-4)
+        self.details.setHtml(tile_details(self.result, tile, self.not_measured))
+        self.details.show()
+
+    def _draw_overlap(self, i: int, j: int):
+        r = self.result
+        self._outline(i)
+        self._outline(j, dashed=True)
+        for name, stitch, points, _, symbol, _ in STITCHINGS:
+            entry = overlaps_of(stitch(r), i).get(j)
+            if not (isinstance(entry, RejectedPair) and entry.failed):
+                continue
+            color = style.SEM if name == "Measured" else style.DESIGN
+            self.selection_items.append(rectangles_item([self._local(entry.box)], pg.mkPen(color, width=2.5),
+                                                        pg.mkBrush(None)))
+            for k, filled in ((i, True), (j, False)):  # where they were compared: nominal, as the box
+                xy = points(r)[k][points_in_box(points(r)[k], entry.box)] - self.origin
+                if filled:
+                    marks = [pg.PlotDataItem(xy[:, 0], xy[:, 1], pen=None, symbol=symbol, symbolSize=9,
+                                             symbolBrush="k", symbolPen=pg.mkPen("w", width=1.5))]
+                else:  # a black ring on a white one
+                    marks = [pg.PlotDataItem(xy[:, 0], xy[:, 1], pen=None, symbol=symbol, symbolSize=15,
+                                             symbolBrush=pg.mkBrush(None), symbolPen=pg.mkPen(ring, width=width))
+                             for ring, width in (("w", 4), ("k", 2))]
+                self.selection_items += marks
+                self.selection_legend.append((marks[-1], f"{r.tile_ids[k]}: {name.lower()} contacts in the overlap"))
+        self.details.setHtml(overlap_details(r, i, j))
         self.details.show()
 
     def set_images(self, images: list[tuple[np.ndarray, tuple]]):
@@ -549,13 +617,17 @@ def stitching_verdict(r: ReleaseResult) -> list[str]:
                           "They have no position, so their contacts are missing from the Registration tab (white "
                           "there); its numbers cover the other tiles only."))
     if not lines:
-        failed = {name: sum(f.failed for f in stitch.rejected)
+        failed = {name: [f for f in stitch.rejected if f.failed]
                   for name, stitch in (("measured", r.stitch), ("design", r.design_stitch))}
         if any(failed.values()):
-            counts = " and ".join(f"{count} {name}" for name, count in failed.items() if count)
+            counts = " and ".join(f"{len(found)} {name}" for name, found in failed.items() if found)
+            corners = sum(pair_kind(r.centers, f.i, f.j) == "corner" for found in failed.values() for f in found)
+            total = sum(len(found) for found in failed.values())
+            where = "" if not corners else " (all at corners," if corners == total else f" ({corners} at corners,"
             lines.append(line(style.CAUTION, "Stitching OK, with overlaps not matched.",
-                              f"All {n} tiles are stitched, so all are measured. {counts} overlap(s) were not matched "
-                              f"and are left out: their tiles are placed through their other overlaps."))
+                              f"All {n} tiles are stitched, so all are measured. {counts} overlap(s) were not matched"
+                              + (f"{where} where two images share only a few contacts)" if corners else "")
+                              + " and are left out: their tiles are placed through their other overlaps."))
         else:
             lines.append(line(style.OK, "Stitching OK.", f"All {n} tiles stitched."))
     if r.slipped is None:

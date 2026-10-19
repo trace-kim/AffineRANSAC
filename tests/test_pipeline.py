@@ -181,30 +181,6 @@ def test_unmatched_tile_is_reported_never_silently_zero():
     np.testing.assert_allclose(result.corrections[:3], errors[:3] - errors[:3].mean(axis=0), atol=0.3)
 
 
-def test_overlap_contacts_say_which_contacts_each_overlap_used():
-    """D110: per used or not-matched overlap, each tile's contacts in its box and its tie contacts; a tile beyond the
-    gate has contacts in its overlaps, none of them used."""
-    from affine_ransac.overlap import points_in_box
-    from affine_ransac.pipeline import lower_left, overlap_contacts
-    errors = np.array([[0.0, 0.0], [3.0, -2.0], [-2.0, 1.0], [40.0, 0.0]])  # tile 3: 40 nm off, beyond the gate
-    points = seen_points(errors)
-    with pytest.warns(UserWarning):
-        stitch = stitch_tiles(points, NOMINAL, np.full((4, 2), FOV))
-    found = {(o.i, o.j): o for o in overlap_contacts(points, stitch)}
-
-    assert sorted(found) == sorted([(p.i, p.j) for p in stitch.pairs] + [(1, 3), (2, 3)])  # the corner (0, 3): skipped
-    for p in stitch.pairs:
-        o = found[(p.i, p.j)]
-        assert o.used and np.array_equal(o.tie_i, p.ia[p.fit.inliers]) and np.array_equal(o.tie_j, p.ib[p.fit.inliers])
-        np.testing.assert_array_equal(o.in_i, points_in_box(points[p.i], p.box))
-    for pair in ((1, 3), (2, 3)):
-        o = found[pair]
-        assert not o.used and len(o.tie_i) == len(o.tie_j) == 0 and len(o.in_j) >= 5  # tile 3 has contacts there
-    # NOMINAL: tile 0 at (0, 0), 1 at (0, -600), 2 at (600, 0)
-    assert lower_left(NOMINAL, 1, 0) and not lower_left(NOMINAL, 0, 1)  # one above the other: the lower one
-    assert lower_left(NOMINAL, 0, 2) and not lower_left(NOMINAL, 2, 0)  # side by side: the left one
-
-
 def test_inside_frame_drops_contacts_touching_the_fov():
     centers = np.array([[0.0, 0.0], [340.0, 0.0], [0.0, -330.0]])
     sizes = np.full((3, 2), 40.0)  # half size 20: 340 + 20 reaches the 360 frame edge

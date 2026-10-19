@@ -358,37 +358,6 @@ def stitch_ties(points: list[np.ndarray], stitch: StitchResult) -> list[tuple[np
     return [(points[p.i][p.ia[p.fit.inliers]], points[p.j][p.ib[p.fit.inliers]]) for p in stitch.pairs]
 
 
-@dataclass
-class OverlapContacts:
-    """The contacts of one overlap, as indices into each tile's points (as passed to stitch_tiles)."""
-    i: int
-    j: int
-    used: bool          # the overlap was used in the stitching (False: not matched)
-    in_i: np.ndarray    # tile i's points inside the overlap box
-    in_j: np.ndarray    # tile j's
-    tie_i: np.ndarray   # tile i's tie contacts: paired and not outliers of the fit (none if not matched)
-    tie_j: np.ndarray   # tile j's, in the same order
-
-
-def overlap_contacts(points: list[np.ndarray], stitch: StitchResult) -> list[OverlapContacts]:
-    """Per overlap that was used or not matched, its contacts (OverlapContacts): which of each tile's points lie in
-    the box and which were used to stitch. A contact one tile has and the other has not (e.g. cut off by the other's
-    frame) shows why an overlap was not matched (D110)."""
-    none = np.empty(0, int)
-    found = [OverlapContacts(p.i, p.j, True, points_in_box(points[p.i], p.box), points_in_box(points[p.j], p.box),
-                             p.ia[p.fit.inliers], p.ib[p.fit.inliers]) for p in stitch.pairs]
-    return found + [OverlapContacts(f.i, f.j, False, points_in_box(points[f.i], f.box),
-                                    points_in_box(points[f.j], f.box), none, none)
-                    for f in stitch.rejected if f.failed]
-
-
-def lower_left(centers: np.ndarray, i: int, j: int) -> bool:
-    """Whether tile i is the lower image of the pair (i, j) when one is above the other, the left one when they are
-    side by side (corners: whichever offset is larger)."""
-    step = centers[j] - centers[i]
-    return bool(step[1] > 0) if abs(step[1]) > abs(step[0]) else bool(step[0] > 0)
-
-
 def stitch_tiles_affine(points: list[np.ndarray], centers: np.ndarray, stitch: StitchResult) -> np.ndarray:
     """Per-tile affines (n_tiles, 3, 3), nominal mask nm -> stitched (stitching.solve_tile_affines).
 

@@ -46,14 +46,13 @@ they open, flagged as outdated.
 - Stitching tab: the status line says how serious a stitching problem is, worst first. *Error*: overlaps that
   look paired one contact row off, so the errors around them can be wrong by up to a pitch. *Warning*: tiles not
   stitched, whose contacts are missing from the Registration tab. Otherwise *Stitching OK*, with a note when
-  overlaps were not matched (every tile is still stitched and measured). The log says "STITCHING INCOMPLETE" only
-  when tiles are not stitched. Each run keeps its check for overlaps paired one row off (D109).
-- Stitching tab: *Measured overlap contacts* and *Design overlap contacts* show why an overlap was not matched. In
-  every overlap, green marks the contacts used to stitch it and red those not used there: a ring from the lower or
-  left image, a cross from the upper or right one. A ring or a cross alone is a contact only one image has (e.g. cut
-  off by the other's frame). The legend lists only the layers shown (D110).
-- Stitching tab: click a tile to see it with its overlaps (green used, orange or blue not matched, grey dashed
-  skipped) and its neighbours, all named. A panel beside the plot lists each overlap and what the measured and the
-  design stitching made of it. A click beside the tiles clears it (D111).
+  overlaps were not matched (every tile is still stitched and measured), saying how many are at corners. The log
+  says "STITCHING INCOMPLETE" only when tiles are not stitched. Each run keeps its check for overlaps paired one row
+  off (D109).
+- Stitching tab: click a tile to see which image it is: it alone is outlined and named, its SEM image comes to the
+  front, and a panel beside the plot says in words what is wrong with it, with a *show why* link for each overlap
+  not matched. With *Overlaps not matched* shown, click a box (or *show why*) to see only its two images and each
+  one's contacts in it, filled and hollow, named in the legend, with the verdict in words. The legend lists only
+  the layers shown (D112).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
