@@ -13,8 +13,9 @@ import pyqtgraph as pg
 import pytest
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import ContactSizes, Settings
+from affine_ransac.analysis import ContactSizes, Settings, contrast_summary
 from affine_ransac.io.sem_image import load_sem_image
+from affine_ransac.pipeline import process_tile
 from affine_ransac.registration import row_means
 from affine_ransac.release import app as release_app, style
 from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
@@ -648,17 +649,19 @@ def add_noise(records, sigma: float, seed: int = 0):
 
 def test_noisy_images_keep_their_contacts_by_default(tmp_path):
     """D103: on noisy images real contacts stand out by only a few noise sigma, so the contrast check at its old
-    default (5) dropped every one; with realignment on (no sample check), the run then ended in 'Only 0 measured
-    contact(s)' with no SEM centre at all. The check is off unless asked for, and says so when it empties tiles."""
+    default (5) dropped every one. The check is off unless asked for, and says so (!!) when it empties tiles."""
     records = write_image_folder(tmp_path)
     add_noise(records, 30.0)  # the contacts stay plain to see
-    settings = replace(DEFAULTS, layer=1, datatype=0, detection="otsu", realign=True)
+    settings = replace(DEFAULTS, layer=1, datatype=0, detection="otsu")
     assert settings.min_contrast == 0
 
     result = analyse_folder(tmp_path, "images", settings, records, log=lambda line: None)
     assert all(len(points) > 40 for points in result.sem_points) and len(result.design_nm) > 150
 
-    lines = []
-    with pytest.raises(AnalysisFailed, match="Only 0 measured contact"):
-        analyse_folder(tmp_path, "images", replace(settings, min_contrast=5.0), records, log=lines.append)
-    assert any(line.startswith("!! Contrast check") and "removed every contact of 4 tile(s)" in line for line in lines)
+    with pytest.raises(ValueError, match="No design tone matched the SEM in the sample tiles"):
+        analyse_folder(tmp_path, "images", replace(settings, min_contrast=5.0), records, log=lambda line: None)
+    r = records[0]
+    tile = process_tile(r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), (1, 0),
+                        detection="otsu", min_contrast=5.0)
+    assert tile.low_contrast > 40 and len(tile.refined.centers) == 0
+    assert contrast_summary([tile], ["T0"], 5.0).startswith("!! Contrast check")

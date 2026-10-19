@@ -159,15 +159,20 @@ IMAGE_SETTINGS = Settings(layer=1, datatype=0, detection="otsu")
 
 
 def test_image_folder_with_realignment_runs_the_notebook_flow(tmp_path):
-    from test_pipeline import LATTICE, visible
+    import cv2
+    from sample_sem import render_tile
+    from test_pipeline import ERRORS, FOV as IMAGE_FOV, LATTICE, NOMINAL as IMAGE_NOMINAL, SIZE, visible
+    pattern = LATTICE[np.random.default_rng(0).random(len(LATTICE)) >= 0.15]  # contacts missing: not periodic
     offset = np.array([270.0, -180.0])  # design − SEM: each .oas is drawn for a field this far from its image
-    records = write_image_folder(tmp_path, design=lambda k, nominal: visible(LATTICE + offset - nominal, margin=0))
+    records = write_image_folder(tmp_path, design=lambda k, nominal: visible(pattern + offset - nominal, margin=0))
+    for k, record in enumerate(records):  # the images show the same pattern
+        image = render_tile(pattern, IMAGE_NOMINAL[k] + ERRORS[k], IMAGE_FOV, SIZE, seed=k)
+        cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tofile(str(record.image_path))
     lines = []
 
     result = analyse_images(tmp_path, records, replace(IMAGE_SETTINGS, realign=True), log=lines.append)
 
     assert any(line.startswith("Realignment: design - SEM offset") for line in lines)
-    assert any(line.startswith("!! Realignment") for line in lines)  # the test lattice is fully periodic
     assert all(t.design.ok and t.oas_center_nm is not None for t in result.images.tiles)
     assert result.images.design_polygons == [[], [], [], []]
     errors = np.linalg.norm(result.sets["uncorrected"].sem_nm - result.sets["uncorrected"].design_nm, axis=1)

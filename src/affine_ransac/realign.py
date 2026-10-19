@@ -6,8 +6,9 @@ their own and put their contacts together, find the one offset that lines the tw
 offset and the design contacts inside its shifted field of view. The analysis then runs as usual on the realigned
 tiles. Used only when settings.realign is on. Normal tone only: tone-reversed files are not handled (user).
 
-- find_design_offset(): the offset, scored over every shift up to half the field at once (FFT correlations of
-  point rasters): the fewest MISMATCHES where both sets are complete, as for one tile (matching.scored_shifts, D50).
+- find_design_offset(): the offset, of any size: every shift at which the images still overlap the .oas files is
+  scored at once (FFT correlations of point rasters) by its MISMATCHES where both sets are complete, as for one tile
+  (matching.scored_shifts, D50), allowing for the counting noise of the contacts compared (D104).
 - merge_close(): one point per group of points closer than a radius (the same contact in two .oas files).
 - realign_tiles(): the steps above on loaded tiles (pipeline.process_tile with match_design=False).
 """
@@ -23,7 +24,8 @@ from scipy.spatial import cKDTree
 
 from affine_ransac.pipeline import DesignContacts, TileResult, stitch_design, stitch_tiles
 
-MAX_CELLS = 1e8  # size limit of the padded rasters (~400 MB per float32 raster)
+MAX_CELLS = 2e8  # size limit of the correlation results (the shifts searched; ~800 MB per float32 array)
+NOISE_SIGMA = 3.0  # counting noise allowed for in the mismatches, in standard deviations
 
 
 @dataclass
@@ -31,9 +33,10 @@ class DesignOffset:
     shift_nm: np.ndarray       # (2,) design − SEM: the SEM contacts + shift_nm lie on the design
     matched: int               # SEM contacts with a design contact within 1.5 cells at that shift
     mismatch_fraction: float   # points without a partner / points compared, where both sets are complete
-    runner_up_nm: np.ndarray   # (2,) the best shift more than 2 cells away (NaN if there is none)
+    runner_up_nm: np.ndarray   # (2,) the best-ranked shift more than 2 cells away (NaN if there is none)
     runner_up_fraction: float  # its mismatch fraction (NaN if none)
-    tied: bool                 # the runner-up is not clearly worse: periodic content, the offset is a guess
+    tied: bool                 # another shift could fit as well (rivals): the contacts cannot decide
+    rivals: int = 0            # shifts more than 2 cells away that fit as well within the counting noise
 
 
 def _points_raster(points, origin, cell_nm, shape) -> np.ndarray:
@@ -64,26 +67,38 @@ def _correlation(a: np.ndarray, b: np.ndarray, reach: tuple[int, int]) -> np.nda
     return np.rint(full[np.ix_(rows, cols)])
 
 
+def _same_cell(sem_nm, design_nm, origin, cell_nm, shift_cells) -> int:
+    """SEM contacts that land in a cell holding a design contact when shifted by whole cells (x, y)."""
+    sem = np.floor((sem_nm - origin) / cell_nm).astype(np.int64) + np.asarray(shift_cells, np.int64)
+    design = np.floor((design_nm - origin) / cell_nm).astype(np.int64)
+    key = lambda cells: cells[:, 0] * 4_000_000_000 + cells[:, 1]  # one integer per cell
+    return int(np.isin(key(sem), key(design)).sum())
+
+
 def find_design_offset(sem_nm, sem_centers, sem_sizes, design_nm, design_centers, design_sizes,
-                       cell_nm: float, min_fraction: float) -> DesignOffset:
-    """The shift (design − SEM) that lines up the SEM contacts with the design, searched up to half the field
-    in x and in y (a larger shift leaves less than half of the field in common).
+                       cell_nm: float, min_compared: int) -> DesignOffset | None:
+    """The shift (design − SEM) that lines up the SEM contacts with the design, of any size: every shift at which
+    the SEM tiles and the design tiles still overlap is searched.
 
     sem_nm, design_nm: (N, 2) contacts, mask nm (duplicates in overlaps are fine); *_centers, *_sizes: the tile
     boxes they come from. Each shift is scored by its mismatches (D50): SEM contacts inside the design's tiles
-    without a design contact within 1.5 cells, plus design contacts inside the SEM's tiles without an SEM one,
-    over the contacts compared; boxes shrunk by the design's typical contact spacing (contacts at a tile edge are
-    dropped). Only shifts matching at least min_fraction of the most any shift matches count (so a small corner
-    in common cannot win). cell_nm must stay below a third of the pitch. Raises ValueError if the field is too
-    large for the cell.
+    without a design contact within 1.5 cells, plus design contacts inside the SEM's tiles without an SEM one, over
+    the contacts compared; boxes shrunk by the design's typical contact spacing (contacts at a tile edge are
+    dropped). A shift that compares few contacts has a noisy fraction, and among many shifts one is low by chance,
+    so each is ranked by its fraction with NOISE_SIGMA of counting noise added (pessimistic), and only shifts
+    comparing at least min_compared contacts count. The offset is decided (tied False) unless a rival exists: a
+    shift more than 2 cells away that compares at least half as many contacts and whose mismatches are no more
+    than the best's fraction would give there plus NOISE_SIGMA of Poisson noise (on a repeating pattern, the whole
+    lattice of shifts around the true one). None if no shift compares min_compared contacts. cell_nm must stay
+    below a third of the pitch. ValueError if the field is too large for the cell (MAX_CELLS).
     """
     margin = float(np.median(cKDTree(design_nm).query(design_nm, k=2)[0][:, 1]))
     boxes = np.vstack([sem_centers - sem_sizes / 2, sem_centers + sem_sizes / 2,
                        design_centers - design_sizes / 2, design_centers + design_sizes / 2, sem_nm, design_nm])
     origin = boxes.min(axis=0) - cell_nm
     columns, rows = np.ceil((boxes.max(axis=0) - origin) / cell_nm).astype(int) + 2
-    reach = (rows // 2, columns // 2)
-    if (rows + reach[0]) * (columns + reach[1]) > MAX_CELLS:
+    reach = (rows, columns)  # every shift at which the two can still overlap: no limit on the offset
+    if (2 * rows + 1) * (2 * columns + 1) > MAX_CELLS:
         raise ValueError(f"Realignment: the field needs {rows} x {columns} cells of {cell_nm:g} nm; too large")
     shape = (rows, columns)
     sem = _points_raster(sem_nm, origin, cell_nm, shape)
@@ -94,37 +109,43 @@ def find_design_offset(sem_nm, sem_centers, sem_sizes, design_nm, design_centers
     unmatched = _correlation(sem, design_boxes * (1 - maximum_filter(design, size=3)), reach)
     unmatched += _correlation(sem_boxes * (1 - maximum_filter(sem, size=3)), design, reach)
     compared = _correlation(sem, design_boxes, reach) + _correlation(sem_boxes, design, reach)
-    fraction = unmatched / np.maximum(compared, 1)
-    del unmatched
-    matched = _correlation(sem, maximum_filter(design, size=3), reach)
-    fraction[matched < min_fraction * matched.max()] = np.inf
+    compared = np.maximum(compared, 1, out=compared)
+    pessimistic = (unmatched + NOISE_SIGMA * np.sqrt(unmatched + 1)) / compared
+    pessimistic[compared < min_compared] = np.inf
+    best_value = float(pessimistic.min())
+    if not np.isfinite(best_value):
+        return None
 
-    ky, kx = np.meshgrid(np.arange(-reach[0], reach[0] + 1), np.arange(-reach[1], reach[1] + 1), indexing="ij")
-    order = np.lexsort(((kx ** 2 + ky ** 2).ravel(), -matched.ravel(), fraction.ravel()))  # fewest mismatches first
-    best = order[0]
-    # The dilation makes a plateau of equal scores around the true shift: take the shift on it where the most
-    # contacts fall in exactly the same cell.
-    near_best = np.maximum(np.abs(kx - kx.flat[best]), np.abs(ky - ky.flat[best])) <= 2
-    plateau = near_best & (fraction <= fraction.flat[best])
-    best = int(np.argmax(np.where(plateau, _correlation(sem, design, reach), -1)))
-    far = (np.maximum(np.abs(kx - kx.flat[best]), np.abs(ky - ky.flat[best])) > 2).ravel()
-    others = order[far[order] & np.isfinite(fraction.ravel()[order])]
-    shift = np.array([kx.flat[best], ky.flat[best]]) * cell_nm
-    if len(others):
-        second = others[0]
-        runner_up = np.array([kx.flat[second], ky.flat[second]]) * cell_nm
-        runner_fraction = float(fraction.flat[second])
-        tied = (runner_fraction - fraction.flat[best]) * compared.flat[best] < 2  # as matching.near_ties
+    ky, kx = np.arange(-rows, rows + 1), np.arange(-columns, columns + 1)  # the shifts, in cells
+    tops = np.argwhere(pessimistic == best_value)  # equally good: the smallest shift
+    iy, ix = min(tops, key=lambda t: ky[t[0]] ** 2 + kx[t[1]] ** 2)
+    fraction = float(unmatched[iy, ix] / compared[iy, ix])
+    expected = fraction * compared  # the mismatches each shift would have at the best's fraction
+    rivals = (compared >= compared[iy, ix] / 2) & (unmatched <= expected + NOISE_SIGMA * np.sqrt(expected + 1))
+    del expected
+    around = (slice(max(iy - 2, 0), iy + 3), slice(max(ix - 2, 0), ix + 3))  # the best and its dilation plateau
+    # The dilation (partners within one cell) makes a plateau of equally good shifts around the true one: take the
+    # shift on it where the most SEM contacts fall in the very cell of a design contact.
+    plateau = [(iy, ix)] + [tuple(p) for p in np.argwhere(rivals[around]) + [around[0].start, around[1].start]]
+    iy, ix = max(plateau, key=lambda p: _same_cell(sem_nm, design_nm, origin, cell_nm, (kx[p[1]], ky[p[0]])))
+    fraction = float(unmatched[iy, ix] / compared[iy, ix])
+    rivals[around] = False  # the plateau lies within 2 cells of the first best
+    pessimistic[around] = np.inf
+    second = np.unravel_index(int(np.argmin(pessimistic)), pessimistic.shape)
+    if np.isfinite(pessimistic[second]):
+        runner_up = np.array([kx[second[1]], ky[second[0]]]) * cell_nm
+        runner_fraction = float(unmatched[second] / compared[second])
     else:
-        runner_up, runner_fraction, tied = np.full(2, np.nan), np.nan, False
+        runner_up, runner_fraction = np.full(2, np.nan), np.nan
+    shift = np.array([kx[ix], ky[iy]]) * cell_nm
 
     # Refine to below one cell: the mean design − SEM of the contacts paired at that shift.
     distance, nearest = cKDTree(design_nm).query(sem_nm + shift, distance_upper_bound=1.5 * cell_nm)
     paired = np.isfinite(distance)
     if paired.any():
         shift = shift + (design_nm[nearest[paired]] - (sem_nm[paired] + shift)).mean(axis=0)
-    return DesignOffset(shift, int(matched.flat[best]), float(fraction.flat[best]), runner_up, runner_fraction,
-                        bool(tied))
+    return DesignOffset(shift, int(paired.sum()), fraction, runner_up, runner_fraction, bool(rivals.any()),
+                        int(rivals.sum()))
 
 
 def merge_close(points: np.ndarray, radius_nm: float) -> np.ndarray:
@@ -157,16 +178,25 @@ def realign_tiles(tiles: list[TileResult], settings, log) -> list[TileResult]:
     with_design = np.array([len(t.design.centers) > 0 for t in tiles])
     design = np.vstack([t.design_points_nm() + file_shift[k] for k, t in enumerate(tiles) if with_design[k]])
     cell = 2 * s.design_tolerance_nm
+    image_contacts = int(np.median([len(t.design.centers) for t in tiles if len(t.design.centers)]))
     log(f"Realignment: SEM of {placed.sum()} of {len(tiles)} stitched tiles, design of {with_design.sum()} .oas "
-        f"files ({len(design_stitch.unplaced)} not stitched, left nominal); {cell:g} nm cells")
+        f"files ({len(design_stitch.unplaced)} not stitched, left nominal); {cell:g} nm cells; every offset at which "
+        f"at least {image_contacts} contacts (one image's worth) are compared")
     offset = find_design_offset(sem, (centers + stitch.corrections)[placed], fovs[placed], design,
-                                centers[with_design], fovs[with_design], cell, s.min_match_fraction)
-    dx, dy = offset.shift_nm
-    log(f"Realignment: design - SEM offset ({dx:+.1f}, {dy:+.1f}) nm, {offset.matched} SEM contacts matched, "
-        f"mismatch fraction {offset.mismatch_fraction:.3f}; next best ({offset.runner_up_nm[0]:+.1f}, "
-        f"{offset.runner_up_nm[1]:+.1f}) nm, {offset.runner_up_fraction:.3f}")
+                                centers[with_design], fovs[with_design], cell, image_contacts)
+    if offset is None:
+        raise ValueError(f"Realignment: at no offset do the images have {image_contacts} contacts (one image's "
+                         f"worth) in common with the .oas files: they lie outside the area the .oas files cover")
+    (dx, dy), (rx, ry) = offset.shift_nm / 1000, offset.runner_up_nm / 1000
+    log(f"Realignment: design - SEM offset ({dx:+.3f}, {dy:+.3f}) µm, {offset.matched} SEM contacts matched, "
+        f"mismatch fraction {offset.mismatch_fraction:.4f}; next best ({rx:+.3f}, {ry:+.3f}) µm, "
+        f"{offset.runner_up_fraction:.4f}")
     if offset.tied:
-        log("!! Realignment: the next best offset fits as well (periodic pattern?): the offset is not certain")
+        raise ValueError(f"Realignment: no offset is clearly the best: {offset.rivals} other offset(s) fit as well as "
+                         f"({dx:+.3f}, {dy:+.3f}) µm within the counting noise ({offset.mismatch_fraction:.1%} of the "
+                         f"contacts compared there have no partner), e.g. ({rx:+.3f}, {ry:+.3f}) µm. Either the pattern "
+                         f"repeats, so its contacts cannot tell these offsets apart, or the images lie outside the area "
+                         f"the .oas files cover")
 
     merged = merge_close(design, s.group_radius_nm)
     realigned = []
