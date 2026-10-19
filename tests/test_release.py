@@ -170,6 +170,7 @@ def result_with_failures(folder):
     """The contour test folder analysed, with failures made up for the Stitching tab to draw (the stitching itself is
     left as it was): two measured overlaps and one design overlap not matched, one tile not stitched (design)."""
     from affine_ransac.pipeline import RejectedPair
+    folder.mkdir(exist_ok=True)
     write_contour_folder(folder)
     with pytest.warns(UserWarning):
         result = analyse_folder(folder, "contour CSV", Settings(), log=lambda line: None)
@@ -185,6 +186,7 @@ def test_overlaps_not_matched_and_tiles_not_stitched_are_layers_of_their_own(tmp
     """D107: on an OpenGL viewport pyqtgraph draws plot lines in their colour and width only, so the dashed overlaps
     not matched looked like the tiles not stitched. Now filled boxes in the colour of their stitching, and thick red
     outlines, drawn by QPainter; each its own check box, off at start."""
+    pg.mkQApp()
     view = StitchingView(result_with_failures(tmp_path), use_opengl=False)
     measured, design = view.layers["Overlaps not matched"]
     tiles = view.layers["Tiles not stitched"]
@@ -200,6 +202,55 @@ def test_overlaps_not_matched_and_tiles_not_stitched_are_layers_of_their_own(tmp
     label = view.names[0]  # D108: dark text on a white label, readable over the SEM images
     assert label.color.name() == style.TEXT and label.fill.color().alpha() > 200
     view.close()
+
+
+def test_the_stitching_status_says_how_serious_it_is(tmp_path):
+    """D109: "Stitching incomplete" did not say whether the results could be trusted. Now, worst first: an error
+    (overlaps paired one row off), a warning (tiles not stitched: not measured), or OK, with a note when overlaps were
+    not matched (every tile still stitched)."""
+    pg.mkQApp()
+
+    def status(result):
+        view = StitchingView(result, use_opengl=False)
+        text = view.status.text()
+        view.close()
+        return text
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        clean = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    text = status(clean)
+    assert clean.slipped == [] and "Stitching OK.</b>" in text and "All 6 tiles stitched." in text
+
+    result = result_with_failures(tmp_path / "failures")
+    result.design_stitch.corrections[5] = 0.0  # every tile stitched: overlaps not matched only
+    text = status(result)
+    assert "Stitching OK, with overlaps not matched." in text and "2 measured and 1 design overlap(s)" in text
+    assert "Warning" not in text and "Tick <i>Overlaps not matched</i> to see where" in text
+
+    result.design_stitch.corrections[5] = np.nan
+    text = status(result)
+    assert "Warning: 1 of 6 tiles not stitched." in text and "Stitching OK" not in text
+    assert "Tick <i>Overlaps not matched</i> and <i>Tiles not stitched</i>" in text
+
+    result.slipped = [(0, 3)]
+    text = status(result)
+    assert text.index("Error: 1 overlap(s) paired one contact row off?") < text.index("Warning")
+    assert "(CD000000 / CD000003)" in text
+
+    result.slipped = None  # a run saved before the check was kept
+    assert "saved before MaskReg kept the check" in status(result)
+
+
+def test_the_overlaps_paired_one_row_off_are_saved_with_the_run(tmp_path):
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    result.slipped = [(0, 3), (1, 4)]
+    save_cache(result, tmp_path / "user")
+    assert load_cache(tmp_path, tmp_path / "user")[0].slipped == [(0, 3), (1, 4)]
+    result.slipped = None  # a run saved before D109: not known
+    save_cache(result, tmp_path / "user", backup=False)
+    assert load_cache(tmp_path, tmp_path / "user")[0].slipped is None
 
 
 def arrow_points(view) -> int:

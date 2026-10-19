@@ -619,12 +619,17 @@ def _fitted(sem_nm, design_nm, s: Settings, log, name: str, moving: bool = True)
 
 
 def report_stitching(log, name: str, result: StitchResult, tile_ids):
+    """The stitching's counts; !! only for tiles left without a position (not measured). Overlaps not matched are
+    listed plainly: left out, their tiles are placed through their other overlaps (D109)."""
     failed = [r for r in result.rejected if r.failed]
     log(f"{name} stitching: {len(result.pairs)} overlaps used, {len(failed)} not matched, "
         f"{len(result.rejected) - len(failed)} skipped (too few contacts)")
-    if failed or len(result.unplaced):
-        log(f"!! {name.upper()} STITCHING INCOMPLETE. Tiles not stitched: {[tile_ids[k] for k in result.unplaced]}; "
-            f"overlaps not matched: {[(tile_ids[r.i], tile_ids[r.j]) for r in failed]}")
+    if len(result.unplaced):
+        log(f"!! {name.upper()} STITCHING INCOMPLETE: {len(result.unplaced)} tile(s) not stitched, so not measured: "
+            f"{[tile_ids[k] for k in result.unplaced]}")
+    if failed:
+        log(f"{name} overlaps not matched (left out of the stitching): "
+            f"{[(tile_ids[r.i], tile_ids[r.j]) for r in failed]}")
 
 
 def tile_edges_y(centers: np.ndarray, sizes: np.ndarray) -> np.ndarray:

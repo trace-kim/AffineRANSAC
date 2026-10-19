@@ -244,18 +244,19 @@ class StitchingView(QtWidgets.QWidget):
         return item
 
     def status_text(self) -> str:
+        """What the stitching means for the results, worst first (D109), then the counts of both stitchings."""
         r, parts = self.result, []
         n = len(r.tile_ids)
         for name, stitch in (("Measured", r.stitch), ("Design", r.design_stitch)):
             failed = sum(f.failed for f in stitch.rejected)
             parts.append(f"{name}: {n - len(stitch.unplaced)} of {n} tiles stitched, {len(stitch.pairs)} overlaps used, "
                          f"{failed} not matched")
-        text = "; ".join(parts) + f". Method: {r.settings.stitch_method}."
-        incomplete = len(r.stitch.unplaced) or len(r.design_stitch.unplaced) or any(
-            f.failed for f in r.stitch.rejected + r.design_stitch.rejected)
-        if incomplete:
-            text = f"<span style='color:{style.FAILURE}'><b>Stitching incomplete.</b></span> {text} " \
-                   f"Tick <i>Overlaps not matched</i> and <i>Tiles not stitched</i> to see where."
+        text = "<br>".join(stitching_verdict(r)) + "<br>" + "; ".join(parts) + f". Method: {r.settings.stitch_method}."
+        ticks = [f"<i>{name}</i>" for name, shown in
+                 (("Overlaps not matched", any(f.failed for f in r.stitch.rejected + r.design_stitch.rejected)),
+                  ("Tiles not stitched", len(r.stitch.unplaced) or len(r.design_stitch.unplaced))) if shown]
+        if ticks:
+            text += f" Tick {' and '.join(ticks)} to see where."
         if self.not_measured is not None:
             reasons = Counter(self.not_measured.values()).most_common()
             text += f"<br><span style='color:{style.FAILURE}'><b>{len(self.not_measured)} of {n} tiles not " \
@@ -343,6 +344,39 @@ class StitchingView(QtWidgets.QWidget):
         r, why = self.result, self.not_measured or {}
         inside = np.flatnonzero(np.all(np.abs(r.centers - point_nm) <= r.sizes / 2, axis=1))
         return ", ".join(r.tile_ids[k] + (f" (not measured: {why[k]})" if k in why else "") for k in inside)
+
+
+def stitching_verdict(r: ReleaseResult) -> list[str]:
+    """One coloured line per finding about the stitching, worst first (D109): an error (overlaps paired one contact row
+    off: errors near them can be wrong by a pitch), a warning (tiles not stitched: not measured), or, if neither, OK,
+    with a note when overlaps were not matched (left out; every tile still placed through its others)."""
+    def line(color, headline, text):
+        return f"<span style='color:{color}'><b>{headline}</b></span> {text}"
+    names, n, lines = r.tile_ids, len(r.tile_ids), []
+    if r.slipped:
+        shown = ", ".join(f"{names[i]} / {names[j]}" for i, j in r.slipped[:3]) + (", ..." if len(r.slipped) > 3 else "")
+        lines.append(line(style.FAILURE, f"Error: {len(r.slipped)} overlap(s) paired one contact row off?",
+                          f"({shown}) Their measured shift is more than max_match_nm away from the one the images taken "
+                          f"one after the other predict, so the errors of the tiles around them can be wrong by up to a "
+                          f"pitch. The stitching method <i>measurement order first</i> avoids this."))
+    unplaced = set(r.stitch.unplaced.tolist()) | set(r.design_stitch.unplaced.tolist())
+    if unplaced:
+        lines.append(line(style.FAILURE, f"Warning: {len(unplaced)} of {n} tiles not stitched.",
+                          "They have no position, so their contacts are missing from the Registration tab (white "
+                          "there); its numbers cover the other tiles only."))
+    if not lines:
+        failed = {name: sum(f.failed for f in stitch.rejected)
+                  for name, stitch in (("measured", r.stitch), ("design", r.design_stitch))}
+        if any(failed.values()):
+            counts = " and ".join(f"{count} {name}" for name, count in failed.items() if count)
+            lines.append(line(style.CAUTION, "Stitching OK, with overlaps not matched.",
+                              f"All {n} tiles are stitched, so all are measured. {counts} overlap(s) were not matched "
+                              f"and are left out: their tiles are placed through their other overlaps."))
+        else:
+            lines.append(line(style.OK, "Stitching OK.", f"All {n} tiles stitched."))
+    if r.slipped is None:
+        lines.append("This run was saved before MaskReg kept the check for overlaps paired one row off: see its log.")
+    return lines
 
 
 def summary_text(error_nm: np.ndarray) -> str:

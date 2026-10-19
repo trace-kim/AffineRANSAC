@@ -89,6 +89,9 @@ class ReleaseResult:
     tiles: LoadedTiles | None = None           # images run with keep_tiles; not saved
     version: str = __version__                 # the MaskReg that made the run ("": one before versions were saved)
     analysis: int = ANALYSIS                   # and its ANALYSIS (0: before they were saved)
+    # SEM overlaps fitted more than max_match_nm from the shift the stitching in measurement order predicts, (i, j):
+    # paired one contact row off? (stitch_sem; None: a run saved before this was kept, D109)
+    slipped: list[tuple[int, int]] | None = field(default_factory=list)
 
 
 class AnalysisFailed(RuntimeError):
@@ -162,7 +165,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     record(f"{stripe.max() + 1} stripe(s)")
     s = replace(s, first_stripe_upward=scan_direction(names, centers, stripe, s.first_stripe_upward, record))
     progress(LOAD_SHARE, "Stitching")
-    stitch = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
+    stitch, slipped = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
     report_stitching(record, "Design", design_stitch, tile_ids)
 
     progress(LOAD_SHARE + 0.1, "Comparing with the design")
@@ -177,7 +180,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     def result(moving, kept=None):
         return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
                              sem_points, design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm,
-                             moving, image_paths, lines, oas_paths, oas_centers, tiles=kept)
+                             moving, image_paths, lines, oas_paths, oas_centers, tiles=kept, slipped=slipped)
     if len(contacts.count) < 3:
         raise AnalysisFailed(f"Only {len(contacts.count)} measured contact(s). The Stitching tab shows the tiles, "
                              f"their SEM images and design, and why each tile was not measured",
@@ -232,9 +235,11 @@ def scan_direction(names: list[str], centers, stripe, fallback: bool, log) -> bo
     return upward
 
 
-def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log, tile_ids) -> StitchResult:
+def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
+               tile_ids) -> tuple[StitchResult, list[tuple[int, int]]]:
     """The SEM stitching over all overlaps, guided by the stitching in measurement order (stripe: per tile,
-    tile_stripes) if s.stitch_method says so; pairs fitted one row off (by that stitching) are logged."""
+    tile_stripes) if s.stitch_method says so, and its pairs fitted one row off by that stitching (slipped_pairs;
+    logged)."""
     order = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
                          label="SEM, measurement order",
                          only_pairs=measurement_pairs(centers, stripe, s.first_stripe_upward))
@@ -249,7 +254,7 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log, tile_ids) -
             f"measurement order predicts (contacts paired one row off?): "
             f"{[(tile_ids[i], tile_ids[j]) for i, j in slipped]}"
             + ("" if guided else "; the stitching method 'measurement order first' avoids this"))
-    return stitch
+    return stitch, slipped
 
 
 

@@ -540,11 +540,19 @@ def stitch_design(
 
 
 def _warn_about_failures(result: StitchResult, label: str):
+    """Incomplete only if tiles were left without a position; overlaps not matched alone are left out of the solve,
+    and every tile is still placed through its other overlaps (D109)."""
     failed = [(r.i, r.j, r.matched) for r in result.rejected if r.failed]
-    if failed or len(result.unplaced):
+    if len(result.unplaced):
         warnings.warn(
-            f"{label} stitching incomplete: {len(failed)} overlapping pair(s) did not match "
-            f"(tile i, tile j, matched contacts): {failed}; {len(result.unplaced)} tile(s) could not be "
-            f"stitched (NaN correction): {result.unplaced.tolist()}",
+            f"{label} stitching incomplete: {len(result.unplaced)} tile(s) could not be stitched (NaN correction): "
+            f"{result.unplaced.tolist()}; {len(failed)} overlapping pair(s) did not match "
+            f"(tile i, tile j, matched contacts): {failed}",
+            stacklevel=3,
+        )
+    elif failed:
+        warnings.warn(
+            f"{label} stitching: every tile stitched; {len(failed)} overlapping pair(s) did not match and are left "
+            f"out (tile i, tile j, matched contacts): {failed}",
             stacklevel=3,
         )

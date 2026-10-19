@@ -349,3 +349,24 @@ def test_tile_loading_logs_its_timing(tmp_path):
     assert set(tiles[0].seconds) == {"read", "detect", "refine", "oas", "contacts", "shift", "reversed"}
     timing = [line for line in lines if line.startswith("Timing:")]
     assert len(timing) == 1 and "shift" in timing[0] and "reversed tone was tried" in timing[0]
+
+
+def test_overlaps_not_matched_alone_are_not_called_incomplete():
+    """D109: with every tile stitched, overlaps not matched are no longer called incomplete, in the warning or in the
+    log; tiles left without a position still are, with !! in the log."""
+    from affine_ransac.analysis import report_stitching
+    from affine_ransac.pipeline import RejectedPair, StitchResult, _warn_about_failures
+    names = ["A", "B", "C", "D"]
+    failing = StitchResult([], [RejectedPair(0, 1, (0.0, 1.0, 0.0, 1.0), 9, 1, True)], np.zeros((4, 2)))
+    with pytest.warns(UserWarning, match=r"^SEM stitching: every tile stitched; 1 overlapping pair\(s\) did not match"):
+        _warn_about_failures(failing, "SEM")
+    lines = []
+    report_stitching(lines.append, "SEM", failing, names)
+    assert lines[1:] == ["SEM overlaps not matched (left out of the stitching): [('A', 'B')]"]
+
+    failing.corrections[3] = np.nan
+    with pytest.warns(UserWarning, match=r"^SEM stitching incomplete: 1 tile\(s\) could not be stitched"):
+        _warn_about_failures(failing, "SEM")
+    lines = []
+    report_stitching(lines.append, "SEM", failing, names)
+    assert lines[1] == "!! SEM STITCHING INCOMPLETE: 1 tile(s) not stitched, so not measured: ['D']"

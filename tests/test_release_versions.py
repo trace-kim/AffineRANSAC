@@ -66,7 +66,7 @@ LAYOUT = {
     3: {"arrays": sorted(["centers", "design_nm", "design_points/data", "design_points/lengths", "info",
                           "moving/centres_nm", "moving/counts", "moving/models", "moving/references", "moving/residuals",
                           "moving/window", "oas_centers", "sem_nm", "sem_points/data", "sem_points/lengths", "sizes",
-                          "stripe"] + [f"stitch/{name}" for name in STITCH] + [f"design_stitch/{name}" for name in STITCH]),
+                          "slipped", "stripe"] + [f"stitch/{name}" for name in STITCH] + [f"design_stitch/{name}" for name in STITCH]),
         "info": ["analysis", "folder", "format", "image_paths", "kind", "log", "oas_paths", "saved", "settings",
                  "tile_ids", "version"]},
 }

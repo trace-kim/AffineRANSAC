@@ -15,6 +15,7 @@ DX, DY = "#2a78d6", "#eb6834"         # the two error components, in every figur
 DR = "#1baf7a"                        # the error's length |measured − design|
 DESIGN, SEM = "#2a78d6", "#eb6834"    # stitching view: design and measured centres
 TILES, OVERLAPS, FAILURE = "#9a9a96", "#1baf7a", "#e34948"
+OK, CAUTION = "#14804a", "#b06f00"   # status texts: nothing wrong; worth knowing, results not affected (red: FAILURE)
 STRIPES = ["#2a78d6", "#9b4dca", "#1baf7a", "#c7951a"]  # design pattern: one colour per stripe, in turn
 FONT = "Segoe UI"
 TICK_PT, LABEL_PT, TITLE_PT = 10, 11, 12

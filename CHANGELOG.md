@@ -43,5 +43,10 @@ they open, flagged as outdated.
   solid. Overlaps not matched are filled boxes, orange for the measured stitching and blue for the design; tiles not
   stitched have a thick red outline. Each has its own check box (D107).
 - Stitching tab: tile names are dark text on white labels, readable over the SEM images (D108).
+- Stitching tab: the status line says how serious a stitching problem is, worst first. *Error*: overlaps that
+  look paired one contact row off, so the errors around them can be wrong by up to a pitch. *Warning*: tiles not
+  stitched, whose contacts are missing from the Registration tab. Otherwise *Stitching OK*, with a note when
+  overlaps were not matched (every tile is still stitched and measured). The log says "STITCHING INCOMPLETE" only
+  when tiles are not stitched. Each run keeps its check for overlaps paired one row off (D109).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

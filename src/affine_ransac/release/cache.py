@@ -2,7 +2,8 @@
 loaded with allow_pickle=False), written after every run and opened instead of a new run when the folder is
 opened again.
 
-The contact sizes, once measured (Contact size tab), are optional arrays: a file without them loads with none.
+The contact sizes, once measured (Contact size tab), are optional arrays: a file without them loads with none. So
+are the SEM overlaps that look paired one row off (`slipped`, D109): a file saved before loads with None (not known).
 The tiles kept to measure them are not saved (the images are large).
 
 Where: CACHE_NAME in the data folder; if that cannot be written (read-only share), the same file under the
@@ -63,6 +64,8 @@ def save_cache(result: ReleaseResult, user_cache_dir, backup: bool = True, log=l
     so the run it replaces is kept as a backup; False: the same run saved again (e.g. with its contact sizes)."""
     arrays = {"centers": result.centers, "sizes": result.sizes, "stripe": result.stripe, "sem_nm": result.sem_nm, "design_nm": result.design_nm,
               "oas_centers": result.oas_centers}
+    if result.slipped is not None:  # a run made before D109 has none: it stays unknown
+        arrays["slipped"] = np.array(result.slipped, dtype=np.int64).reshape(-1, 2)
     _put_parts(arrays, "sem_points", result.sem_points, np.empty((0, 2)))
     _put_parts(arrays, "design_points", result.design_points, np.empty((0, 2)))
     _put_stitch(arrays, "stitch", result.stitch)
@@ -153,5 +156,6 @@ def read_run(path: Path, folder, log) -> tuple[ReleaseResult, str] | None:
             design_nm=arrays["design_nm"], moving=_get_fields(arrays, "moving", MovingWindowResult),
             image_paths=info["image_paths"], log=info["log"], oas_paths=info["oas_paths"],
             oas_centers=arrays["oas_centers"], contact_sizes=sizes,
-            version=info.get("version", ""), analysis=info.get("analysis", 0))
+            version=info.get("version", ""), analysis=info.get("analysis", 0),
+            slipped=[(int(i), int(j)) for i, j in arrays["slipped"]] if "slipped" in arrays else None)
     return result, info["saved"]
