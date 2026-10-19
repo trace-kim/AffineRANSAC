@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from affine_ransac.io.design import load_layout
+from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.features.contact import DetectedContacts
+from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, inside_frame,
                                     measurement_pairs, pair_kind, pair_residuals, process_tile, slipped_pairs,
@@ -92,6 +94,17 @@ def test_process_tile_can_read_the_design_without_matching_it(tmp_path):
 
     assert tile.design.ok and np.isnan(tile.design.match_fraction)
     assert len(tile.design.centers) > 0 and np.all(np.abs(tile.design.centers) < FOV / 2)  # frame contacts dropped
+
+
+def test_process_tile_refines_with_the_edge_rule_asked_for(tmp_path):
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
+    image = load_sem_image(tmp_path / "tile.jpg")
+
+    for rule in RULES:
+        tile = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0), refinement=rule)
+        np.testing.assert_array_equal(tile.refined.centers, refine_edges(image, tile.otsu, rule=rule).centers)
+    default = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0))
+    np.testing.assert_array_equal(default.refined.centers, refine_edges(image, default.otsu, rule="mid-level").centers)
 
 
 def test_process_tile_without_oas(tmp_path):

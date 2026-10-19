@@ -141,7 +141,7 @@ class TileResult:
     fov_nm: np.ndarray          # (2,) field of view (width, height), nm
     pixel_size_nm: float
     otsu: DetectedContacts      # pixel frame: initial detection (detect_contacts, any method)
-    refined: DetectedContacts   # pixel frame: Otsu contours moved to the maximum gradient
+    refined: DetectedContacts   # pixel frame: detected contours moved to their edges (refine_edges)
     design: DesignContacts      # design contacts in the tone that matches the SEM
     oas_path: Path | None = None  # the tile's design file (read again to measure contact sizes)
     seconds: dict[str, float] = field(default_factory=dict)  # time per step of process_tile (logged)
@@ -192,6 +192,7 @@ def process_tile(
     design_tolerance_nm: float = 10.0,
     match_design: bool = True,
     min_contrast: float = 0.0,
+    refinement: str = "mid-level",
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
@@ -203,6 +204,7 @@ def process_tile(
     to the SEM (ok, NaN fraction), for images that do not show their own design (realign.realign_tiles).
     min_contrast > 0: detected contacts whose contrast against a ring around them is below this many noise sigma
     are dropped before refinement (features.contact.contact_contrast; false contacts in images without pattern).
+    refinement: the edge rule of the refinement, "mid-level" or "steepest gradient" (features.edges.refine_edges).
     """
     t_start = time.perf_counter()
     image = load_sem_image(image_path)
@@ -214,7 +216,7 @@ def process_tile(
     if min_contrast > 0:
         otsu = keep_contacts(otsu, contact_contrast(image, otsu) >= min_contrast)
     t_detect = time.perf_counter()
-    refined = refine_edges(image, otsu, search_px=search_px)
+    refined = refine_edges(image, otsu, search_px=search_px, rule=refinement)
     t_refine = time.perf_counter()
 
     seconds = {"read": t_read - t_start, "detect": t_detect - t_read, "refine": t_refine - t_detect,

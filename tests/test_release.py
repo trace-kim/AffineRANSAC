@@ -483,7 +483,8 @@ def test_detected_and_refined_contours_and_centres_are_layers(tmp_path, monkeypa
     assert all(view.boxes[name].isEnabled() and view.boxes[name].isChecked() for name in views.CONTOURS)
     assert not view.contours_button.isEnabled()
     legend = [label.text for _, label in view.plot.legend.items]
-    assert legend[-4:] == ["Detected contours (otsu)", "Refined contours", "Detected centres (otsu)", "Refined centres"]
+    assert legend[-4:] == ["Detected contours (otsu)", "Refined contours (mid-level)", "Detected centres (otsu)",
+                           "Refined centres (mid-level)"]
     assert "Measured (SEM) centres, refined" in legend
     x, _ = view.layers["Detected contours"].getData()
     assert int(np.isnan(x).sum()) == len(view.contours.tile)  # all 225 contacts in view: each contour drawn

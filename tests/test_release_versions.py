@@ -55,6 +55,14 @@ RESULTS = {
                                      -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
         "images": [196, 0.054032238, 0.049703496, 0.184937517, 0.140998837, 0.017220172, 0.013214268,
                    6.451748645, 6.84837345, 0.0, 0.0]},
+    # 4 (D122): edge refinement at the mid-level (half-way between a contact's interior and its band), not the
+    # steepest gradient; contour CSV folders have no images, so their numbers are those of 1.
+    4: {"contour CSV": [2360, 0.097645195, 0.097127712, 0.387878965, 0.376539609, 0.022559669, -0.052001588,
+                        8.149617877, 8.95389255, 12.5, 11.5],
+        "contour CSV, 3 um window": [2360, 0.09756319, 0.096903189, 0.38584456, 0.384917053, 0.024032299,
+                                     -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
+        "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
+                   6.441456148, 6.821792166, 0.0, 0.0]},
 }
 
 # Per FORMAT: the arrays (without the optional contact_sizes/*) and the info keys of a run file.
@@ -158,6 +166,20 @@ def test_opening_checks_the_format_and_the_analysis_of_a_saved_run(tmp_path):
 
     path.write_bytes(b"damaged")  # e.g. an interrupted copy
     assert load_cache(data, user, lines.append) is None and "cannot be read" in lines[-1]
+
+
+def test_a_run_saved_before_a_setting_existed_says_what_it_did(tmp_path):
+    # Runs saved before D122 refined their edges at the steepest gradient and have no `refinement`: they read as
+    # that, not as today's default, so that what is shown (and Load contours) matches how they were made.
+    data, user = tmp_path / "data", tmp_path / "user"
+    data.mkdir()
+    path = save_cache(analyse_contours(data), user)
+    assert load_cache(data, user)[0].settings.refinement == DEFAULTS.refinement == "mid-level"
+
+    with np.load(path) as arrays:
+        settings = json.loads(str(arrays["info"]))["settings"]
+    rewrite_info(path, settings={name: value for name, value in settings.items() if name != "refinement"})
+    assert load_cache(data, user)[0].settings.refinement == "steepest gradient"
 
 
 def test_an_outdated_run_is_shown_flagged_and_analysed_again_if_the_user_agrees(tmp_path, monkeypatch):

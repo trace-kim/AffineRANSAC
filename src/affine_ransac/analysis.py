@@ -31,6 +31,7 @@ from typing import Callable
 import numpy as np
 from scipy.spatial import cKDTree
 
+from affine_ransac.features.edges import RULES
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
@@ -85,6 +86,9 @@ class Settings:
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
     detection: str = setting("band", "otsu (plain), otsu3 (3 classes) or band (regions enclosed by the bright band)")
     search_px: float = setting(5.0, "Edge refinement searches this many pixels in/out along the contour normal")
+    refinement: str = setting("mid-level", "Edge refinement puts each contour point where the smoothed image rises "
+                                           "half-way from the contact's interior to its bright band (mid-level), or "
+                                           "at the steepest rise (steepest gradient, noisier; before D122)")
     design_search_nm: float = setting(100.0, "Design-SEM matching: largest offset of one image's SEM contacts "
                                              "against its own .oas, before stitching (its stage error); for a "
                                              "regular array also > pitch / 2")
@@ -106,17 +110,28 @@ class Settings:
 
 
 CSV_ONLY = {"tile_margin_nm"}
-IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "design_search_nm", "design_tolerance_nm",
+IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "stitch_refined", "spread_flag_nm", "arrow_scale", "min_contrast",
                "realign"}
 STITCH_METHODS = ("all overlaps", "measurement order first")
-CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "stitch_method": STITCH_METHODS}
+CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": RULES,
+           "stitch_method": STITCH_METHODS}
+# What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
+# with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
+BEFORE = {"refinement": "steepest gradient"}  # D122
 
 
 POSITIVE = {"max_match_nm", "design_max_match_nm", "outlier_factor", "group_radius_nm", "ransac_threshold_nm",
             "row_gap_nm", "moving_window_um", "moving_step_um", "drift_window_um", "search_px", "design_search_nm",
             "design_tolerance_nm", "spread_flag_nm", "arrow_scale"}  # must be > 0
 SAMPLE_TILES = 3  # tiles matched to their design before the run (first, middle, last with an .oas)
+
+
+def saved_settings(values: dict) -> Settings:
+    """The Settings of a saved run from its stored values: names unknown to this code are ignored; a setting the run
+    does not have takes what runs did before it existed (BEFORE), else its default."""
+    known = {f.name for f in fields(Settings)}
+    return Settings(**{**BEFORE, **{name: value for name, value in values.items() if name in known}})
 
 
 def settings_for(kind: str) -> list[str]:
@@ -325,7 +340,7 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     def arguments(r):  # plain values only, so they can be sent to a worker process
         return (r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), layer,
                 s.search_px, s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm,
-                not realign, s.min_contrast)
+                not realign, s.min_contrast, s.refinement)
 
     # A few tiles first: if none matches its design, the settings or the data are wrong; stop now.
     with_oas = [k for k, r in enumerate(records) if r.oas_path is not None]

@@ -43,7 +43,7 @@ from affine_ransac.stitching import placement_corrections
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 3
+ANALYSIS = 4  # 4: edge refinement at the mid-level (D122)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -51,7 +51,7 @@ DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they di
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
           "moving_window_um", "moving_step_um", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
-              "images": COMMON + ["detection", "search_px", "design_search_nm",
+              "images": COMMON + ["detection", "search_px", "refinement", "design_search_nm",
                                   "design_tolerance_nm", "min_match_fraction", "stitch_refined", "min_contrast", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
@@ -344,7 +344,7 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     image changed since the run?) are logged with !!."""
     s = result.settings
     arguments = [(path, None, center, size, (s.layer, s.datatype), s.search_px, s.design_search_nm,
-                  s.min_match_fraction, s.detection, s.design_tolerance_nm, False, s.min_contrast)
+                  s.min_match_fraction, s.detection, s.design_tolerance_nm, False, s.min_contrast, s.refinement)
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
     with ProcessPoolExecutor(max_workers=worker_count()) as pool:

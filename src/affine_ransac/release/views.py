@@ -625,7 +625,8 @@ class StitchingView(QtWidgets.QWidget):
                 self.plot.removeItem(self.layers[name])
                 self.legend_entries = [(item, label) for item, label in self.legend_entries
                                        if item is not self.layers[name]]
-            label = f"{name} ({r.settings.detection})" if name.startswith("Detected") else name
+            # the detection method and the edge rule (D122) the contours come from
+            label = f"{name} ({r.settings.detection if name.startswith('Detected') else r.settings.refinement})"
             if name.endswith("contours"):
                 item = pg.PlotDataItem(pen=pg.mkPen(color, width=1.5), connect="finite")
             else:

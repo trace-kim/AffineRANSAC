@@ -25,13 +25,13 @@ import json
 import os
 import time
 import zipfile
-from dataclasses import asdict, fields
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 
 from affine_ransac import __version__
-from affine_ransac.analysis import ContactSizes, Settings
+from affine_ransac.analysis import ContactSizes, saved_settings
 from affine_ransac.fitting.moving_window import MovingWindowResult
 from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.results_file import _get_fields, _get_parts, _get_stitch, _put_fields, _put_parts, _put_stitch
@@ -141,8 +141,7 @@ def read_run(path: Path, folder, log) -> tuple[ReleaseResult, str] | None:
             log(f"!! The saved analysis was made by {made}, in an older file format ({file_format}) that this MaskReg "
                 f"cannot read: analysing again (the old file is kept as a backup)")
             return None
-        known = {f.name for f in fields(Settings)}  # settings added since keep their default
-        settings = Settings(**{k: v for k, v in info["settings"].items() if k in known})
+        settings = saved_settings(info["settings"])  # settings added since: what runs did before them
         sizes = None
         if "contact_sizes/sem" in arrays:
             sizes = ContactSizes(arrays["contact_sizes/sem"], arrays["contact_sizes/design"],

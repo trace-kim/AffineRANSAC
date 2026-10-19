@@ -11,7 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
-First numbered version. Saved runs: format 3, analysis 3. Runs saved by earlier copies of MaskReg carry no version:
+First numbered version. Saved runs: format 3, analysis 4. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 
 - *File → Folders...*: choose the folder of `maskreg.ini` and the folder where FTP downloads are kept (D96).
@@ -75,5 +75,12 @@ they open, flagged as outdated.
 - Registration tab: *Symbol size* sets the size of the contacts on the dx and dy maps in screen pixels (*Auto*: as
   before, a disk of 0.8 × the pitch that grows as you zoom in); *Line width* sets the width of the profiles' lines
   (D121).
+- **Analysis 4.** Edge refinement now puts each contour point where the image rises half-way between the contact's
+  interior and its bright band (*mid-level*), each contact with its own levels, instead of at the steepest rise. On
+  noisy, low-contrast or low-resolution images the steepest rise jumped to noise point by point, so some refined
+  contours did not follow the hole; on synthetic images the centres scatter 1.4–3.2× less. *Analysis → Parameters*,
+  `refinement` *steepest gradient*, gives the previous results. Runs saved with an earlier analysis open flagged as
+  outdated; analysed again, image folders give other numbers (contour CSV folders do not change). The *Refined
+  contours* and *Refined centres* layers name the rule (D122).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

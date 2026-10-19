@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from affine_ransac.analysis import AnalysisResult, ContactSet, ContactSizes, Settings, Stitching
+from affine_ransac.analysis import AnalysisResult, ContactSet, ContactSizes, Stitching, saved_settings
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift
 from affine_ransac.fitting.moving_window import MovingWindowResult
 from affine_ransac.fitting.ransac import RansacResult
@@ -61,8 +61,7 @@ def load_result(path: str | Path) -> AnalysisResult:
         if info["format"] != FORMAT:
             raise ValueError(f"{Path(path).name} has results format {info['format']}; this version reads format "
                              f"{FORMAT}. Analyse the folder again.")
-        known = {f.name for f in fields(Settings)}  # settings added since the file was saved keep their default
-        settings = Settings(**{k: v for k, v in info["settings"].items() if k in known})
+        settings = saved_settings(info["settings"])  # settings added since the file was saved: what runs did before
         stitchings = {name: Stitching(_get_parts(arrays, f"stitchings/{name}/points"),
                                       _get_stitch(arrays, f"stitchings/{name}/stitch"),
                                       arrays[f"stitchings/{name}/rigid"])
