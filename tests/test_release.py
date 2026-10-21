@@ -825,6 +825,62 @@ def test_grid_means_average_the_points_of_each_cell():
     assert np.isnan(mean[1, 0]).all()
 
 
+def test_band_means_average_the_points_of_each_row_or_column_of_cells():
+    from affine_ransac.registration import band_means, grid_means
+    points = np.array([[0.0, 0.0], [5.0, 2.0], [12.0, 1.0], [1.0, 25.0]])
+    values = np.array([[1.0, 10.0], [3.0, 20.0], [5.0, 30.0], [7.0, 40.0]])
+    centre, mean, count = band_means(points[:, 1], values, 10.0)
+    np.testing.assert_allclose(centre, [5.0, 25.0])  # the band from 10 to 20 holds no point: left out
+    np.testing.assert_allclose(mean, [[3.0, 20.0], [7.0, 40.0]])
+    _, _, per_cell = grid_means(points, values, 10.0)
+    assert count.tolist() == [n for n in per_cell.sum(axis=1) if n]  # the grid's rows of cells
+    centre, mean, count = band_means(points[:, 0], values, 10.0)  # its columns
+    np.testing.assert_allclose(centre, [5.0, 15.0])
+    np.testing.assert_allclose(mean, [[11 / 3, 70 / 3], [5.0, 30.0]])
+    assert count.tolist() == per_cell.sum(axis=0).tolist() == [3, 1]
+
+
+def test_in_grid_average_the_profiles_average_each_row_and_column_of_cells(tmp_path):
+    """Grid average: every mean per row (column) is the mean of the contacts of a row (column) of cells, at its
+    centre, following the cell size; every contact: the rows and columns of contacts, as before (D125). The profiles
+    table gives what is shown."""
+    from affine_ransac.registration import band_means
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    design, error = result.design_nm, result.moving.residuals
+    values = np.column_stack([error, np.linalg.norm(error, axis=1)])  # dx, dy, dr
+    lines = view.map_profiles + view.arrow_profiles  # dx, dy, dr: (mean per row, mean per column)
+
+    view.cell.setValue(0.5)
+    view.values.setCurrentIndex(1)  # grid average
+    row_y, row_mean, _ = band_means(design[:, 1], values, 500.0)
+    column_x, column_mean, _ = band_means(design[:, 0], values, 500.0)
+    for k, (row_line, column_line) in enumerate(lines):
+        mean, y_um = row_line.getData()
+        np.testing.assert_allclose(mean, row_mean[:, k])
+        np.testing.assert_allclose(y_um, (row_y - view.origin[1]) / 1000)
+        np.testing.assert_allclose(column_line.getData()[1], column_mean[:, k])
+    rows = view.grid_mean.shape[0]  # each point at the middle of a row of the map's cells
+    middles = view.grid_corner_um[1] + (np.arange(rows) + 0.5) * 0.5
+    assert np.abs(lines[0][0].getData()[1][:, None] - middles).min(axis=1).max() < 1e-9
+    table = view.profiles()
+    assert table[0][0] == "grid row y (µm)" and table[0][4] == "grid column x (µm)"
+    assert len(table) == 1 + max(len(row_y), len(column_x))
+    view.cell.setValue(1.0)
+    assert len(lines[0][0].getData()[0]) == len(band_means(design[:, 1], values, 1000.0)[0])
+
+    view.values.setCurrentIndex(0)  # every contact
+    contact_y, contact_mean, _ = row_means(design[:, 1], values, result.settings.row_gap_nm)
+    assert len(contact_y) > len(row_y)
+    np.testing.assert_allclose(lines[1][0].getData()[0], contact_mean[:, 1])
+    assert view.profiles()[0][0] == "row y (µm)"
+    view.close()
+
+
 def test_grid_average_grid_lines_and_one_graph_images(tmp_path):
     from affine_ransac.registration import grid_means
     style.setup()

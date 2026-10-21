@@ -18,8 +18,9 @@ contact (Auto: disks of 0.8 x the pitch, or a symbol size in pixels, D121), or t
 (grid_means); grid lines (on at start); the profiles' line width (D121). Every map has its profiles beside it
 (MarginalMap): the mean per row on its right, rotated so that y runs down the side like the map's y, and the mean
 per column below it (hidden unless ticked, D118), of dr beside the arrows and of its own component beside dx and dy;
-both follow the map's zoom and pan. At start and on View All the maps show the contacts' full height, centred on
-them, at the maps' own width (fit, D117). Each mean per row: Auto, or a range typed in the boxes just below it (D119).
+both follow the map's zoom and pan; in grid average, per row and column of cells (band_means, D125). At start and on
+View All the maps show the contacts' full height, centred on them, at the maps' own width (fit, D117). Each mean per
+row: Auto, or a range typed in the boxes just below it (D119).
 Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy profiles / Export
 profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx and dy together
 (D116) or one graph (also in each graph's right-click menu and its Copy button, D120).
@@ -43,7 +44,7 @@ from scipy.spatial import cKDTree
 from affine_ransac.analysis import ContactSizes
 from affine_ransac.overlap import points_in_box
 from affine_ransac.pipeline import PairResult, RejectedPair, StitchResult, contact_stripes, pair_kind, stripe_ranges
-from affine_ransac.registration import error_summary, grid_means, row_means
+from affine_ransac.registration import band_means, error_summary, grid_means, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.stitching import placement_corrections
@@ -1072,7 +1073,8 @@ class RegistrationView(QtWidgets.QWidget):
         # Every contact, or the mean over the contacts in each cell of a square grid.
         self.values = QtWidgets.QComboBox()
         self.values.addItems(["Every contact", "Grid average"])
-        self.values.setToolTip("Grid average: one value per square cell, the mean of the contacts in it")
+        self.values.setToolTip("Grid average: one value per square cell, the mean of the contacts in it; the means "
+                               "per row and per column then average the contacts of each row and column of cells")
         area = np.prod(np.maximum(np.ptp(r.design_nm, axis=0) / 1000, 1e-3))  # µm²
         self.cell = QtWidgets.QDoubleSpinBox(decimals=3, minimum=0.01, maximum=1e4, suffix=" µm", singleStep=0.1)
         self.cell.setValue(max(nice_number(np.sqrt(area / 2000)), nice_number(self.pitch_nm / 1000) * 2))  # ~2000 cells
@@ -1150,13 +1152,9 @@ class RegistrationView(QtWidgets.QWidget):
         self.design_nm, self.error_nm = r.design_nm[shown], r.moving.residuals[shown]
         self.position_um = (self.design_nm - self.origin) / 1000
         length = np.linalg.norm(self.error_nm, axis=1)
-        values = np.column_stack([self.error_nm, length])  # dx, dy, dr
-        self.row_y, self.row_mean, _ = row_means(self.design_nm[:, 1], values, s.row_gap_nm)
-        self.column_x, self.column_mean, _ = row_means(self.design_nm[:, 0], values, s.row_gap_nm)
-        row_um, column_um = (self.row_y - self.origin[1]) / 1000, (self.column_x - self.origin[0]) / 1000
-        for k, (row_line, column_line) in enumerate(self.map_profiles + self.arrow_profiles):  # dx, dy, dr
-            row_line.setData(self.row_mean[:, k], row_um)
-            column_line.setData(column_um, self.column_mean[:, k])
+        self.values_nm = np.column_stack([self.error_nm, length])  # dx, dy, dr of every contact
+        self.contact_rows = row_means(self.design_nm[:, 1], self.values_nm, s.row_gap_nm)[:2]  # (y, mean)
+        self.contact_columns = row_means(self.design_nm[:, 0], self.values_nm, s.row_gap_nm)[:2]  # (x, mean)
         limit = float(np.percentile(np.abs(self.error_nm), 99)) or 1.0
         self.color_bar.setLevels((-limit, limit))
         self.dr_bar.setLevels((0.0, float(np.percentile(length, 99)) or 1.0))
@@ -1167,9 +1165,9 @@ class RegistrationView(QtWidgets.QWidget):
         total = self.in_stripe.shape[1]
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
-        self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.row_y)} rows, "
-                             f"{len(self.column_x)} columns. Error = measured (SEM) − design after the {window}, "
-                             f"{fitted}: {summary_text(self.error_nm)}.")
+        self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.contact_rows[0])} rows, "
+                             f"{len(self.contact_columns[0])} columns. Error = measured (SEM) − design after the "
+                             f"{window}, {fitted}: {summary_text(self.error_nm)}.")
         self.fitted = True  # show them all
         self.set_values()
 
@@ -1177,12 +1175,13 @@ class RegistrationView(QtWidgets.QWidget):
         return self.values.currentIndex() == 1
 
     def set_values(self, *_):
-        """Every contact or the grid average: the grid computed again, the arrow scale reset, the maps fitted again
-        unless zoomed, then drawn."""
+        """Every contact or the grid average: the grid and the profiles computed again, the arrow scale reset, the
+        maps fitted again unless zoomed, then drawn."""
         self.cell.setEnabled(self.grid_mode())
         self.symbol_size.setEnabled(not self.grid_mode())  # grid average: cells, no symbols
         corner, mean, _ = grid_means(self.design_nm, self.error_nm, self.cell.value() * 1000)
         self.grid_corner_um, self.grid_mean = (corner - self.origin) / 1000, mean
+        self.draw_profiles()
         vectors = self.arrow_vectors()[1]
         largest = float(np.percentile(np.linalg.norm(vectors, axis=1), 99)) if len(vectors) else 1.0
         spacing_nm = self.cell.value() * 1000 if self.grid_mode() else self.pitch_nm
@@ -1193,6 +1192,20 @@ class RegistrationView(QtWidgets.QWidget):
             self.fit()
         self.draw_arrows()
         self.draw_maps()
+
+    def draw_profiles(self):
+        """The means per row and per column: of each row and column of contacts, or in grid average of the contacts
+        of each row and column of cells, at its centre (D125)."""
+        if self.grid_mode():
+            cell_nm = self.cell.value() * 1000
+            self.row_y, self.row_mean, _ = band_means(self.design_nm[:, 1], self.values_nm, cell_nm)
+            self.column_x, self.column_mean, _ = band_means(self.design_nm[:, 0], self.values_nm, cell_nm)
+        else:
+            (self.row_y, self.row_mean), (self.column_x, self.column_mean) = self.contact_rows, self.contact_columns
+        row_um, column_um = (self.row_y - self.origin[1]) / 1000, (self.column_x - self.origin[0]) / 1000
+        for k, (row_line, column_line) in enumerate(self.map_profiles + self.arrow_profiles):  # dx, dy, dr
+            row_line.setData(self.row_mean[:, k], row_um)
+            column_line.setData(column_um, self.column_mean[:, k])
 
     def extent(self) -> tuple[np.ndarray, np.ndarray]:
         """(low, high) x and y, µm, of what the maps show when fitted: the contacts shown with half a pitch around
@@ -1284,10 +1297,12 @@ class RegistrationView(QtWidgets.QWidget):
             [("dr colour bar", [self.dr_bar]), ("dx, dy colour bar", [self.color_bar])]
 
     def profiles(self) -> list[list[str]]:
-        """Both profiles of the contacts shown, as one table: header, then per line a row (y, mask µm; mean dx, dy,
-        dr, nm) and a column (x, mask µm; mean dx, dy, dr, nm), blank where one profile has fewer lines."""
-        header = ["row y (µm)", "row mean dx (nm)", "row mean dy (nm)", "row mean dr (nm)",
-                  "column x (µm)", "column mean dx (nm)", "column mean dy (nm)", "column mean dr (nm)"]
+        """Both profiles as shown, as one table: header, then per line a row (y, mask µm; mean dx, dy, dr, nm) and a
+        column (x, mask µm; mean dx, dy, dr, nm), blank where one profile has fewer lines. In grid average the rows
+        and columns of cells, named so."""
+        row, column = ("grid row", "grid column") if self.grid_mode() else ("row", "column")
+        header = [f"{row} y (µm)", f"{row} mean dx (nm)", f"{row} mean dy (nm)", f"{row} mean dr (nm)",
+                  f"{column} x (µm)", f"{column} mean dx (nm)", f"{column} mean dy (nm)", f"{column} mean dr (nm)"]
 
         def cells(position, mean, k):
             return [f"{position[k] / 1000:.4f}", *(f"{v:.4f}" for v in mean[k])] if k < len(position) else [""] * 4

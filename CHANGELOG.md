@@ -91,5 +91,8 @@ they open, flagged as outdated.
   unticked read as *none*. With *none* the design tone is now chosen with the detected centres too (before: the
   refined ones), so such runs can give other numbers; refined runs do not change. The help texts of `detection`
   and `refinement` say what each choice does (D124).
+- Registration tab: with *Values* → *Grid average* the means per row and per column follow the grid too: one point
+  per row (column) of cells, the mean of the contacts in it, so the larger the cell, the smoother the lines. *Copy
+  profiles* and *Export profiles CSV* give these values, headed *grid row* / *grid column* (D125).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

@@ -345,6 +345,21 @@ def grid_means(points: np.ndarray, values: np.ndarray, cell_nm: float):
     return corner, mean.reshape(rows, cols, -1), count.reshape(rows, cols)
 
 
+def band_means(position: np.ndarray, values: np.ndarray, width_nm: float):
+    """Mean of values (N, k) over the points in each band of width_nm along one axis, the first band starting at the
+    lowest position: the rows (position y) or the columns (x) of grid_means' cells.
+
+    Returns (centre, mean, count) of the bands that hold a point: the band's centre (nm), the mean values (B, k) and
+    the points per band, from the lowest band up.
+    """
+    start = position.min()
+    band = np.floor((position - start) / width_nm).astype(int)
+    count = np.bincount(band)
+    held = np.flatnonzero(count)
+    mean = np.column_stack([np.bincount(band, weights=v)[held] / count[held] for v in values.T])
+    return start + (held + 0.5) * width_nm, mean, count[held]
+
+
 def row_pitch(design_y: np.ndarray, y: np.ndarray, gap_nm: float = 10.0):
     """Row-to-row pitch along y (nm) of one set of positions y (N,), rows grouped by design y.
 
