@@ -1553,6 +1553,16 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
    (alignment marks, known offset)?
 4. **Pattern geometry:** contact pitch and size vs. expected stage error. Is the array fully
    periodic, or are there aperiodic regions/marks for unambiguous coarse alignment?
+   *Why it matters for the stitching image by image (2026-10-27, after D140):* synthetic mosaics at the user's image
+   size (2.88 µm, 280 nm overlaps, 50 nm grid, each image missing 3 % of its contacts and adding 1 % false ones):
+   on a full grid no image is placed wrong (up to the harmless whole pitches) and about 1 overlap in 100 images is
+   flagged without cause (a corner); where the pattern almost repeats (5 % of the contacts missing) images still slip
+   by whole pitches (2 of 100 at 20 nm stage scatter, 15 to 28 of 100 at 30 to 40 nm), only partly flagged. There the
+   overlaps of one image hold too little to tell a one-pitch slip from the truth against its own missed detections;
+   the rules tried (McNemar's test on the contacts both shifts see, every lattice shift as a candidate, the surest image
+   first, strict or wide ties) each traded these slips against images drifting from their stage positions or false
+   alarms on a full grid, none better overall, so none was kept, and step 4b of the D137 plan (place again the images
+   whose overlaps do not line up) was not built: it would act on exactly that test.
 5. **Tile geometry:** typical FOV, pixel size, overlap width (top/bottom and left/right),
    tiles per stripe, number of stripes, and the typical number of contacts per overlap strip.
 6. **Accuracy target / expected noise:** e.g. required 3σ registration precision in nm. This
