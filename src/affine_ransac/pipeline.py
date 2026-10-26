@@ -12,6 +12,7 @@
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
 - stitch_tiles_affine(): one affine per tile instead, from the same pairs and tie contacts.
 - tie_residuals(): how well the tie contacts agree after either stitching.
+- placed_image_by_image(), stitch_image_by_image(): the stitching image by image (D133, D138, D139).
 - overlap_checks(): whether each overlap lines up at a placement, whatever paired its contacts (D137).
 
 - tile_boxes_from_points(): tile centres and sizes for data without a metadata CSV (e.g. the
@@ -334,8 +335,9 @@ class RejectedPair:
     i: int
     j: int
     box: tuple       # nominal overlap box, mask nm
-    in_box: int      # contacts in the overlap box: the smaller of the two tiles' counts
-    matched: int     # contacts that paired up (fewer than min_matched)
+    in_box: int      # contacts in the overlap box: the smaller of the two tiles' counts (image by image: of the
+                     # contacts both should see where the placement puts them, seen_pairs)
+    matched: int     # contacts that paired up (fewer than min_matched; image by image: or than MIN_AGREEMENT of in_box)
     # True: both tiles had at least min_matched contacts in the overlap, yet they did not pair up
     # (e.g. a B − A offset beyond the match gate). False: the overlap holds too few contacts to
     # be used (e.g. a corner-only overlap).
@@ -395,9 +397,14 @@ def stitch_tiles(
         else:
             in_box = min(len(points_in_box(points[i], box)), len(points_in_box(points[j], box)))
             rejected.append(RejectedPair(i, j, box, in_box, len(ia), failed=in_box >= min_matched))
+    return solved_stitching(len(centers), pairs, rejected, label)
 
+
+def solved_stitching(n_tiles: int, pairs: list[PairResult], rejected: list[RejectedPair], label: str) -> StitchResult:
+    """The per-tile translation corrections from the used pairs (solve_tile_shifts, each pair weighted by its inlier
+    contacts), with a warning about the failures (label: what was stitched)."""
     corrections = solve_tile_shifts(
-        len(centers),
+        n_tiles,
         [(p.i, p.j) for p in pairs],
         [p.fit.shift for p in pairs],
         weights=[p.fit.inliers.sum() for p in pairs],
@@ -437,23 +444,23 @@ def contact_spacing(points: list[np.ndarray]) -> float:
     return float(np.median(spacings)) if spacings else np.nan
 
 
-def seen_pairs(a: np.ndarray, b: np.ndarray, gate: float):
+def seen_pairs(a: np.ndarray, b: np.ndarray, gate: float) -> tuple[int, np.ndarray, np.ndarray]:
     """Two images' placed contacts a (N, 2), b (M, 2), mask nm: the contacts of each that the other should see, and
     their pairs within gate (D137). A contact should be seen by the other image if it lies inside the box of all the
     other's contacts (grown by gate), so the rows an image loses at its own frame are not expected of it.
-    Returns (a_seen, b_seen, ia, ib): a_seen[ia[k]] is paired with b_seen[ib[k]]."""
+    Returns (seen, ia, ib): seen, how many such contacts the image with fewer has; a[ia[k]] is paired with b[ib[k]]."""
     none = np.empty(0, int)
     if len(a) == 0 or len(b) == 0:
-        return a[:0], b[:0], none, none
-    a_seen = a[points_in_box(a, (b[:, 0].min(), b[:, 0].max(), b[:, 1].min(), b[:, 1].max()), margin=gate)]
-    b_seen = b[points_in_box(b, (a[:, 0].min(), a[:, 0].max(), a[:, 1].min(), a[:, 1].max()), margin=gate)]
-    if len(a_seen) == 0 or len(b_seen) == 0:
-        return a_seen, b_seen, none, none
+        return 0, none, none
+    in_a = points_in_box(a, (b[:, 0].min(), b[:, 0].max(), b[:, 1].min(), b[:, 1].max()), margin=gate)
+    in_b = points_in_box(b, (a[:, 0].min(), a[:, 0].max(), a[:, 1].min(), a[:, 1].max()), margin=gate)
+    if len(in_a) == 0 or len(in_b) == 0:
+        return 0, none, none
     # mutual nearest neighbours within the gate, as matching.match_points, with trees (this is the placement's hot loop)
-    distance, nearest_b = cKDTree(b_seen).query(a_seen)
-    nearest_a = cKDTree(a_seen).query(b_seen)[1]
-    ia = np.flatnonzero((nearest_a[nearest_b] == np.arange(len(a_seen))) & (distance < gate))
-    return a_seen, b_seen, ia, nearest_b[ia]
+    distance, nearest_b = cKDTree(b[in_b]).query(a[in_a])
+    nearest_a = cKDTree(a[in_a]).query(b[in_b])[1]
+    keep = np.flatnonzero((nearest_a[nearest_b] == np.arange(len(in_a))) & (distance < gate))
+    return min(len(in_a), len(in_b)), in_a[keep], in_b[nearest_b[keep]]
 
 
 @dataclass
@@ -475,10 +482,11 @@ def fitted_placement(points: list[np.ndarray], corrections: np.ndarray, placed: 
     for _ in range(steps):
         mine, theirs, seen = [], [], 0
         for o in placed:
-            a, b, ia, ib = seen_pairs(points[o] + corrections[o], points[k] + correction, gate)
+            a, b = points[o] + corrections[o], points[k] + correction
+            n, ia, ib = seen_pairs(a, b, gate)
             theirs.append(a[ia])
             mine.append(b[ib])
-            seen += min(len(a), len(b))
+            seen += n
         mine, theirs = np.concatenate(mine), np.concatenate(theirs)
         if len(mine) == 0:
             return Placement(correction, 0, seen)
@@ -576,6 +584,27 @@ def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: n
         place(k, options[k][1][0].correction)
 
 
+def stitch_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, guide: np.ndarray,
+                          outlier_factor: float = 3.0, min_matched: int = 5, label: str = "SEM") -> StitchResult:
+    """The stitching image by image after its placement `guide` (placed_image_by_image; D139): every overlap paired
+    where the guide places its two images (as without a guide if it did not place one, predicted_shift), within the
+    gate of the placement (PAIRING_GATE times contact_spacing, seen_pairs), and used only if it lines up there: at
+    least min_matched pairs and MIN_AGREEMENT of the contacts the two should see of each other. Its shift is the
+    robust fit of those pairs (fit_overlap), so the precision comes from the fit, not from a gate near the noise; a
+    gate a quarter of a pitch wide never pairs a contact with its neighbour. The other overlaps are rejected (failed
+    if both images had min_matched contacts to compare). Solved and warned about as by stitch_tiles."""
+    gate = PAIRING_GATE * contact_spacing(points)
+    pairs, rejected = [], []
+    for i, j, box in overlapping_pairs(centers, fovs):
+        seen, ia, ib = seen_pairs(points[i], points[j] - predicted_shift(guide, i, j), gate)
+        if len(ia) >= max(min_matched, MIN_AGREEMENT * seen):
+            fit = fit_overlap(points[i][ia], points[j][ib], outlier_factor=outlier_factor)
+            pairs.append(PairResult(i, j, box, ia, ib, fit))
+        else:
+            rejected.append(RejectedPair(i, j, box, seen, len(ia), failed=seen >= min_matched))
+    return solved_stitching(len(centers), pairs, rejected, label)
+
+
 @dataclass
 class OverlapCheck:
     i: int
@@ -603,10 +632,11 @@ def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarr
     for i, j, _ in overlapping_pairs(centers, fovs):
         if np.isnan(corrections[[i, j]]).any():
             continue
-        a, b, ia, ib = seen_pairs(points[i] + corrections[i], points[j] + corrections[j], gate)
-        if min(len(a), len(b)) < min_matched:
+        a, b = points[i] + corrections[i], points[j] + corrections[j]
+        seen, ia, ib = seen_pairs(a, b, gate)
+        if seen < min_matched:
             continue
-        agreement = len(ia) / min(len(a), len(b))
+        agreement = len(ia) / seen
         offset = (float(np.linalg.norm(fit_overlap(a[ia], b[ib], outlier_factor=outlier_factor).shift)) if len(ia)
                   else np.nan)
         checks.append(OverlapCheck(i, j, agreement, offset, agreement >= MIN_AGREEMENT and offset <= tolerance_nm))

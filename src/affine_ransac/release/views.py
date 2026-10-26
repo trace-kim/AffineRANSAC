@@ -44,7 +44,8 @@ from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import ContactSizes
 from affine_ransac.overlap import points_in_box
-from affine_ransac.pipeline import PairResult, RejectedPair, StitchResult, contact_stripes, pair_kind, stripe_ranges
+from affine_ransac.pipeline import (PAIRING_GATE, PairResult, RejectedPair, StitchResult, contact_spacing,
+                                    contact_stripes, pair_kind, stripe_ranges)
 from affine_ransac.registration import band_means, error_summary, grid_means, largest_ramp, noise_sigma, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
@@ -180,9 +181,15 @@ def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
             lines.append(f"<br><b>{name}</b>: used, {len(e.ia)} pairs.")
         elif e is not None and e.failed:
             count_a, count_b = (len(points_in_box(points(r)[k], e.box)) for k in (i, j))
-            lines.append(f"<br><b>{name}</b>: <span style='color:{style.CAUTION}'><b>not matched</b></span>. "
-                         f"{e.matched} pair(s) found, {r.settings.min_matched} needed (min_matched): a pair is a "
-                         f"contact in both {what}, the two within {getattr(r.settings, gate):g} nm ({gate}). "
+            if name == "Measured" and r.settings.stitch_method == "image by image":  # stitch_image_by_image (D139)
+                why = (f"Where the placement image by image put the two images, {e.matched} of the {e.in_box} "
+                       f"contacts both should see pair up; at least half of them and {r.settings.min_matched} "
+                       f"(min_matched) are needed. A pair is a contact in both {what}, the two within "
+                       f"{PAIRING_GATE * contact_spacing(r.sem_points):.3g} nm (a quarter of the contact spacing).")
+            else:
+                why = (f"{e.matched} pair(s) found, {r.settings.min_matched} needed (min_matched): a pair is a "
+                       f"contact in both {what}, the two within {getattr(r.settings, gate):g} nm ({gate}).")
+            lines.append(f"<br><b>{name}</b>: <span style='color:{style.CAUTION}'><b>not matched</b></span>. {why} "
                          f"{a} has {count_a} contact(s) in the overlap ({marks[0]}), {b} has {count_b} ({marks[1]}).")
         elif e is not None:
             lines.append(f"<br><b>{name}</b>: skipped, only {e.in_box} contact(s) in the overlap.")

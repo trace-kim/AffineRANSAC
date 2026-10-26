@@ -41,8 +41,8 @@ from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
 from affine_ransac.pipeline import (REFINEMENTS, OverlapCheck, StitchResult, TileResult, measurement_pairs,
                                     overlap_checks, placed_image_by_image, process_tile, slipped_pairs, stitch_design,
-                                    stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points, tile_neighbours,
-                                    tile_stripes)
+                                    stitch_image_by_image, stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points,
+                                    tile_neighbours, tile_stripes)
 from affine_ransac.realign import realign_tiles
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, merge_observations, merge_values,
                                         paired_errors)
@@ -60,10 +60,10 @@ class Settings:
     max_match_nm: float = setting(25.0, "SEM overlaps: pair contacts closer than this, the largest B - A stage "
                                         "offset (< pitch / 2). Stitching image by image: the largest offset "
                                         "between neighbouring images, any size")
-    overlap_tolerance_nm: float = setting(2.0, "Stitching image by image: overlap contacts pair within this once "
-                                                "the offset is found (< pitch / 2); an overlap whose contacts do not "
-                                                "line up within it at the placement is left out. After the stitching, "
-                                                "an overlap whose two images lie further apart than this is an error")
+    overlap_tolerance_nm: float = setting(2.0, "Stitching image by image: after the stitching, an overlap whose two "
+                                                "images lie further apart than this is an error. (The stitching pairs "
+                                                "contacts within a quarter of the contact spacing and fits them "
+                                                "robustly; it does not use this.)")
     design_max_match_nm: float = setting(25.0, "Design overlaps: the largest offset between neighbouring files "
                                                "(< pitch / 2)")
     outlier_factor: float = setting(3.0, "Overlap outlier if its residual > this x the median residual")
@@ -92,7 +92,7 @@ class Settings:
                                  "place the images one at a time, each where its contacts line up with those of all "
                                  "its placed neighbours at once (offsets up to max_match_nm; on a repeating pattern "
                                  "the whole-pitch shift nearest its stage position), then pair every overlap there "
-                                 "within overlap_tolerance_nm (overlaps cannot disagree by a pitch)")
+                                 "(overlaps cannot disagree by a pitch)")
     # Contour CSVs only
     tile_margin_nm: float = setting(25.0, "Tile box = bounding box of its design centres grown by this")
     # Images only
@@ -608,16 +608,16 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
 
     def stitch(points, label, only_pairs=None, guide=None):
         """All overlaps (only_pairs None), or those pairs; with the chosen method, all overlaps are guided
-        by a first stitching in measurement order, or by the placement image by image, then paired within
-        overlap_tolerance_nm (stitch_tiles(guide=...)). label: which stitching, for its warnings."""
-        if only_pairs is None and guide is None:
-            if guided:
-                guide = stitch(points, label.replace("all overlaps", "measurement order (guide)"),
-                               only_pairs=order_pairs).corrections
-            elif by_image:
-                guide = image_by_image_guide(points)
-        gate = s.overlap_tolerance_nm if by_image and only_pairs is None else s.max_match_nm
-        return stitch_tiles(points, centers, sizes, gate, s.outlier_factor, s.min_matched,
+        by a first stitching in measurement order (stitch_tiles(guide=...)), or stitched image by image after the
+        placement (stitch_image_by_image; guide: the placement, if found already). label: which stitching, for its
+        warnings."""
+        if only_pairs is None and by_image:
+            return stitch_image_by_image(points, centers, sizes, image_by_image_guide(points) if guide is None else guide,
+                                         s.outlier_factor, s.min_matched, label=label)
+        if only_pairs is None and guide is None and guided:
+            guide = stitch(points, label.replace("all overlaps", "measurement order (guide)"),
+                           only_pairs=order_pairs).corrections
+        return stitch_tiles(points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
                             label=label, only_pairs=only_pairs, guide=guide)
 
     def merged_contacts(points, corrections):  # shifts (n, 2) or translation + rotation affines (n, 3, 3)

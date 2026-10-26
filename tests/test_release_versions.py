@@ -79,6 +79,14 @@ RESULTS = {
                                      -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
         "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
                    6.441456148, 6.821792166, 0.0, 0.0]},
+    # 7 (D139): image by image pairs its overlaps within a quarter of the contact spacing; these folders are stitched
+    # over all overlaps, so their numbers are those of 5.
+    7: {"contour CSV": [2360, 0.097645195, 0.097127712, 0.387878965, 0.376539609, 0.022559669, -0.052001588,
+                        8.149617877, 8.95389255, 12.5, 11.5],
+        "contour CSV, 3 um window": [2360, 0.09756319, 0.096903189, 0.38584456, 0.384917053, 0.024032299,
+                                     -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
+        "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
+                   6.441456148, 6.821792166, 0.0, 0.0]},
 }
 
 # Per FORMAT: the arrays (without the optional contact_sizes/*) and the info keys of a run file.

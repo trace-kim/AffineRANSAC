@@ -569,6 +569,20 @@ def test_a_box_not_matched_shows_why(tmp_path):
     view.close()
 
 
+def test_an_overlap_left_out_of_the_stitching_image_by_image_says_how_many_of_its_contacts_paired(tmp_path):
+    """D139: stitched image by image, an overlap is used only if half the contacts both images should see pair up where
+    the placement put them; the explanation of one left out says so, with the gate it paired them within."""
+    from affine_ransac.release.views import overlap_details
+    result = result_with_failures(tmp_path)
+    result.settings = replace(result.settings, stitch_method="image by image")
+    rejected = result.stitch.rejected[-1]
+
+    text = overlap_details(result, rejected.i, rejected.j)
+
+    assert "Where the placement image by image put the two images, 1 of the 9 contacts both should see pair up" in text
+    assert "(a quarter of the contact spacing)" in text and "nm (max_match_nm)" not in text
+
+
 def test_the_contours_are_found_again_as_the_run_found_them(tmp_path):
     """D113: read_contours detects and refines every image again with the run's settings: the same contacts per tile,
     and the centres the run used (refined) are exactly the run's. An image changed since the run is named with !!."""

@@ -39,16 +39,17 @@ from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, measurement_pairs,
                                     outlines_inside_frame, placed_image_by_image, process_tile,
-                                    stitch_design, stitch_tiles, stripe_directions, tile_boxes_from_points,
-                                    tile_neighbours, tile_stripes)
+                                    stitch_design, stitch_image_by_image, stitch_tiles, stripe_directions,
+                                    tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 6  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
-              # design tone with the detected centres too (D124); 6: image by image places by agreement (D138)
+ANALYSIS = 7  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
+              # design tone with the detected centres too (D124); 6: image by image places by agreement (D138); 7:
+              # and pairs its overlaps within a quarter of the contact spacing, using those that line up (D139)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -254,22 +255,23 @@ def scan_direction(names: list[str], centers, stripe, fallback: bool, log) -> bo
 def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
                tile_ids) -> tuple[StitchResult, list[tuple[int, int]]]:
     """The SEM stitching over all overlaps, per s.stitch_method: paired at the nominal placement, guided by the
-    stitching in measurement order (stripe: per tile, tile_stripes), or guided by the placement image by image and
-    paired within overlap_tolerance_nm (D133); and the overlaps it got wrong (checked_overlaps; logged): fitted away
+    stitching in measurement order (stripe: per tile, tile_stripes), or image by image after its placement
+    (stitch_image_by_image, D133, D139); and the overlaps it got wrong (checked_overlaps; logged): fitted away
     from the shift the measurement order predicts by more than max_match_nm (one row off?), or, image by image, not
     lining up where the stitching placed their images (D137)."""
     if s.stitch_method == "image by image":
         reference = placed_image_by_image(sem_points, centers, sizes, s.max_match_nm, s.min_matched)
-        guide, gate = reference, s.overlap_tolerance_nm
+        stitch = stitch_image_by_image(sem_points, centers, sizes, reference, s.outlier_factor, s.min_matched,
+                                       label="SEM, all overlaps")
         method = f"{s.stitch_method} ({placement_text(reference)})"
     else:
         reference = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
                                  label="SEM, measurement order",
                                  only_pairs=measurement_pairs(centers, stripe, s.first_stripe_upward)).corrections
         guide = reference if s.stitch_method == "measurement order first" else None
-        gate, method = s.max_match_nm, s.stitch_method
-    stitch = stitch_tiles(sem_points, centers, sizes, gate, s.outlier_factor, s.min_matched,
-                          label="SEM, all overlaps", guide=guide)
+        stitch = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
+                              label="SEM, all overlaps", guide=guide)
+        method = s.stitch_method
     log(f"Stitching method: {method}")
     report_stitching(log, "SEM", stitch, tile_ids)
     return stitch, checked_overlaps(sem_points, centers, sizes, stitch, reference, s, log, tile_ids)
