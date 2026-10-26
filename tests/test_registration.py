@@ -291,7 +291,7 @@ def test_on_a_repeating_pattern_the_pairs_can_follow_the_stitched_placement():
     errors = np.random.default_rng(1).normal(0, 20, (12, 2))
     points, centers, fovs, _ = mosaic(errors, GRID_50)
     design = [GRID_50[np.all(np.abs(GRID_50 - c) < 500 - 10, axis=1)] for c in centers]  # each .oas: its own field
-    guide = placed_image_by_image(points, centers, fovs, search_nm=100, tolerance_nm=10)
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
     with pytest.warns(UserWarning):  # corners
         stitch = stitch_tiles(points, centers, fovs, max_match_nm=10, guide=guide)
     neighbours = tile_neighbours(centers, fovs)

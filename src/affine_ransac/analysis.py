@@ -604,7 +604,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     by_image = s.stitch_method == "image by image"
 
     def image_by_image_guide(points):  # the guide of the stitching image by image (D133)
-        return placed_image_by_image(points, centers, sizes, s.max_match_nm, s.overlap_tolerance_nm, s.min_matched)
+        return placed_image_by_image(points, centers, sizes, s.max_match_nm, s.min_matched)
 
     def stitch(points, label, only_pairs=None, guide=None):
         """All overlaps (only_pairs None), or those pairs; with the chosen method, all overlaps are guided

@@ -412,16 +412,16 @@ def test_an_offset_near_one_pitch_slips_a_row_unless_guided_by_the_measurement_o
     assert slipped_pairs(guided, first.corrections, 25.0) == []
 
 
-def mosaic(errors, contacts, fov=1000.0, step=880.0, cols=3, rows=4, seed=0):
+def mosaic(errors, contacts, fov=1000.0, step=880.0, cols=3, rows=4, seed=0, noise=0.3):
     """cols x rows tiles `step` apart (overlaps fov - step = 120 nm wide). Tile k really sits at its centre +
-    errors[k], so it reports the contacts it sees (fully inside its true FOV) at p − errors[k], with 0.3 nm noise.
+    errors[k], so it reports the contacts it sees (fully inside its true FOV) at p − errors[k], with `noise` nm noise.
     Returns the points at the nominal placement, centres, FOVs and the true corrections (mean 0)."""
     centers = np.array([(c * step, r * step) for c in range(cols) for r in range(rows)])
     rng = np.random.default_rng(seed)
     points = []
     for center, e in zip(centers, errors):
         seen = contacts[np.all(np.abs(contacts - center - e) < fov / 2 - 10, axis=1)]
-        points.append(seen - e + rng.normal(0, 0.3, seen.shape))
+        points.append(seen - e + rng.normal(0, noise, seen.shape))
     return points, centers, np.full((len(centers), 2), fov), errors - errors.mean(axis=0)
 
 
@@ -443,7 +443,7 @@ def test_image_by_image_lines_up_overlaps_that_pairing_at_the_stage_position_can
     worst = max(np.abs(r).max() for r in pair_residuals(points, plain, plain.corrections))
     assert worst > 10 and not whole_pitches(plain.corrections, truth, 50)  # overlaps disagree: the images do not line up
 
-    guide = placed_image_by_image(points, centers, fovs, search_nm=100, tolerance_nm=10)
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
     with pytest.warns(UserWarning, match="every tile stitched"):  # corners of 120 x 120 nm pair < 5 contacts
         stitch = stitch_tiles(points, centers, fovs, max_match_nm=10, guide=guide)
     assert all(pair_kind(centers, r.i, r.j) == "corner" for r in stitch.rejected) and len(stitch.unplaced) == 0
@@ -457,7 +457,7 @@ def test_image_by_image_changes_nothing_while_the_images_lie_within_half_a_pitch
     errors = np.random.default_rng(2).normal(0, 4, (12, 2))
     points, centers, fovs, truth = mosaic(errors, GRID_50)
 
-    guide = placed_image_by_image(points, centers, fovs, search_nm=100, tolerance_nm=10)
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
     stitch = stitch_tiles(points, centers, fovs, max_match_nm=10, guide=guide)
     plain = stitch_tiles(points, centers, fovs)
 
@@ -473,7 +473,7 @@ def test_image_by_image_finds_large_offsets_exactly_where_the_pattern_does_not_r
     points, centers, fovs, truth = mosaic(errors, contacts)
 
     stitch = stitch_tiles(points, centers, fovs, max_match_nm=10,
-                          guide=placed_image_by_image(points, centers, fovs, search_nm=150, tolerance_nm=10))
+                          guide=placed_image_by_image(points, centers, fovs, search_nm=150))
 
     np.testing.assert_allclose(stitch.corrections, truth, atol=0.3)
 
@@ -506,11 +506,37 @@ def test_the_overlap_check_names_every_overlap_of_an_image_placed_wrong():
     assert all(c.lines_up for c in overlap_checks(points, centers, fovs, pitch, tolerance_nm=1.0))
 
 
+def test_image_by_image_takes_the_shift_pairing_every_contact_not_a_smaller_one_pairing_most():
+    """D138: where the pattern does not repeat (a fifth of the contacts missing), the shift one pitch smaller than the
+    true one pairs most contacts too (80 %); it no longer wins for being smaller. Every image is placed exactly, also
+    tile 11, whose overlap with tile 10 is one row that happens to be complete: it waits until its other neighbour has
+    decided (placed clear images first)."""
+    contacts = GRID_50[np.random.default_rng(5).random(len(GRID_50)) > 0.2]
+    errors = np.zeros((12, 2))
+    errors[5] = (40.0, 0.0)  # beyond half a pitch from its neighbours: the shift one pitch off is -10 nm
+    points, centers, fovs, truth = mosaic(errors, contacts)
+
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
+
+    np.testing.assert_allclose(guide - guide.mean(axis=0), truth, atol=0.3)
+
+
+def test_image_by_image_does_not_depend_on_a_tolerance_near_the_noise():
+    """D138: contacts measured with 1 nm noise (the stitching within 0.5 nm left tiles out) are paired within a
+    quarter of the pitch and fitted robustly: every image placed, right up to whole pitches."""
+    errors = np.random.default_rng(1).normal(0, 20, (12, 2))
+    points, centers, fovs, truth = mosaic(errors, GRID_50, noise=1.0)
+
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
+
+    assert not np.isnan(guide).any() and whole_pitches(guide - guide.mean(axis=0), truth, 50)
+
+
 def test_image_by_image_leaves_an_image_without_matching_contacts_unplaced():
     points, centers, fovs, _ = mosaic(np.zeros((12, 2)), GRID_50)
     points[7] = np.empty((0, 2))
 
-    guide = placed_image_by_image(points, centers, fovs, search_nm=100, tolerance_nm=10)
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
 
     assert np.flatnonzero(np.isnan(guide[:, 0])).tolist() == [7]
 

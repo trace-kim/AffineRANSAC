@@ -39,7 +39,7 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.matching import match_points, match_with_shift, scored_shifts_together
+from affine_ransac.matching import candidate_shifts, match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
@@ -424,68 +424,10 @@ def slipped_pairs(stitch: StitchResult, guide: np.ndarray, tolerance_nm: float) 
             and np.linalg.norm(p.fit.shift - predicted_shift(guide, p.i, p.j)) > tolerance_nm]
 
 
-LINED_UP = 0.5  # placed_image_by_image: a shift lines up with at least this fraction of the most pairs of any shift
-
-
-def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
-                          tolerance_nm: float, min_matched: int = 5) -> np.ndarray:
-    """(n_tiles, 2) corrections that place the tiles one image at a time, as the guide of stitch_tiles (stitching
-    method "image by image", D133).
-
-    points: per tile, contact centres in mask nm at the nominal placement; centers, fovs: (n_tiles, 2), nm.
-    The image with the most contacts in its overlaps stays where it is (correction 0). Then, again and again, the
-    image sharing the most overlap contacts with the placed ones is matched against all of them at once: its
-    contacts in those overlaps (nominal) against theirs (placed), with one shift for all
-    (matching.scored_shifts_together: candidate shifts of any size up to search_nm, pairs within tolerance_nm). A
-    shift lines them up if it leaves no more contacts without a partner than it pairs (counted in each overlap's
-    own box, D50) and pairs at least LINED_UP times as many as the shift pairing the most. Of those it takes the
-    smallest, which puts the image nearest its stage position (the user's rule, D48): on a repeating pattern every
-    shift by a whole pitch along the overlaps lines up as well, while on a pattern that does not repeat only the true
-    shift pairs many. Because an image is matched against all its placed neighbours together, its overlaps cannot
-    disagree by a pitch, as overlaps paired one by one at the stage position do once the images lie more than half a
-    pitch from it. (Mismatches alone cannot choose here: an overlap one or two rows thick often has no contact
-    inside its box shrunk by tolerance_nm, which scores the true shift worst.)
-    An image without a shift that lines up, or one pairing fewer than min_matched contacts, waits for more placed
-    neighbours; one never placed gets NaN.
-    """
-    n = len(points)
-    shared = {}  # (k, other): indices of tile k's points in its overlap with tile other
-    for i, j, box in overlapping_pairs(centers, fovs):
-        shared[i, j] = points_in_box(points[i], box, margin=tolerance_nm)
-        shared[j, i] = points_in_box(points[j], box, margin=tolerance_nm)
-    neighbours = [[] for _ in range(n)]
-    for i, j in shared:
-        neighbours[i].append(j)
-    corrections = np.full((n, 2), np.nan)
-    if n == 0:
-        return corrections
-    gain = np.zeros(n)  # contacts each tile shares with the placed tiles (the fewer of the two sides per overlap)
-    tried = np.full(n, -1.0)  # its gain when its match last failed: tried again only once that has grown
-
-    def place(k, correction):
-        corrections[k] = correction
-        for o in neighbours[k]:
-            gain[o] += min(len(shared[k, o]), len(shared[o, k]))
-
-    place(int(np.argmax([sum(len(shared[k, o]) for o in neighbours[k]) for k in range(n)])), 0.0)
-    while True:
-        ready = np.isnan(corrections[:, 0]) & (gain >= min_matched) & (gain != tried)
-        if not ready.any():
-            return corrections
-        k = int(np.argmax(np.where(ready, gain, -1)))
-        parts = [(points[o][shared[o, k]] + corrections[o], points[k][shared[k, o]])  # (theirs placed, mine)
-                 for o in neighbours[k] if not np.isnan(corrections[o, 0])]
-        matches = [m for m in scored_shifts_together(parts, search_nm, tolerance_nm) if m.mismatches <= m.score]
-        most = max((m.score for m in matches), default=0)
-        lined_up = [m for m in matches if m.score >= max(min_matched, LINED_UP * most)]
-        if lined_up:
-            place(k, -min(lined_up, key=lambda m: np.linalg.norm(m.shift)).shift)  # mine + correction = theirs
-        else:
-            tried[k] = gain[k]
-
-
-PAIRING_GATE = 0.25  # overlap_checks: contacts pair within this fraction of the contact spacing (well below half)
-MIN_AGREEMENT = 0.5  # overlap_checks: an overlap lines up only if at least this share of its contacts pair
+PAIRING_GATE = 0.25  # contacts pair within this fraction of the contact spacing (well below half of it)
+MIN_AGREEMENT = 0.5  # an overlap lines up only if at least this share of its contacts pair (overlap_checks)
+LINED_UP = 0.5  # placed_image_by_image: a shift competes if it pairs at least this fraction of the most pairs of any
+MIN_EXTRA = 2.0  # placed_image_by_image: contacts without a partner a shift may have beyond counting noise (ties)
 
 
 def contact_spacing(points: list[np.ndarray]) -> float:
@@ -493,6 +435,145 @@ def contact_spacing(points: list[np.ndarray]) -> float:
     median of each tile's median distance from a contact to its nearest one. NaN if no tile has two contacts."""
     spacings = [np.median(cKDTree(p).query(p, k=2)[0][:, 1]) for p in points if len(p) >= 2]
     return float(np.median(spacings)) if spacings else np.nan
+
+
+def seen_pairs(a: np.ndarray, b: np.ndarray, gate: float):
+    """Two images' placed contacts a (N, 2), b (M, 2), mask nm: the contacts of each that the other should see, and
+    their pairs within gate (D137). A contact should be seen by the other image if it lies inside the box of all the
+    other's contacts (grown by gate), so the rows an image loses at its own frame are not expected of it.
+    Returns (a_seen, b_seen, ia, ib): a_seen[ia[k]] is paired with b_seen[ib[k]]."""
+    none = np.empty(0, int)
+    if len(a) == 0 or len(b) == 0:
+        return a[:0], b[:0], none, none
+    a_seen = a[points_in_box(a, (b[:, 0].min(), b[:, 0].max(), b[:, 1].min(), b[:, 1].max()), margin=gate)]
+    b_seen = b[points_in_box(b, (a[:, 0].min(), a[:, 0].max(), a[:, 1].min(), a[:, 1].max()), margin=gate)]
+    if len(a_seen) == 0 or len(b_seen) == 0:
+        return a_seen, b_seen, none, none
+    # mutual nearest neighbours within the gate, as matching.match_points, with trees (this is the placement's hot loop)
+    distance, nearest_b = cKDTree(b_seen).query(a_seen)
+    nearest_a = cKDTree(a_seen).query(b_seen)[1]
+    ia = np.flatnonzero((nearest_a[nearest_b] == np.arange(len(a_seen))) & (distance < gate))
+    return a_seen, b_seen, ia, nearest_b[ia]
+
+
+@dataclass
+class Placement:
+    correction: np.ndarray  # (2,) added to the image's nominal position, nm
+    pairs: int              # its contacts paired with those of its placed neighbours
+    seen: int               # the contacts they should see of each other (per overlap, of the image with fewer)
+
+    @property
+    def agreement(self) -> float:
+        return self.pairs / self.seen if self.seen else 0.0
+
+
+def fitted_placement(points: list[np.ndarray], corrections: np.ndarray, placed: list[int], k: int,
+                     correction: np.ndarray, gate: float, steps: int = 5) -> Placement:
+    """Tile k moved from `correction` to where its contacts line up with those of its placed neighbours (at their
+    corrections): its pairs with them (seen_pairs, all neighbours together) move it by their robust fit
+    (fit_overlap) and are paired again, until it moves less than 0.01 nm or after `steps`."""
+    for _ in range(steps):
+        mine, theirs, seen = [], [], 0
+        for o in placed:
+            a, b, ia, ib = seen_pairs(points[o] + corrections[o], points[k] + correction, gate)
+            theirs.append(a[ia])
+            mine.append(b[ib])
+            seen += min(len(a), len(b))
+        mine, theirs = np.concatenate(mine), np.concatenate(theirs)
+        if len(mine) == 0:
+            return Placement(correction, 0, seen)
+        step = fit_overlap(mine, theirs).shift  # mine + step = theirs
+        if np.linalg.norm(step) < 0.01:
+            break
+        correction = correction + step
+    return Placement(correction, len(mine), seen)
+
+
+def ties(best: Placement, other: Placement) -> bool:
+    """Whether `other` agrees as well as `best` up to counting noise: counted on best's contacts, it leaves fewer than
+    MIN_EXTRA more contacts without a partner than best, plus three times the square root of best's own number (the
+    spread of a count). Like matching.near_ties, with the noise of contacts not detected added."""
+    extra = (best.agreement - other.agreement) * best.seen
+    return extra < MIN_EXTRA + 3 * np.sqrt(best.seen - best.pairs)
+
+
+def placement_options(points: list[np.ndarray], corrections: np.ndarray, placed: list[int], k: int, shared: dict,
+                      search_nm: float, gate: float, min_matched: int) -> list[Placement]:
+    """The ways to place tile k against its placed neighbours `placed` that agree best, smallest correction first; []
+    if none. Its candidate shifts (matching.candidate_shifts of its overlap contacts against theirs, any size up to
+    search_nm) are each refined until they settle (fitted_placement). Those pairing fewer than min_matched contacts,
+    LINED_UP times as many as the one pairing the most (e.g. a sliver of an overlap whose few contacts happen to
+    pair) or MIN_AGREEMENT of what they should are left out; of the others, the one agreeing best and those tied with
+    it (ties)."""
+    theirs = np.concatenate([points[o][shared[o, k]] + corrections[o] for o in placed])
+    mine = np.concatenate([points[k][shared[k, o]] for o in placed])
+    fits = [fitted_placement(points, corrections, placed, k, -shift, gate)  # mine + correction = theirs
+            for shift in candidate_shifts(theirs, mine, search_nm, gate)]
+    most = max((f.pairs for f in fits), default=0)
+    fits = [f for f in fits if f.pairs >= max(min_matched, LINED_UP * most) and f.agreement >= MIN_AGREEMENT]
+    if not fits:
+        return []
+    best = max(fits, key=lambda f: f.agreement)
+    return sorted([f for f in fits if ties(best, f)], key=lambda f: np.linalg.norm(f.correction))
+
+
+def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
+                          min_matched: int = 5) -> np.ndarray:
+    """(n_tiles, 2) corrections that place the tiles one image at a time, as the guide of stitch_tiles (stitching
+    method "image by image", D133, D138).
+
+    points: per tile, contact centres in mask nm at the nominal placement; centers, fovs: (n_tiles, 2), nm.
+    The image with the most contacts in its overlaps stays where it is (correction 0). Then, again and again, one
+    image is placed against all its placed neighbours at once, one shift for all its overlaps, so they cannot
+    disagree by a pitch, as overlaps paired one by one at the stage position do once the images lie more than half a
+    pitch from it. Its options (placement_options) are the shifts that agree best: of the contacts the images should
+    see of each other, the share that pair (seen_pairs, within PAIRING_GATE times contact_spacing, wide against the
+    noise; the fit is robust, so no tolerance near the noise decides). On a repeating pattern every shift by a whole
+    pitch agrees as well; where it does not repeat (e.g. missing contacts), one that pairs only part of the contacts
+    does not. Of the images waiting, one with a clear option (one shift) is placed first; only when none is left, one
+    with several (tied: nothing in its overlaps tells them apart), taking the smallest, which puts the image nearest
+    its stage position (the user's rule, D48). So an image whose few overlap contacts happen to repeat does not
+    decide for the neighbours placed after it (the rule of matching.consistent_choice, D49). Either way the waiting
+    image sharing the most contacts with the placed ones goes first. An image without options waits for more placed
+    neighbours; one never placed gets NaN.
+    """
+    n = len(points)
+    gate = PAIRING_GATE * contact_spacing(points)
+    shared = {}  # (k, other): indices of tile k's points in its overlap with tile other
+    for i, j, box in overlapping_pairs(centers, fovs):
+        shared[i, j] = points_in_box(points[i], box, margin=gate)
+        shared[j, i] = points_in_box(points[j], box, margin=gate)
+    neighbours = [[] for _ in range(n)]
+    for i, j in shared:
+        neighbours[i].append(j)
+    corrections = np.full((n, 2), np.nan)
+    if n == 0:
+        return corrections
+    gain = np.zeros(n)  # contacts each tile shares with the placed tiles (the fewer of the two sides per overlap)
+    options = {}  # tile -> (its placed neighbours when its options were found, the options)
+
+    def place(k, correction):
+        corrections[k] = correction
+        for o in neighbours[k]:
+            gain[o] += min(len(shared[k, o]), len(shared[o, k]))
+
+    def clear(k):
+        found = options[k][1]
+        return all(np.linalg.norm(f.correction - found[0].correction) < gate for f in found)
+
+    place(int(np.argmax([sum(len(shared[k, o]) for o in neighbours[k]) for k in range(n)])), 0.0)
+    while True:
+        waiting = np.flatnonzero(np.isnan(corrections[:, 0]) & (gain >= min_matched))
+        for k in waiting:
+            placed = [o for o in neighbours[k] if not np.isnan(corrections[o, 0])]
+            if k not in options or options[k][0] != placed:  # found again only once more neighbours are placed
+                options[k] = placed, placement_options(points, corrections, placed, k, shared, search_nm, gate,
+                                                       min_matched)
+        found = [k for k in waiting if options[k][1]]
+        if not found:
+            return corrections
+        k = max([k for k in found if clear(k)] or found, key=lambda t: gain[t])
+        place(k, options[k][1][0].correction)
 
 
 @dataclass
@@ -510,27 +591,21 @@ def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarr
     whatever paired them (D137). points: per tile, contact centres in mask nm at the nominal placement; centers, fovs:
     (n_tiles, 2), nm.
 
-    Every overlap of two placed tiles is checked. The contacts of one image that the other should see are those
-    inside the box of all the other's contacts, so the rows an image loses at its own frame are not expected of it.
-    They pair within PAIRING_GATE times contact_spacing: wide against the noise, well below half the pitch, so a
-    contact never pairs with its neighbour. agreement counts the pairs per contact of the image with fewer, so
-    contacts one image failed to detect do not count. An image placed wrong by less than the gate shows in the
-    offset, one placed wrong by more in the agreement; by a whole pitch on a repeating pattern it lines up (and that
-    does not matter, D105). Overlaps where either image has fewer than min_matched such contacts (e.g. corners) are
-    not checked.
+    Every overlap of two placed tiles is checked: the contacts each image should see of the other, paired within
+    PAIRING_GATE times contact_spacing (seen_pairs): wide against the noise, well below half the pitch, so a contact
+    never pairs with its neighbour. agreement counts the pairs per contact of the image with fewer, so contacts one
+    image failed to detect do not count. An image placed wrong by less than the gate shows in the offset, one placed
+    wrong by more in the agreement; by a whole pitch on a repeating pattern it lines up (and that does not matter,
+    D105). Overlaps where either image has fewer than min_matched such contacts (e.g. corners) are not checked.
     """
     gate = PAIRING_GATE * contact_spacing(points)
-    placed = [p + c for p, c in zip(points, corrections)]
-    extents = [(p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()) if len(p) else None for p in placed]
     checks = []
     for i, j, _ in overlapping_pairs(centers, fovs):
-        if np.isnan(corrections[[i, j]]).any() or extents[i] is None or extents[j] is None:
+        if np.isnan(corrections[[i, j]]).any():
             continue
-        a = placed[i][points_in_box(placed[i], extents[j], margin=gate)]
-        b = placed[j][points_in_box(placed[j], extents[i], margin=gate)]
+        a, b, ia, ib = seen_pairs(points[i] + corrections[i], points[j] + corrections[j], gate)
         if min(len(a), len(b)) < min_matched:
             continue
-        ia, ib = match_points(a, b, gate)
         agreement = len(ia) / min(len(a), len(b))
         offset = (float(np.linalg.norm(fit_overlap(a[ia], b[ib], outlier_factor=outlier_factor).shift)) if len(ia)
                   else np.nan)

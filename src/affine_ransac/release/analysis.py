@@ -47,8 +47,8 @@ from affine_ransac.stitching import placement_corrections
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 5  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
-              # design tone with the detected centres too (D124)
+ANALYSIS = 6  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
+              # design tone with the detected centres too (D124); 6: image by image places by agreement (D138)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -259,8 +259,7 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
     from the shift the measurement order predicts by more than max_match_nm (one row off?), or, image by image, not
     lining up where the stitching placed their images (D137)."""
     if s.stitch_method == "image by image":
-        reference = placed_image_by_image(sem_points, centers, sizes, s.max_match_nm, s.overlap_tolerance_nm,
-                                          s.min_matched)
+        reference = placed_image_by_image(sem_points, centers, sizes, s.max_match_nm, s.min_matched)
         guide, gate = reference, s.overlap_tolerance_nm
         method = f"{s.stitch_method} ({placement_text(reference)})"
     else:

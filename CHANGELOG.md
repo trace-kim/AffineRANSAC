@@ -11,7 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
-First numbered version. Saved runs: format 3, analysis 5. Runs saved by earlier copies of MaskReg carry no version:
+First numbered version. Saved runs: format 3, analysis 6. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 
 - *File → Folders...*: choose the folder of `maskreg.ini` and the folder where FTP downloads are kept (D96).
@@ -132,5 +132,11 @@ they open, flagged as outdated.
   `overlap_tolerance_nm` apart, is an *Error* on the Stitching tab and listed in the log, which also gives the median
   and worst of both numbers. The check it replaces could never report anything, so badly stitched images showed as
   "Stitching OK". Numbers unchanged (D137).
+- **Analysis 6.** Stitching *image by image* places each image where the most of its overlap contacts pair up, no
+  longer where a smaller shift pairs only most of them: where the pattern does not fully repeat (e.g. missing
+  contacts) images could be placed a whole pitch off at any `overlap_tolerance_nm`. Images whose overlaps cannot tell
+  the shifts apart are placed last. The placement no longer uses `overlap_tolerance_nm`, so contact noise above it
+  no longer leaves images unplaced. Runs stitched image by image open flagged as outdated; other runs give the same
+  numbers (D138).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
