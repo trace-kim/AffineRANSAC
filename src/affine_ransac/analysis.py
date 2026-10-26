@@ -93,6 +93,10 @@ class Settings:
                                         "contacts (filled in over a disk this many pixels across, then smoothed) is "
                                         "subtracted. Wider than a contact, narrower than the brightness changes; "
                                         "0 = off")
+    upscale: int = setting(1, "Interpolate the image (bicubic) to this many times as many pixels per side, then find "
+                              "the contacts in it (after the flattening): finer threshold outlines and centres for "
+                              "contacts only a few pixels across. The other settings in pixels stay pixels of the "
+                              "image as loaded. Time and memory grow with its square; 1 = off")
     detection: str = setting("band", "How contacts are found (each a region with a first, pixel outline; REFINEMENT "
                                       "then places its edge). band: the regions a bright band encloses, however grey "
                                       "the hole. otsu: the dark regions, for images without a bright band. otsu3: the "
@@ -144,11 +148,11 @@ RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis on
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
-               "normal_span", "background_px"}
+               "normal_span", "background_px", "upscale"}
 # The settings that find the contacts in an SEM image (pipeline.find_contacts takes them by these names; D128)
-CONTOUR_SETTINGS = ("background_px", "detection", "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px",
-                    "min_solidity", "min_contrast", "refinement", "search_px", "edge_step_px", "edge_blur_px",
-                    "normal_span")
+CONTOUR_SETTINGS = ("background_px", "upscale", "detection", "dark_contacts", "detection_blur_px", "min_area_px",
+                    "max_area_px", "min_solidity", "min_contrast", "refinement", "search_px", "edge_step_px",
+                    "edge_blur_px", "normal_span")
 STITCH_METHODS = ("all overlaps", "measurement order first")
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
            "stitch_method": STITCH_METHODS}
@@ -160,6 +164,7 @@ BEFORE = {"refinement": "steepest gradient"}  # D122
 POSITIVE = {"max_match_nm", "design_max_match_nm", "outlier_factor", "group_radius_nm", "ransac_threshold_nm",
             "row_gap_nm", "moving_window_um", "moving_step_um", "drift_window_um", "search_px", "design_search_nm",
             "design_tolerance_nm", "spread_flag_nm", "arrow_scale"}  # must be > 0
+MAX_UPSCALE = 8  # a 2048² image upscaled 8 times holds 268 million pixels
 SAMPLE_TILES = 3  # tiles matched to their design before the run (first, middle, last with an .oas)
 
 
@@ -197,6 +202,7 @@ def check_settings(s: Settings, kind: str):
               "min_contrast": (s.min_contrast >= 0, "must be >= 0"),
               "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]"),
               "background_px": (s.background_px == 0 or s.background_px >= 3, "must be 0 (off) or >= 3"),
+              "upscale": (1 <= s.upscale <= MAX_UPSCALE, f"must be 1 (off) to {MAX_UPSCALE}"),
               "detection_blur_px": (s.detection_blur_px >= 0, "must be >= 0"),
               "min_area_px": (s.min_area_px >= 0, "must be >= 0"),
               "max_area_px": (s.max_area_px >= 0, "must be >= 0 (0: no limit)"),

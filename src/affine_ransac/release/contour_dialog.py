@@ -1,8 +1,9 @@
 """Contour diagnosis (docs/SPEC.md D129): try the contour settings (analysis.CONTOUR_SETTINGS, D128) on one SEM image
 before a run uses them.
 
-ContourDialog shows a loaded image, as the contacts are found in it (with the background flattened if asked, D130),
-with the contacts the settings find in it, exactly as a run finds them (pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
+ContourDialog shows a loaded image, as the contacts are found in it (with the background flattened, D130, and
+upscaled, D131, if asked), with the contacts the settings find in it, exactly as a run finds them
+(pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
 (after edge refinement: what the run measures) and, on request, the threshold mask (the pixels the threshold takes as
 contact). One line says in words how many contacts were found and why the other regions were left out. Every change of
 a setting finds them again, in a background thread, for the newest settings only. Apply to parameters: values() gives
@@ -22,14 +23,14 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac.analysis import CHOICES, Settings, check_settings, contour_options
 from affine_ransac.app import editor, editor_value
-from affine_ransac.features.contact import DetectedContacts, contact_mask
+from affine_ransac.features.contact import DetectedContacts, contact_mask, upscaled_image
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import find_contacts, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
 
-GROUPS = (("Pre-processing", ("background_px",)),
+GROUPS = (("Pre-processing", ("background_px", "upscale")),
           ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
                                         "max_area_px", "min_solidity", "min_contrast")),
           ("Edge refinement", ("refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")))
@@ -44,21 +45,22 @@ NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these s
 @dataclass
 class Diagnosis:
     """What the window shows of one image with one set of settings."""
-    image: np.ndarray           # the image the contacts are found in (pipeline.prepared_image)
+    image: np.ndarray           # the image the contacts are found in (pipeline.prepared_image; upscaled: more pixels)
     detected: DetectedContacts  # after the contrast check
     refined: DetectedContacts   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
-    mask: np.ndarray            # (rows, cols) uint8, 1 = taken as contact by the threshold
+    mask: np.ndarray            # uint8, the pixels of `image`: 1 = taken as contact by the threshold
 
 
 def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
     """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
     mask."""
-    prepared = prepared_image(image, s.background_px, s.dark_contacts)
+    flat = prepared_image(image, s.background_px, s.dark_contacts)
     # find_contacts would flatten the image first: given it flattened (~0.1-0.3 s), it need not do it again
-    detected, refined, low_contrast = find_contacts(prepared, **contour_options(replace(s, background_px=0.0)))
-    mask, _ = contact_mask(prepared, s.dark_contacts, s.detection_blur_px, s.detection)
-    return Diagnosis(prepared, detected, refined, low_contrast, mask)
+    detected, refined, low_contrast = find_contacts(flat, **contour_options(replace(s, background_px=0.0)))
+    shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
+    mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
+    return Diagnosis(shown, detected, refined, low_contrast, mask)
 
 
 def summary(d: Diagnosis, s: Settings) -> str:
@@ -68,9 +70,10 @@ def summary(d: Diagnosis, s: Settings) -> str:
     left_out = [f"{count} {reasons[why]}" for why, count in d.detected.left_out.items() if count]
     if d.low_contrast:
         left_out.append(f"{d.low_contrast} below the contrast of {s.min_contrast:g} noise σ")
-    flattened = " of the flattened image" if s.background_px > 0 else ""
+    upscaled = f" upscaled {s.upscale}×" if s.upscale > 1 else ""
+    of = f" of the flattened image{upscaled}" if s.background_px > 0 else f" of the image{upscaled}" if upscaled else ""
     text = (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
-            f"{d.detected.threshold:.0f}{flattened}). ")
+            f"{d.detected.threshold:.0f}{of}). ")
     return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
 
 
@@ -92,7 +95,8 @@ def changed_signal(widget: QtWidgets.QWidget):
 
 
 def place(item: pg.ImageItem, shape):
-    """Put an image item in the pixel frame: pixel (row, column) centred at (x, y) = (column, row)."""
+    """Put an image item over an image of this shape in the pixel frame: pixel (row, column) centred at (x, y) =
+    (column, row). An item with more pixels (the image upscaled) covers the same area."""
     item.setRect(QtCore.QRectF(-0.5, -0.5, shape[1], shape[0]))
 
 
@@ -303,8 +307,9 @@ class ContourDialog(QtWidgets.QDialog):
     def show_diagnosis(self, d: Diagnosis):
         self.shown = d.image
         self.image_item.setImage(d.image, levels=(0, 255))
+        place(self.image_item, self.image.shape)
         self.layers["Threshold mask"].setImage(d.mask, levels=(0, 1))
-        place(self.layers["Threshold mask"], d.mask.shape)
+        place(self.layers["Threshold mask"], self.image.shape)
         for name, contacts in (("Detected", d.detected), ("Refined", d.refined)):
             xy = drawable_outlines(contacts.contours)
             self.layers[f"{name} contours"].setData(xy[:, 0], xy[:, 1], connect="finite")
@@ -326,11 +331,12 @@ class ContourDialog(QtWidgets.QDialog):
 
     def _show_cursor(self, scene_pos):
         """The cursor's position and the grey level of the pixel under it in the image shown (to compare with the
-        threshold)."""
+        threshold; upscaled: of its own, smaller pixel)."""
         if self.shown is None:
             return
         pos = self.plot.vb.mapSceneToView(scene_pos)
-        column, row = round(pos.x()), round(pos.y())
+        factor = self.shown.shape[0] // self.image.shape[0]
+        column, row = int(np.floor((pos.x() + 0.5) * factor)), int(np.floor((pos.y() + 0.5) * factor))
         rows, cols = self.shown.shape
         grey = f", grey level {self.shown[row, column]}" if 0 <= row < rows and 0 <= column < cols else ""
         self.cursor_label.setText(f"x = {pos.x():.1f} px, y = {pos.y():.1f} px{grey}")

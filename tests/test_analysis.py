@@ -300,6 +300,10 @@ def test_invalid_settings_fail_before_any_work(tmp_path):
     with pytest.raises(ValueError, match=r"background_px must be 0 \(off\) or >= 3"):
         check_settings(Settings(background_px=1.0), "images")
     check_settings(Settings(background_px=0.0, refinement="threshold"), "images")  # off; the threshold rule (D130)
+    for factor in (0, analysis.MAX_UPSCALE + 1):
+        with pytest.raises(ValueError, match=rf"upscale must be 1 \(off\) to {analysis.MAX_UPSCALE}"):
+            check_settings(Settings(upscale=factor), "images")
+    check_settings(Settings(upscale=4), "images")  # D131
 
 
 def test_the_contour_settings_are_the_options_of_find_contacts():

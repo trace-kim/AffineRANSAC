@@ -55,7 +55,7 @@ def sample_profiles(image: np.ndarray, points: np.ndarray, directions: np.ndarra
     """Bilinearly sampled intensity at points[m] + offsets[t] * directions[m], shape (M, T)."""
     x = (points[:, :1] + directions[:, :1] * offsets).astype(np.float32)
     y = (points[:, 1:] + directions[:, 1:] * offsets).astype(np.float32)
-    image = image.astype(np.float32)
+    image = image.astype(np.float32, copy=False)  # no second copy of a smoothed (upscaled) image
     chunk = 30000  # cv2.remap allows at most 32767 output rows per call
     return np.concatenate([
         cv2.remap(image, x[i:i + chunk], y[i:i + chunk], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)

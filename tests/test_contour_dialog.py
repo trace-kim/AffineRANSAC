@@ -46,7 +46,7 @@ def settle(dialog, seconds=30):
     assert not dialog.running and not dialog.timer.isActive(), "the search did not finish"
 
 
-def test_the_window_edits_every_contour_setting_in_two_groups():
+def test_the_window_edits_every_contour_setting_in_its_groups():
     assert tuple(name for _, names in GROUPS for name in names) == CONTOUR_SETTINGS
 
 
@@ -123,6 +123,26 @@ def test_with_the_background_flattened_the_window_shows_the_image_the_contacts_a
     x, y = dialog.layers["Refined centres"].getData()
     np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
     assert "of the flattened image" in dialog.summary.text() and dialog.values() == s
+
+
+def test_upscaled_the_window_shows_the_upscaled_image_over_the_image_as_loaded(tmp_path):
+    """D131: the image the contacts are found in has more pixels, covering the same area: the axes stay pixels of the
+    image as loaded, as do the contours; the threshold mask is that of the upscaled image."""
+    dialog, path = open_dialog(tmp_path)
+    image = load_sem_image(path)
+    dialog.editors["upscale"].setValue(2)
+    settle(dialog)
+    s = replace(SETTINGS, upscale=2)
+    big = prepared_image(image, upscale=2)
+    np.testing.assert_array_equal(dialog.image_item.image, big)
+    np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, contact_mask(big, method="otsu",
+                                                                                       blur_sigma=1.5 * 2)[0])
+    covered = QtCore.QRectF(-0.5, -0.5, image.shape[1], image.shape[0])
+    for item in (dialog.image_item, dialog.layers["Threshold mask"]):
+        assert item.mapRectToParent(item.boundingRect()) == covered
+    x, y = dialog.layers["Refined centres"].getData()
+    np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
+    assert "of the image upscaled 2×" in dialog.summary.text() and dialog.values() == s
 
 
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):

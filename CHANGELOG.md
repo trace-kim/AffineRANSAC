@@ -107,5 +107,9 @@ they open, flagged as outdated.
   same numbers: `background_px` flattens the background before the contacts are found, so that one threshold fits an
   image whose brightness varies across it (charging, shading); `refinement` *threshold* places each contour where the
   smoothed image crosses the detection's threshold, sub-pixel. *Contour diagnosis* shows the flattened image (D130).
+- Contour setting `upscale` (1 = off, the default, so runs give the same numbers): the image is interpolated to that
+  many times as many pixels per side before the contacts are found in it, for contacts only a few pixels across; the
+  contacts come back in the image's own pixels, and the other settings stay in pixels of the image as loaded. *Contour
+  diagnosis* shows the upscaled image (D131).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

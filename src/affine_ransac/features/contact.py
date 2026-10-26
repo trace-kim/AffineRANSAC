@@ -1,7 +1,8 @@
 """Detect contact holes in an SEM image by thresholding.
 
 Before it, on request (pipeline.find_contacts background_px): flatten_background() removes brightness that varies
-across the image (charging, shading), so that one threshold fits the whole image.
+across the image (charging, shading), so that one threshold fits the whole image; then (upscale) upscaled_image()
+interpolates the image to more pixels, and in_image_pixels() puts the contacts found in it back in the image's pixels.
 
 Steps:
   1. Blur slightly to suppress pixel noise.
@@ -65,6 +66,26 @@ def flatten_background(image: np.ndarray, size_px: float, dark_contacts: bool = 
     background = cv2.GaussianBlur(continued, (0, 0), sigma)[pad:-pad, pad:-pad]
     flat = image.astype(np.float32) - background + background.mean()
     return np.clip(np.round(flat), 0, 255).astype(np.uint8)
+
+
+def upscaled_image(image: np.ndarray, factor: int) -> np.ndarray:
+    """The image interpolated to `factor` times as many pixels per side (bicubic, D131); factor 1: the image itself.
+    Both cover the same area: pixel (x, y) of the result lies at ((x + 0.5) / factor - 0.5, (y + 0.5) / factor - 0.5)
+    of the image (in_image_pixels)."""
+    if factor == 1:
+        return image
+    return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+
+
+def in_image_pixels(contacts: DetectedContacts, factor: int) -> DetectedContacts:
+    """Contacts found in an image upscaled by `factor` (upscaled_image), in the pixel frame of the image itself."""
+    if factor == 1:
+        return contacts
+
+    def back(xy):
+        return (xy + 0.5) / factor - 0.5
+    return DetectedContacts(back(contacts.centers), contacts.areas / factor ** 2, [back(c) for c in contacts.contours],
+                            contacts.threshold, contacts.left_out)
 
 
 def contact_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5, method: str = "otsu"):

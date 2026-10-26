@@ -6,7 +6,8 @@ from scipy.spatial import cKDTree
 
 from affine_ransac.io.design import load_layout
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.features.contact import DetectedContacts, detect_contacts, flatten_background
+from affine_ransac.features.contact import (DetectedContacts, detect_contacts, flatten_background, in_image_pixels,
+                                            upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, find_contacts,
@@ -152,6 +153,34 @@ def test_find_contacts_flattens_the_background_before_every_step():
     # every contact where it is, those near the image's edges too (a mirrored ramp moved them by 0.1 px)
     for found in (flat, bright):
         assert len(found.centers) == len(centres) and cKDTree(found.centers).query(centres)[0].max() < 0.03
+
+
+def test_find_contacts_upscales_the_image_with_its_options_in_pixels_of_the_image():
+    """D131: with upscale the contacts are found in the image upscaled (prepared_image), with the options in pixels of
+    the image as given (areas: its square), and come back in its pixel frame: the same contacts, the detected ones
+    (pixel outlines) closer to where they are. Contacts 6 px across."""
+    from test_edges import no_band_image
+    grid = np.array([(x, y) for y in range(12, 70, 13) for x in range(12, 130, 13)], float)
+    centres = grid + np.random.default_rng(3).uniform(-0.5, 0.5, grid.shape)
+    image = no_band_image(centres, 3.0, noise=2)
+    assert prepared_image(image, 0.0, upscale=1) is image
+    np.testing.assert_array_equal(prepared_image(image, 0.0, upscale=4), upscaled_image(image, 4))
+
+    detected, refined, _ = find_contacts(image, upscale=4)
+    expected = in_image_pixels(detect_contacts(upscaled_image(image, 4), True, 1.5 * 4, 20 * 4 ** 2), 4)
+    np.testing.assert_array_equal(detected.centers, expected.centers)
+    plain = find_contacts(image)[0]
+    assert len(detected.centers) == len(plain.centers) == len(centres)
+    # the same areas on average; finer: a pixel outline's area moves in whole pixels (found: std 0.5 and 1.0 px)
+    assert abs(detected.areas.mean() - plain.areas.mean()) < 0.02 * plain.areas.mean()
+    assert detected.areas.std() < 0.7 * plain.areas.std()
+
+    def distances(found):
+        return cKDTree(found.centers).query(centres)[0]
+    assert distances(detected).max() < 0.1 < distances(plain).max()  # found: 0.056 and 0.276 px
+    assert distances(refined).max() < 0.1
+    # an area limit of the image as given, at every factor
+    assert len(find_contacts(image, upscale=4, min_area_px=2 * int(plain.areas.max()))[0].centers) == 0
 
 
 def test_with_refinement_none_the_design_tone_is_chosen_with_the_detected_centres(tmp_path, monkeypatch):

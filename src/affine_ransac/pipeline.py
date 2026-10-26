@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, detect_contacts,
-                                            flatten_background, keep_contacts)
+                                            flatten_background, in_image_pixels, keep_contacts, upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
@@ -186,16 +186,20 @@ class TileResult:
         return sem, design
 
 
-def prepared_image(image: np.ndarray, background_px: float = 0.0, dark_contacts: bool = True) -> np.ndarray:
+def prepared_image(image: np.ndarray, background_px: float = 0.0, dark_contacts: bool = True,
+                   upscale: int = 1) -> np.ndarray:
     """The image the contacts are found in (find_contacts): with its background flattened over background_px
-    (features.contact.flatten_background) if that is > 0, else the image itself."""
-    return flatten_background(image, background_px, dark_contacts) if background_px > 0 else image
+    (features.contact.flatten_background) if that is > 0, then upscaled `upscale` times (upscaled_image); with neither,
+    the image itself."""
+    flat = flatten_background(image, background_px, dark_contacts) if background_px > 0 else image
+    return upscaled_image(flat, upscale)
 
 
 def find_contacts(
     image: np.ndarray,
-    *,  # 14 options: by name only
+    *,  # 15 options: by name only
     background_px: float = 0.0,
+    upscale: int = 1,
     detection: str = "otsu",
     dark_contacts: bool = True,
     detection_blur_px: float = 1.5,
@@ -213,27 +217,33 @@ def find_contacts(
     """The contacts of one SEM image (uint8), as every run finds them: (detected, refined, how many detected contacts
     the contrast check dropped). The options are the settings of the same names (analysis.CONTOUR_SETTINGS, D128).
 
-    Every step works on prepared_image (background_px > 0: the background flattened first, D130).
+    Every step works on prepared_image (background_px > 0: the background flattened first, D130; upscale > 1: then
+    upscaled that many times, D131). The options in pixels, and normal_span (contour points), are those of the image
+    as given: in the upscaled image they are `upscale` times larger (areas its square), and the contacts are returned
+    in the image's own pixels.
     detected: features.contact.detect_contacts with method `detection` ("otsu", "otsu3" or "band"), blur, area limits
     (max_area_px 0: no limit) and, for "band" only, min_solidity; then, if min_contrast > 0, without the contacts whose
-    contrast against a ring around them is below this many noise sigma (contact_contrast; false contacts in images
-    without pattern). refined: features.edges.refine_edges with edge rule `refinement` ("mid-level", "steepest
-    gradient" or "threshold"), or with "none" the detected contacts themselves: either way what the tile is measured
-    with. seconds: if given, gets the time of each step ("detect" includes the flattening, "refine").
+    contrast against a ring around them is below this many noise sigma (contact_contrast, on the image not upscaled:
+    its own noise; false contacts in images without pattern). refined: features.edges.refine_edges with edge rule
+    `refinement` ("mid-level", "steepest gradient" or "threshold"), or with "none" the detected contacts themselves:
+    either way what the tile is measured with. seconds: if given, gets the time of each step ("detect" includes the
+    flattening and the upscaling, "refine").
     """
     t_start = time.perf_counter()
     image = prepared_image(image, background_px, dark_contacts)
-    detected = detect_contacts(image, dark_contacts, detection_blur_px, min_area_px, max_area_px or None, detection,
-                               min_solidity if detection == "band" else None)
+    f = upscale
+    big = upscaled_image(image, f)
+    detected = detect_contacts(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
+                               max_area_px * f ** 2 or None, detection, min_solidity if detection == "band" else None)
     found = len(detected.centers)
     if min_contrast > 0:
-        detected = keep_contacts(detected, contact_contrast(image, detected) >= min_contrast)
+        detected = keep_contacts(detected, contact_contrast(image, in_image_pixels(detected, f)) >= min_contrast)
     t_detect = time.perf_counter()
     refined = detected if refinement == "none" else refine_edges(
-        image, detected, dark_contacts, search_px, edge_step_px, edge_blur_px, normal_span, refinement)
+        big, detected, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, normal_span * f, refinement)
     if seconds is not None:
         seconds.update(detect=t_detect - t_start, refine=time.perf_counter() - t_detect)
-    return detected, refined, found - len(detected.centers)
+    return in_image_pixels(detected, f), in_image_pixels(refined, f), found - len(detected.centers)
 
 
 def process_tile(

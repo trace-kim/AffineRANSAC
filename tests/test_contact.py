@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 import pytest
 
-from affine_ransac.features.contact import detect_contacts, flatten_background
+from affine_ransac.features.contact import (DetectedContacts, detect_contacts, flatten_background,
+                                            in_image_pixels, upscaled_image)
 from affine_ransac.io.sem_image import crop_databar, load_sem_image
 from sample_sem import write_sem_like
 
@@ -83,6 +84,24 @@ def test_flattening_the_background_lets_one_threshold_find_every_contact():
     np.testing.assert_allclose(found.centers[np.lexsort(found.centers.T[::-1])],
                                centres[np.lexsort(centres.T[::-1])], atol=0.05)
     assert abs(float(flat.mean()) - float(image.mean())) < 5
+
+
+def test_an_upscaled_image_covers_the_same_area_and_its_contacts_map_back():
+    """D131: pixel (x, y) of the image upscaled f times lies at ((x + 0.5) / f - 0.5, (y + 0.5) / f - 0.5) of the
+    image; a spot's centroid in the upscaled image maps back onto its pixel, and areas shrink by f squared."""
+    image = np.zeros((9, 11), np.uint8)
+    image[4, 6] = 200
+    assert upscaled_image(image, 1) is image
+    for factor in (2, 3, 4):
+        big = upscaled_image(image, factor)
+        assert big.shape == (9 * factor, 11 * factor)
+        rows, cols = np.indices(big.shape)
+        weight = big.astype(float)
+        centre = np.array([[(weight * cols).sum(), (weight * rows).sum()]]) / weight.sum()
+        found = in_image_pixels(DetectedContacts(centre, np.array([16.0 * factor ** 2]), [centre], 100.0), factor)
+        np.testing.assert_allclose(found.centers, [[6, 4]], atol=1e-6)
+        np.testing.assert_allclose(found.contours[0], [[6, 4]], atol=1e-6)
+        assert found.areas[0] == 16 and found.threshold == 100.0
 
 
 def test_bright_contacts():
