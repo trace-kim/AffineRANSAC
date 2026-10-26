@@ -13,7 +13,8 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
 - A run that stops after the stitching (too few measured contacts, release.analysis.AnalysisFailed) shows what it
   found on the Stitching tab alone: the tiles, their centres, the SEM images and design on request, and the tiles
   not measured with the reason. Nothing is saved; change the parameters and restart.
-- Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart.
+- Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart. Sets of
+  parameters can be saved under a name and loaded again (parameters_dialog.py).
 - Analysis > Contour diagnosis: load one SEM image and try the contour settings on it, the contours and centres shown
   as they change (contour_dialog.py); Apply to parameters keeps them for the next run, as Parameters does.
 - View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
@@ -42,7 +43,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac import __version__
 from affine_ransac.analysis import Settings, current_names
-from affine_ransac.app import SettingsDialog, folder_kind, image_records
+from affine_ransac.app import folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
 from affine_ransac.release.analysis import (ANALYSIS, DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder,
@@ -53,6 +54,7 @@ from affine_ransac.release.config import config_path, download_root, read_ftp_co
 from affine_ransac.release.contour_dialog import ContourDialog
 from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
+from affine_ransac.release.parameters_dialog import USER_PARAMETERS, ParametersDialog
 from affine_ransac.release.update import UPDATE_INI, download_setup, find_update, installed_source, run_setup
 from affine_ransac.release.views import ContactSizeTab, RegistrationView, StitchingView
 
@@ -383,10 +385,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         return result
 
     def edit_parameters(self):
-        kind = self.result.kind if self.result is not None else None
-        names = PARAMETERS[kind] if kind else list(dict.fromkeys(PARAMETERS["images"] + PARAMETERS["contour CSV"]))
-        dialog = SettingsDialog(self.settings(), kind or "any", self, names)
-        dialog.setWindowTitle("Parameters")
+        names = PARAMETERS[self.result.kind] if self.result is not None else USER_PARAMETERS
+        dialog = ParametersDialog(self.settings(), names, self.preferences, self)
         if dialog.exec():
             self.apply_parameters(dialog.values())
 

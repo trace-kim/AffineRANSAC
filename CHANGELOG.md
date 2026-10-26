@@ -124,5 +124,8 @@ they open, flagged as outdated.
   same numbers (D133).
 - Stitching *image by image*: on a repeating pattern each tile is now matched to its design the way it was placed, so
   a tile placed a whole pitch from its stage position no longer gets errors of about one pitch (D134).
+- *Analysis → Parameters*: save the parameters under a name of your choice (*Save as...*) and load them again
+  (*Load*, then OK), e.g. one set per dataset; *Delete* removes one. The dialog opens on the set in use. Each set
+  holds the parameters of both image and contour CSV folders (D136).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

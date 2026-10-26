@@ -107,6 +107,15 @@ def editor_value(widget: QtWidgets.QWidget):
     return widget.value()
 
 
+def set_editor_value(widget: QtWidgets.QWidget, value):
+    if isinstance(widget, QtWidgets.QComboBox):
+        widget.setCurrentText(value)
+    elif isinstance(widget, QtWidgets.QCheckBox):
+        widget.setChecked(value)
+    else:
+        widget.setValue(value)
+
+
 class SettingsDialog(QtWidgets.QDialog):
     """The settings a folder of this kind uses: name (as in the notebooks), value, what it does."""
 
