@@ -59,7 +59,7 @@ class Settings:
     max_match_nm: float = setting(25.0, "SEM overlaps: pair contacts closer than this, the largest B - A stage "
                                         "offset (< pitch / 2). Stitching image by image: the largest offset "
                                         "between neighbouring images, any size")
-    overlap_tolerance_nm: float = setting(10.0, "Stitching image by image: overlap contacts pair within this once "
+    overlap_tolerance_nm: float = setting(2.0, "Stitching image by image: overlap contacts pair within this once "
                                                 "the offset is found (< pitch / 2); an overlap whose contacts do not "
                                                 "line up within it at the placement is left out")
     design_max_match_nm: float = setting(25.0, "Design overlaps: the largest offset between neighbouring files "
