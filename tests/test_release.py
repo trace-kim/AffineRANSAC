@@ -42,6 +42,21 @@ def test_contour_folder_gives_the_stitching_and_the_moving_window_error(tmp_path
     assert lines[0] == "6 files, " + lines[0].split(", ")[1] and result.image_paths == []
 
 
+def test_the_release_stitches_image_by_image_on_request(tmp_path):
+    """D133: the stitching method image by image places every tile where all its overlaps agree; where the stage
+    errors are small it finds the same corrections, and its overlaps are checked against its own placement."""
+    write_contour_folder(tmp_path)
+    lines = []
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", replace(Settings(), stitch_method="image by image"),
+                                log=lines.append)
+
+    np.testing.assert_allclose(result.stitch.corrections, STAGE - STAGE.mean(axis=0), atol=0.2)
+    assert "Stitching method: image by image (all 6 images placed image by image)" in lines
+    assert result.slipped == [] and len(result.stitch.unplaced) == 0
+    assert "overlap_tolerance_nm" in PARAMETERS["contour CSV"] and "overlap_tolerance_nm" in PARAMETERS["images"]
+
+
 def test_the_error_is_measured_minus_design(tmp_path):
     """A contact measured +5 nm in x of where the design puts it has dx = +5 nm (no affine: raw error)."""
     def bump(k, local, mask):
@@ -434,6 +449,10 @@ def test_the_stitching_status_says_how_serious_it_is(tmp_path):
     text = status(result)
     assert text.index("Error: 1 overlap(s) paired one contact row off?") < text.index("Warning")
     assert "(CD000000 / CD000003)" in text
+    result.settings = replace(result.settings, stitch_method="image by image")  # D133: checked on its own placement
+    text = status(result)
+    assert "Error: 1 overlap(s) disagree with where their images were placed." in text and "row off" not in text
+    result.settings = replace(result.settings, stitch_method="all overlaps")
 
     result.slipped = None  # a run saved before the check was kept
     assert "saved before MaskReg kept the check" in status(result)

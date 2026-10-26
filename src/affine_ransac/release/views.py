@@ -707,6 +707,12 @@ def stitching_verdict(r: ReleaseResult) -> list[str]:
     names, n, lines = r.tile_ids, len(r.tile_ids), []
     if r.slipped:
         shown = ", ".join(f"{names[i]} / {names[j]}" for i, j in r.slipped[:3]) + (", ..." if len(r.slipped) > 3 else "")
+    if r.slipped and r.settings.stitch_method == "image by image":
+        lines.append(line(style.FAILURE, f"Error: {len(r.slipped)} overlap(s) disagree with where their images were "
+                                         f"placed.",
+                          f"({shown}) Their measured shift is more than overlap_tolerance_nm away from the placement "
+                          f"image by image, so the errors of the tiles around them can be wrong."))
+    elif r.slipped:
         lines.append(line(style.FAILURE, f"Error: {len(r.slipped)} overlap(s) paired one contact row off?",
                           f"({shown}) Their measured shift is more than max_match_nm away from the one the images taken "
                           f"one after the other predict, so the errors of the tiles around them can be wrong by up to a "

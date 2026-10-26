@@ -236,6 +236,22 @@ def test_restitch_computes_the_stitching_and_every_result_after_it_again(tmp_pat
         restitch(images, "all overlaps")
 
 
+def test_restitch_image_by_image_finds_the_same_stage_errors_where_they_are_small(tmp_path):
+    folder = tmp_path / "csv"
+    folder.mkdir()
+    write_contour_folder(folder)
+    first = analyse_contour_folder(folder, Settings(), log=lambda line: None)
+    lines = []
+
+    second = restitch(first, "image by image", log=lines.append)
+
+    assert second.settings.stitch_method == "image by image"
+    assert any(line.startswith("Stitching method: image by image (all ") for line in lines)
+    for name in ("raw", "stripe drift corrected"):  # every stitching over all overlaps uses the method
+        np.testing.assert_allclose(second.stitchings[name].stitch.corrections,
+                                   first.stitchings[name].stitch.corrections, atol=0.05)
+
+
 def test_contact_sizes_are_measured_on_request(tmp_path):
     result = analyse_images(tmp_path, write_image_folder(tmp_path), IMAGE_SETTINGS, log=lambda line: None)
     steps = []

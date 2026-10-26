@@ -1,7 +1,7 @@
 import numpy as np
 
 from affine_ransac.matching import (ShiftMatch, choose_shift, consistent_choice, match_points, match_with_shift,
-                                    near_ties, scored_shifts)
+                                    near_ties, scored_shifts, scored_shifts_together)
 
 
 def test_pairs_shifted_points_in_any_order():
@@ -229,3 +229,21 @@ def test_tiles_without_candidates_or_neighbours():
     for t in (0, 1):  # no usable neighbours: choose_shift on its own
         assert choice[t] == choose_shift(candidates[t])[0]
         np.testing.assert_allclose(candidates[t][choice[t]].shift, (30.0, -20.0), atol=0.5)
+
+
+def test_shifts_together_count_mismatches_in_each_parts_own_box():
+    # Two overlaps of one image, one shift: in the first, b stops at x = 300 (its own frame), where a goes on.
+    grid = np.array([(x, y) for x in range(0, 501, 50) for y in (0.0, 50.0)], dtype=float)
+    shift = np.array([3.0, -2.0])
+    a1, b1 = grid, grid[grid[:, 0] <= 300] + shift
+    a2 = grid + [0.0, 1000.0]
+    b2 = a2 + shift
+
+    together = scored_shifts_together([(a1, b1), (a2, b2)], search_nm=20, tolerance_nm=5)[0]
+    mixed = scored_shifts(np.concatenate([a1, a2]), np.concatenate([b1, b2]), search_nm=20, tolerance_nm=5)[0]
+
+    np.testing.assert_allclose(together.shift, shift)
+    assert together.score == len(b1) + len(b2) and together.mismatches == 0
+    assert mixed.mismatches > 0  # one box over both overlaps counts a1's points beyond b1's frame
+    np.testing.assert_array_equal(np.concatenate([a1, a2])[together.ia] + shift,
+                                  np.concatenate([b1, b2])[together.ib])

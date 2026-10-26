@@ -29,8 +29,8 @@ from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
 from affine_ransac.analysis import (CONTOUR_SETTINGS, ContactSizes, Settings, check_settings, contour_options,
-                                   detect_layer, load_image_tiles, merged_contact_sizes, report_stitching,
-                                   worker_count)
+                                   detect_layer, load_image_tiles, merged_contact_sizes, placement_text,
+                                   report_stitching, slip_text, worker_count)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -38,8 +38,9 @@ from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, measurement_pairs,
-                                    outlines_inside_frame, process_tile, slipped_pairs, stitch_design, stitch_tiles,
-                                    stripe_directions, tile_boxes_from_points, tile_neighbours, tile_stripes)
+                                    outlines_inside_frame, placed_image_by_image, process_tile, slipped_pairs,
+                                    stitch_design, stitch_tiles, stripe_directions, tile_boxes_from_points,
+                                    tile_neighbours, tile_stripes)
 from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
 from affine_ransac.stitching import placement_corrections
 
@@ -53,7 +54,7 @@ DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they di
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
 # it is detected from the file numbers, which follow the measurement order (user; scan_direction).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
-          "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method"]
+          "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
                                                            "min_match_fraction", "realign"]}
@@ -250,23 +251,29 @@ def scan_direction(names: list[str], centers, stripe, fallback: bool, log) -> bo
 
 def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
                tile_ids) -> tuple[StitchResult, list[tuple[int, int]]]:
-    """The SEM stitching over all overlaps, guided by the stitching in measurement order (stripe: per tile,
-    tile_stripes) if s.stitch_method says so, and its pairs fitted one row off by that stitching (slipped_pairs;
-    logged)."""
-    order = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
-                         label="SEM, measurement order",
-                         only_pairs=measurement_pairs(centers, stripe, s.first_stripe_upward))
-    guided = s.stitch_method == "measurement order first"
-    stitch = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
-                          label="SEM, all overlaps", guide=order.corrections if guided else None)
-    log(f"Stitching method: {s.stitch_method}")
+    """The SEM stitching over all overlaps, per s.stitch_method: paired at the nominal placement, guided by the
+    stitching in measurement order (stripe: per tile, tile_stripes), or guided by the placement image by image and
+    paired within overlap_tolerance_nm (D133); and its pairs fitted away from the shift the measurement order
+    predicts by more than max_match_nm (one row off?), or image by image from the placement's by more than
+    overlap_tolerance_nm (slipped_pairs; logged)."""
+    if s.stitch_method == "image by image":
+        reference = placed_image_by_image(sem_points, centers, sizes, s.max_match_nm, s.overlap_tolerance_nm,
+                                          s.min_matched)
+        guide, gate, tolerance = reference, s.overlap_tolerance_nm, s.overlap_tolerance_nm
+        method = f"{s.stitch_method} ({placement_text(reference)})"
+    else:
+        reference = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
+                                 label="SEM, measurement order",
+                                 only_pairs=measurement_pairs(centers, stripe, s.first_stripe_upward)).corrections
+        guide = reference if s.stitch_method == "measurement order first" else None
+        gate, tolerance, method = s.max_match_nm, s.max_match_nm, s.stitch_method
+    stitch = stitch_tiles(sem_points, centers, sizes, gate, s.outlier_factor, s.min_matched,
+                          label="SEM, all overlaps", guide=guide)
+    log(f"Stitching method: {method}")
     report_stitching(log, "SEM", stitch, tile_ids)
-    slipped = slipped_pairs(stitch, order.corrections, s.max_match_nm)
+    slipped = slipped_pairs(stitch, reference, tolerance)
     if slipped:
-        log(f"!! {len(slipped)} SEM overlap(s) fitted more than max_match_nm away from the shift the stitching in "
-            f"measurement order predicts (contacts paired one row off?): "
-            f"{[(tile_ids[i], tile_ids[j]) for i, j in slipped]}"
-            + ("" if guided else "; the stitching method 'measurement order first' avoids this"))
+        log(f"!! {len(slipped)} SEM overlap(s) fitted {slip_text(s)}: {[(tile_ids[i], tile_ids[j]) for i, j in slipped]}")
     return stitch, slipped
 
 

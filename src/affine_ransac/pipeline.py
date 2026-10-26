@@ -37,7 +37,7 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.matching import match_with_shift
+from affine_ransac.matching import match_with_shift, scored_shifts_together
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
@@ -420,6 +420,66 @@ def slipped_pairs(stitch: StitchResult, guide: np.ndarray, tolerance_nm: float) 
     the guide did not place are not checked."""
     return [(p.i, p.j) for p in stitch.pairs if np.isfinite(guide[[p.i, p.j]]).all()
             and np.linalg.norm(p.fit.shift - predicted_shift(guide, p.i, p.j)) > tolerance_nm]
+
+
+LINED_UP = 0.5  # placed_image_by_image: a shift lines up with at least this fraction of the most pairs of any shift
+
+
+def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
+                          tolerance_nm: float, min_matched: int = 5) -> np.ndarray:
+    """(n_tiles, 2) corrections that place the tiles one image at a time, as the guide of stitch_tiles (stitching
+    method "image by image", D133).
+
+    points: per tile, contact centres in mask nm at the nominal placement; centers, fovs: (n_tiles, 2), nm.
+    The image with the most contacts in its overlaps stays where it is (correction 0). Then, again and again, the
+    image sharing the most overlap contacts with the placed ones is matched against all of them at once: its
+    contacts in those overlaps (nominal) against theirs (placed), with one shift for all
+    (matching.scored_shifts_together: candidate shifts of any size up to search_nm, pairs within tolerance_nm). A
+    shift lines them up if it leaves no more contacts without a partner than it pairs (counted in each overlap's
+    own box, D50) and pairs at least LINED_UP times as many as the shift pairing the most. Of those it takes the
+    smallest, which puts the image nearest its stage position (the user's rule, D48): on a repeating pattern every
+    shift by a whole pitch along the overlaps lines up as well, while on a pattern that does not repeat only the true
+    shift pairs many. Because an image is matched against all its placed neighbours together, its overlaps cannot
+    disagree by a pitch, as overlaps paired one by one at the stage position do once the images lie more than half a
+    pitch from it. (Mismatches alone cannot choose here: an overlap one or two rows thick often has no contact
+    inside its box shrunk by tolerance_nm, which scores the true shift worst.)
+    An image without a shift that lines up, or one pairing fewer than min_matched contacts, waits for more placed
+    neighbours; one never placed gets NaN.
+    """
+    n = len(points)
+    shared = {}  # (k, other): indices of tile k's points in its overlap with tile other
+    for i, j, box in overlapping_pairs(centers, fovs):
+        shared[i, j] = points_in_box(points[i], box, margin=tolerance_nm)
+        shared[j, i] = points_in_box(points[j], box, margin=tolerance_nm)
+    neighbours = [[] for _ in range(n)]
+    for i, j in shared:
+        neighbours[i].append(j)
+    corrections = np.full((n, 2), np.nan)
+    if n == 0:
+        return corrections
+    gain = np.zeros(n)  # contacts each tile shares with the placed tiles (the fewer of the two sides per overlap)
+    tried = np.full(n, -1.0)  # its gain when its match last failed: tried again only once that has grown
+
+    def place(k, correction):
+        corrections[k] = correction
+        for o in neighbours[k]:
+            gain[o] += min(len(shared[k, o]), len(shared[o, k]))
+
+    place(int(np.argmax([sum(len(shared[k, o]) for o in neighbours[k]) for k in range(n)])), 0.0)
+    while True:
+        ready = np.isnan(corrections[:, 0]) & (gain >= min_matched) & (gain != tried)
+        if not ready.any():
+            return corrections
+        k = int(np.argmax(np.where(ready, gain, -1)))
+        parts = [(points[o][shared[o, k]] + corrections[o], points[k][shared[k, o]])  # (theirs placed, mine)
+                 for o in neighbours[k] if not np.isnan(corrections[o, 0])]
+        matches = [m for m in scored_shifts_together(parts, search_nm, tolerance_nm) if m.mismatches <= m.score]
+        most = max((m.score for m in matches), default=0)
+        lined_up = [m for m in matches if m.score >= max(min_matched, LINED_UP * most)]
+        if lined_up:
+            place(k, -min(lined_up, key=lambda m: np.linalg.norm(m.shift)).shift)  # mine + correction = theirs
+        else:
+            tried[k] = gain[k]
 
 
 def stitch_ties(points: list[np.ndarray], stitch: StitchResult) -> list[tuple[np.ndarray, np.ndarray]]:

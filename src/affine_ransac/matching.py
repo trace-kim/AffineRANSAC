@@ -4,6 +4,7 @@
   the two sets is well below half the pitch: the gate rejects pairs, it never chooses them.
 - scored_shifts(): for offsets of any size up to search_nm: candidate shifts b − a, each scored
   by its MISMATCHES, the points without a partner where both sets are complete (D50).
+- scored_shifts_together(): the same for several pairs of sets sharing one shift (an image against its neighbours).
 - match_with_shift(): one set on its own: the candidate with the fewest mismatches (D48, D50).
 - consistent_choice(): many neighbouring tiles at once: each tile keeps a clear winner; only
   tiles whose best candidates are tied (periodic content) follow their neighbours (D49, D50).
@@ -111,15 +112,35 @@ def scored_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_nm: 
        offset comes from and can favour the wrong row.
     Order: lowest mismatch fraction first, then most pairs. Candidates without pairs are left out.
     """
-    if len(a) == 0 or len(b) == 0:
+    return scored_shifts_together([(a, b)], search_nm, tolerance_nm)
+
+
+def scored_shifts_together(parts: list[tuple[np.ndarray, np.ndarray]], search_nm: float,
+                           tolerance_nm: float) -> list[ShiftMatch]:
+    """scored_shifts for several pairs of point sets (a, b) with ONE shift b − a for all of them, e.g. one image
+    against the overlaps of each of its neighbours (D133). The candidates come from all parts together; each part
+    counts its mismatches in its own common box, so the space between the parts is never counted. ia, ib index the
+    a's and the b's concatenated in the order of the parts. Parts with an empty set are left out."""
+    parts = [(a, b) for a, b in parts if len(a) and len(b)]
+    if not parts:
         return []
+    a_all, b_all = np.concatenate([a for a, _ in parts]), np.concatenate([b for _, b in parts])
+    start_a = np.cumsum([0] + [len(a) for a, _ in parts[:-1]])
+    start_b = np.cumsum([0] + [len(b) for _, b in parts[:-1]])
+
+    def score(shift):
+        found = [_score(a, b, shift, tolerance_nm) for a, b in parts]
+        return ShiftMatch(np.concatenate([m.ia + s for m, s in zip(found, start_a)]),
+                          np.concatenate([m.ib + s for m, s in zip(found, start_b)]), np.asarray(shift, float),
+                          sum(m.score for m in found), sum(m.mismatches for m in found),
+                          sum(m.compared for m in found))
+
     matches = []
-    for shift in candidate_shifts(a, b, search_nm, tolerance_nm):
-        first = _score(a, b, shift, tolerance_nm)
+    for shift in candidate_shifts(a_all, b_all, search_nm, tolerance_nm):
+        first = score(shift)
         if first.score == 0:
             continue
-        refined = (b[first.ib] - a[first.ia]).mean(axis=0)
-        matches.append(_score(a, b, refined, tolerance_nm))
+        matches.append(score((b_all[first.ib] - a_all[first.ia]).mean(axis=0)))
     return sorted(matches, key=lambda m: (m.mismatch_fraction, -m.score))
 
 

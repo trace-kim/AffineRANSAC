@@ -6,7 +6,7 @@ Two kinds of folder (docs/SPEC.md §4):
   with the records of the metadata reader (io/metadata.read_tile_index, which exists only on the data
   machine, so the caller passes them in).
 Both run the same steps on the tiles' points (_analyse): stitching (translation; all overlaps at once, or
-guided by a first stitching in measurement order: settings.stitch_method), errors
+guided by a first stitching in measurement order or by placing the images one at a time: settings.stitch_method), errors
 per placement and merged contacts, the in-image map, the drift curve, the drift per stripe in
 measurement order, RANSAC and the moving window for every set of contacts, and the stitching residuals.
 Before any work, the settings and (images) the records are checked and a few sample tiles are matched
@@ -39,8 +39,8 @@ from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import correct_points, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
-from affine_ransac.pipeline import (REFINEMENTS, StitchResult, TileResult, measurement_pairs, process_tile,
-                                    slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_rigid,
+from affine_ransac.pipeline import (REFINEMENTS, StitchResult, TileResult, measurement_pairs, placed_image_by_image,
+                                    process_tile, slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_rigid,
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.realign import realign_tiles
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, merge_observations, merge_values,
@@ -57,7 +57,11 @@ def setting(default, help_text: str):
 class Settings:
     """The notebooks' settings cells: same names in lower case, same units."""
     max_match_nm: float = setting(25.0, "SEM overlaps: pair contacts closer than this, the largest B - A stage "
-                                        "offset (< pitch / 2)")
+                                        "offset (< pitch / 2). Stitching image by image: the largest offset "
+                                        "between neighbouring images, any size")
+    overlap_tolerance_nm: float = setting(10.0, "Stitching image by image: overlap contacts pair within this once "
+                                                "the offset is found (< pitch / 2); an overlap whose contacts do not "
+                                                "line up within it at the placement is left out")
     design_max_match_nm: float = setting(25.0, "Design overlaps: the largest offset between neighbouring files "
                                                "(< pitch / 2)")
     outlier_factor: float = setting(3.0, "Overlap outlier if its residual > this x the median residual")
@@ -82,7 +86,11 @@ class Settings:
     stitch_method: str = setting("all overlaps", "all overlaps: every overlap paired at the nominal placement. "
                                  "measurement order first: stitch the images taken one after the other first, then "
                                  "pair every overlap at the offset that predicts (an offset near one pitch between "
-                                 "images taken far apart in time cannot pair contacts one row off)")
+                                 "images taken far apart in time cannot pair contacts one row off). image by image: "
+                                 "place the images one at a time, each where its contacts line up with those of all "
+                                 "its placed neighbours at once (offsets up to max_match_nm; on a repeating pattern "
+                                 "the whole-pitch shift nearest its stage position), then pair every overlap there "
+                                 "within overlap_tolerance_nm (overlaps cannot disagree by a pitch)")
     # Contour CSVs only
     tile_margin_nm: float = setting(25.0, "Tile box = bounding box of its design centres grown by this")
     # Images only
@@ -164,7 +172,7 @@ IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "des
 CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale", "detection",
                     "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
                     "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
-STITCH_METHODS = ("all overlaps", "measurement order first")
+STITCH_METHODS = ("all overlaps", "measurement order first", "image by image")
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
            "stitch_method": STITCH_METHODS, "denoise": DENOISERS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
@@ -172,7 +180,7 @@ CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3",
 BEFORE = {"refinement": "steepest gradient"}  # D122
 
 
-POSITIVE = {"max_match_nm", "design_max_match_nm", "outlier_factor", "group_radius_nm", "ransac_threshold_nm",
+POSITIVE = {"max_match_nm", "overlap_tolerance_nm", "design_max_match_nm", "outlier_factor", "group_radius_nm", "ransac_threshold_nm",
             "row_gap_nm", "moving_window_um", "moving_step_um", "drift_window_um", "search_px", "design_search_nm",
             "design_tolerance_nm", "spread_flag_nm", "arrow_scale"}  # must be > 0
 MAX_UPSCALE = 8  # a 2048² image upscaled 8 times holds 268 million pixels
@@ -589,15 +597,23 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     stripe = tile_stripes(centers, image_centers)
     order_pairs = measurement_pairs(centers, stripe, s.first_stripe_upward)
     guided = s.stitch_method == "measurement order first"
+    by_image = s.stitch_method == "image by image"
+
+    def image_by_image_guide(points):  # the guide of the stitching image by image (D133)
+        return placed_image_by_image(points, centers, sizes, s.max_match_nm, s.overlap_tolerance_nm, s.min_matched)
 
     def stitch(points, label, only_pairs=None, guide=None):
         """All overlaps (only_pairs None), or those pairs; with the chosen method, all overlaps are guided
-        by a first stitching in measurement order (stitch_tiles(guide=...)). label: which stitching, for
-        its warnings."""
-        if guided and only_pairs is None and guide is None:
-            guide = stitch(points, label.replace("all overlaps", "measurement order (guide)"),
-                           only_pairs=order_pairs).corrections
-        return stitch_tiles(points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched,
+        by a first stitching in measurement order, or by the placement image by image, then paired within
+        overlap_tolerance_nm (stitch_tiles(guide=...)). label: which stitching, for its warnings."""
+        if only_pairs is None and guide is None:
+            if guided:
+                guide = stitch(points, label.replace("all overlaps", "measurement order (guide)"),
+                               only_pairs=order_pairs).corrections
+            elif by_image:
+                guide = image_by_image_guide(points)
+        gate = s.overlap_tolerance_nm if by_image and only_pairs is None else s.max_match_nm
+        return stitch_tiles(points, centers, sizes, gate, s.outlier_factor, s.min_matched,
                             label=label, only_pairs=only_pairs, guide=guide)
 
     def merged_contacts(points, corrections):  # shifts (n, 2) or translation + rotation affines (n, 3, 3)
@@ -605,18 +621,17 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
                                   design_stitch.corrections, s.group_radius_nm)
 
     order_stitch = stitch(sem_points, "SEM, measurement order", only_pairs=order_pairs)
-    raw_stitch = stitch(sem_points, "SEM, all overlaps", guide=order_stitch.corrections if guided else None)
+    reference = image_by_image_guide(sem_points) if by_image else order_stitch.corrections  # the SEM stitching is checked on it
+    raw_stitch = stitch(sem_points, "SEM, all overlaps", guide=reference if guided or by_image else None)
     log(f"Stitching method: {s.stitch_method}" + (f" ({len(order_stitch.pairs)} pairs in measurement order, "
                                                    f"{len(order_stitch.unplaced)} tile(s) not placed by them: "
-                                                   f"paired at their nominal position)" if guided else ""))
+                                                   f"paired at their nominal position)" if guided else "")
+        + (f" ({placement_text(reference)})" if by_image else ""))
     for name, result in (("SEM", raw_stitch), ("Design", design_stitch)):
         report_stitching(log, name, result, tile_ids)
-    slipped = slipped_pairs(raw_stitch, order_stitch.corrections, s.max_match_nm)
+    slipped = slipped_pairs(raw_stitch, reference, s.overlap_tolerance_nm if by_image else s.max_match_nm)
     if slipped:
-        log(f"!! {len(slipped)} SEM overlap(s) fitted more than max_match_nm away from the shift the stitching in "
-            f"measurement order predicts (contacts paired one row off?): "
-            f"{[(tile_ids[i], tile_ids[j]) for i, j in slipped]}"
-            + ("" if guided else "; stitch_method 'measurement order first' avoids this"))
+        log(f"!! {len(slipped)} SEM overlap(s) fitted {slip_text(s)}: {[(tile_ids[i], tile_ids[j]) for i, j in slipped]}")
 
     # Raw errors per placement (no affine), one entry per physical contact.
     observations = {placement: errors(sem_points, sem_c, design_c) for placement, (sem_c, design_c)
@@ -723,6 +738,24 @@ def report_stitching(log, name: str, result: StitchResult, tile_ids):
     if failed:
         log(f"{name} overlaps not matched (left out of the stitching): "
             f"{[(tile_ids[r.i], tile_ids[r.j]) for r in failed]}")
+
+
+def placement_text(guide: np.ndarray) -> str:
+    """How many images the placement image by image (pipeline.placed_image_by_image) placed, for the log."""
+    missing = int(np.isnan(guide[:, 0]).sum())
+    if not missing:
+        return f"all {len(guide)} images placed image by image"
+    return (f"{len(guide) - missing} of {len(guide)} images placed image by image; the other {missing} paired at their "
+            f"nominal position")
+
+
+def slip_text(s: Settings) -> str:
+    """What the SEM overlaps that slipped_pairs finds are, for the log line that lists them, by stitching method."""
+    if s.stitch_method == "image by image":
+        return "more than overlap_tolerance_nm away from the shift the placement image by image predicts"
+    return ("more than max_match_nm away from the shift the stitching in measurement order predicts (contacts paired one "
+            "row off?)" + ("" if s.stitch_method == "measurement order first"
+                           else "; the stitching method 'measurement order first' avoids this"))
 
 
 def tile_edges_y(centers: np.ndarray, sizes: np.ndarray) -> np.ndarray:

@@ -131,6 +131,9 @@ class StitchingTab(QtWidgets.QWidget):
                                 "measurement order first: the images taken one after the other are stitched "
                                 "first; every overlap is then paired at the offset that predicts, so drift "
                                 "between images taken far apart cannot pair contacts one row off.\n"
+                                "image by image: the images are placed one at a time, each where its contacts line "
+                                "up with all its placed neighbours' at once; every overlap is then paired there, so "
+                                "overlaps cannot disagree by a pitch.\n"
                                 "Changing it computes the stitching and every result after it again.")
         reason = unavailable or ("" if on_restitch is not None else "Change stitch_method in the settings")
         if reason:

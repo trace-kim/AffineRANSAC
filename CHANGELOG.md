@@ -115,5 +115,12 @@ they open, flagged as outdated.
   contacts are found, after the flattening and before the upscaling: *median* (window `median_px`), *non-local means*
   (strength `nlm_h`) or *total variation* (`tv_weight`). *Contour diagnosis* shows the denoised image and greys the
   options of the methods not chosen (D132).
+- New stitching method *image by image* (`stitch_method`, with the new setting `overlap_tolerance_nm`, 10 nm): the
+  images are placed one at a time, each where its contacts line up with those of all its placed neighbours at once
+  (offsets up to `max_match_nm`; on a repeating pattern the whole-pitch shift nearest its stage position), then every
+  overlap is paired there. For contact grids whose pitch is small against the offsets between neighbouring images
+  (e.g. 50 nm): pairing every overlap at the stage position there gives each overlap its own whole-pitch error, which
+  put images off by part of a pitch while the stitching said OK. The default method is unchanged, so runs give the
+  same numbers (D133).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
