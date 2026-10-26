@@ -279,3 +279,28 @@ def test_neighbours_keep_every_tile_on_the_same_row():
     # The largest difference to any neighbour; tiles without a shift give NaN and are not neighbours.
     shifts = np.array([[0.0, 0.0], [3.0, 4.0], [np.nan, np.nan], [0.0, 10.0]])
     np.testing.assert_allclose(neighbour_jumps(shifts, [(0, 1), (1, 2), (0, 3)]), [10.0, 5.0, np.nan, 10.0])
+
+
+def test_on_a_repeating_pattern_the_pairs_can_follow_the_stitched_placement():
+    """D133: neighbouring images more than half a pitch apart, stitched image by image (each tile right up to whole
+    pitches). Pairs chosen by the shifts at the nominal placement put some tiles a pitch off; following the stitching
+    (the shift after the corrections must agree between neighbours) every tile gets the same error."""
+    from affine_ransac.pipeline import placed_image_by_image, stitch_tiles, tile_neighbours
+    from test_pipeline import GRID_50, mosaic
+
+    errors = np.random.default_rng(1).normal(0, 20, (12, 2))
+    points, centers, fovs, _ = mosaic(errors, GRID_50)
+    design = [GRID_50[np.all(np.abs(GRID_50 - c) < 500 - 10, axis=1)] for c in centers]  # each .oas: its own field
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100, tolerance_nm=10)
+    with pytest.warns(UserWarning):  # corners
+        stitch = stitch_tiles(points, centers, fovs, max_match_nm=10, guide=guide)
+    neighbours = tile_neighbours(centers, fovs)
+
+    def spread(follow):
+        found = design_errors(points, design, stitch.corrections, np.zeros((12, 2)), [True] * 12, search_nm=100,
+                              tolerance_nm=10, neighbours=neighbours, follow_stitching=follow)
+        assert found.skipped == {}
+        return np.ptp(found.error_nm, axis=0).max()
+
+    assert spread(follow=False) > 25  # tiles a pitch (50 nm) apart
+    assert spread(follow=True) < 3    # noise only (0.3 nm per contact) and the overlap fits

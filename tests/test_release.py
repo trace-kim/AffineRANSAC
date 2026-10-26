@@ -56,6 +56,14 @@ def test_the_release_stitches_image_by_image_on_request(tmp_path):
     assert result.slipped == [] and len(result.stitch.unplaced) == 0
     assert "overlap_tolerance_nm" in PARAMETERS["contour CSV"] and "overlap_tolerance_nm" in PARAMETERS["images"]
 
+    (tmp_path / "images").mkdir()
+    records = write_image_folder(tmp_path / "images")  # each tile matched to its design, following the stitching
+    plain = analyse_folder(tmp_path / "images", "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    by_image = analyse_folder(tmp_path / "images", "images", replace(IMAGE_SETTINGS, stitch_method="image by image"),
+                              records, log=lambda line: None)
+    assert len(by_image.design_nm) == len(plain.design_nm)
+    np.testing.assert_allclose(by_image.moving.residuals, plain.moving.residuals, atol=0.05)
+
 
 def test_the_error_is_measured_minus_design(tmp_path):
     """A contact measured +5 nm in x of where the design puts it has dx = +5 nm (no affine: raw error)."""

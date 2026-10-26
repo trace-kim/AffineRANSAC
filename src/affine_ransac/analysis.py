@@ -515,9 +515,11 @@ def _analyse_tiles(folder: str, s: Settings, log, tile_ids, tiles: list[TileResu
     design_stitch = stitch_design(tiles, s.design_max_match_nm, s.outlier_factor, s.min_matched)
 
     def errors(points, sem_corrections, design_corrections):  # each tile matched to its own design
-        # Every set pairs on the nominal SEM points (D86): the same contacts, so the same pairs in every set.
+        # Every set pairs on the nominal SEM points (D86): the same contacts, so the same pairs in every set; image by
+        # image, tied tiles choose with the set's own corrections (D133), so sets can differ there by whole pitches.
         return design_errors(points, design_points, sem_corrections, design_corrections, design_ok,
-                             s.design_search_nm, s.design_tolerance_nm, neighbours, pair_points=sem_points)
+                             s.design_search_nm, s.design_tolerance_nm, neighbours, pair_points=sem_points,
+                             follow_stitching=s.stitch_method == "image by image")
 
     result, observations, merged = _analyse(folder, "images", s, log, tile_ids, sem_points, design_points,
                                             centers, fovs, centers, design_stitch, errors)

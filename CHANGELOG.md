@@ -122,5 +122,7 @@ they open, flagged as outdated.
   (e.g. 50 nm): pairing every overlap at the stage position there gives each overlap its own whole-pitch error, which
   put images off by part of a pitch while the stitching said OK. The default method is unchanged, so runs give the
   same numbers (D133).
+- Stitching *image by image*: on a repeating pattern each tile is now matched to its design the way it was placed, so
+  a tile placed a whole pitch from its stage position no longer gets errors of about one pitch (D134).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

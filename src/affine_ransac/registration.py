@@ -17,7 +17,7 @@ Sign: SEM − design (tentative, SPEC §13-8). It is set only in registration_er
 """
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -90,6 +90,7 @@ def design_errors(
     neighbours: list[tuple[int, int]] | None = None,
     min_extra: float = 2.0,
     pair_points: list[np.ndarray] | None = None,
+    follow_stitching: bool = False,
 ) -> DesignErrors:
     """Raw registration error of every contact found in both the stitched SEM and the design.
 
@@ -110,6 +111,12 @@ def design_errors(
     pairs of overlapping tiles, e.g. pipeline.tile_neighbours) the one agreeing with the
     neighbours (matching.consistent_choice, D49); without, the smallest shift (choose_shift). The shift only chooses the pairs: each error is the full
     stitched SEM − design (D48, option a).
+    follow_stitching: tied tiles choose by their shift AFTER the corrections (the candidate shift plus what the
+    corrections move the SEM against the design, at the tile's design centre), which agrees between neighbours on a
+    consistent stitching, instead of by the shift at the nominal placement, which on a repeating pattern differs
+    between neighbours by whole pitches once their images lie more than half a pitch apart (stitching image by image,
+    D133). Clear winners keep their candidate either way; the neighbour jumps then compare the shifts after the
+    corrections too.
     """
     n = len(sem_points)
     skipped, stitched, candidates = {}, {}, [[] for _ in range(n)]
@@ -130,11 +137,20 @@ def design_errors(
             if not candidates[k]:
                 skipped[k] = "no SEM contact matched the design"
 
+    moved = np.zeros((n, 2))  # what the corrections move each tile's SEM against its design (follow_stitching)
+    if follow_stitching:
+        for k in stitched:
+            if candidates[k]:
+                centre = design_points[k].mean(axis=0, keepdims=True)
+                moved[k] = (apply_correction(centre, sem_corrections[k])
+                            - apply_correction(centre, design_corrections[k]))[0]
+    choosing = [[replace(m, shift=m.shift + moved[k]) for m in c] for k, c in enumerate(candidates)]
+
     ambiguous = np.array([bool(c) and len(near_ties(c, min_extra)) > 1 for c in candidates])
     if neighbours is not None:
-        choice = consistent_choice(candidates, neighbours, min_extra)
+        choice = consistent_choice(choosing, neighbours, min_extra)
     else:
-        choice = [choose_shift(c, min_extra)[0] if c else -1 for c in candidates]
+        choice = [choose_shift(c, min_extra)[0] if c else -1 for c in choosing]
 
     tiles, designs, nominals, sems, indices = [], [], [], [], []
     match_shift = np.full((n, 2), np.nan)
@@ -153,7 +169,7 @@ def design_errors(
 
     errors = _collect(tiles, designs, nominals, sems, indices, skipped)
     errors.match_shift_nm, errors.ambiguous = match_shift, ambiguous
-    errors.neighbour_jump_nm = neighbour_jumps(match_shift, neighbours or [])
+    errors.neighbour_jump_nm = neighbour_jumps(match_shift + moved, neighbours or [])
     errors.match_mismatches = mismatches
     return errors
 

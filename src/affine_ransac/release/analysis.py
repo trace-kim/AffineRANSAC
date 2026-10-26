@@ -148,7 +148,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
 
         def errors(sem_corrections, design_corrections):  # each tile matched to its own design
             return design_errors(sem_points, design_points, sem_corrections, design_corrections, design_ok,
-                                 s.design_search_nm, s.design_tolerance_nm, neighbours)
+                                 s.design_search_nm, s.design_tolerance_nm, neighbours,
+                                 follow_stitching=s.stitch_method == "image by image")
     else:
         all_tiles = read_contour_folder(folder)
         tiles = [t for t in all_tiles if len(t.design_nm)]
