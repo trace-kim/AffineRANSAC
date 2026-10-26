@@ -14,6 +14,8 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   found on the Stitching tab alone: the tiles, their centres, the SEM images and design on request, and the tiles
   not measured with the reason. Nothing is saved; change the parameters and restart.
 - Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart.
+- Analysis > Contour diagnosis: load one SEM image and try the contour settings on it, the contours and centres shown
+  as they change (contour_dialog.py); Apply to parameters keeps them for the next run, as Parameters does.
 - View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
   Contact size tab (hidden unless turned on; remembered): area, xCD and yCD of every contact, measured on request
   on the tiles of the run, which an image run keeps in memory only while the tab is on.
@@ -48,6 +50,7 @@ from affine_ransac.release.analysis import (ANALYSIS, DEFAULTS, PARAMETERS, Anal
                                            read_display_images)
 from affine_ransac.release.cache import FORMAT, load_cache, made_by, save_cache
 from affine_ransac.release.config import config_path, download_root, read_ftp_config
+from affine_ransac.release.contour_dialog import ContourDialog
 from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
 from affine_ransac.release.update import UPDATE_INI, download_setup, find_update, installed_source, run_setup
@@ -207,6 +210,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self._action(analysis_menu, "restart", "&Restart analysis", "F5", self.restart)
         analysis_menu.addSeparator()
         self._action(analysis_menu, "parameters", "&Parameters...", "Ctrl+P", self.edit_parameters)
+        self._action(analysis_menu, "contours", "&Contour diagnosis...", "Ctrl+D", self.diagnose_contours)
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.log_dock.toggleViewAction())
         self.gpu_action = view_menu.addAction("Draw with the &GPU (OpenGL)")
@@ -383,9 +387,20 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         names = PARAMETERS[kind] if kind else list(dict.fromkeys(PARAMETERS["images"] + PARAMETERS["contour CSV"]))
         dialog = SettingsDialog(self.settings(), kind or "any", self, names)
         dialog.setWindowTitle("Parameters")
-        if not dialog.exec():
-            return
-        settings = dialog.values()
+        if dialog.exec():
+            self.apply_parameters(dialog.values())
+
+    def diagnose_contours(self):
+        """The contour diagnosis window (contour_dialog.py): try the contour settings on one SEM image; Apply to
+        parameters keeps them for the next run."""
+        folder = self.folder or self.preferences.value("last_folder", "")
+        dialog = ContourDialog(self.settings(), folder, self.gpu_action.isChecked(), self)
+        if dialog.exec():
+            self.apply_parameters(dialog.values())
+        dialog.deleteLater()
+
+    def apply_parameters(self, settings: Settings):
+        """Keep the parameters for the next run; if they differ from those of the analysis shown, offer a restart."""
         self.preferences.setValue("settings", json.dumps(asdict(settings)))
         if self.result is not None and settings != self.result.settings and QtWidgets.QMessageBox.question(
                 self, TITLE, "The parameters differ from those of the analysis shown. Restart the analysis now?") == \
@@ -606,6 +621,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.actions["ftp"].setEnabled(not self.busy)
         self.actions["restart"].setEnabled(not self.busy and self.folder is not None)
         self.actions["parameters"].setEnabled(not self.busy)
+        self.actions["contours"].setEnabled(not self.busy)
         self.size_action.setEnabled(not self.busy)
         if self.size_tab is not None:
             self.size_tab.update_state(self.busy)

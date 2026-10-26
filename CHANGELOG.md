@@ -99,5 +99,9 @@ they open, flagged as outdated.
   `detection`, `min_contrast`, `refinement` and `search_px`, now `dark_contacts`, `detection_blur_px`, `min_area_px`,
   `max_area_px`, `min_solidity` (band only), `edge_step_px`, `edge_blur_px` and `normal_span`. Their defaults are the
   values used so far, so runs give the same numbers (D128).
+- *Analysis → Contour diagnosis...* (Ctrl+D): open one SEM image and try the contour settings on it. The contours
+  and centres they find, from the detection and after refinement, are drawn on the image and found again as you
+  change a setting; a line says how many contacts were found and why the other regions were left out; the
+  threshold mask on request. *Apply to parameters* keeps the settings for the next run, *Cancel* leaves them (D129).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
