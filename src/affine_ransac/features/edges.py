@@ -179,4 +179,5 @@ def refine_edges(
         areas=np.array(areas, dtype=np.float64),
         contours=contours,
         threshold=contacts.threshold,
+        left_out=contacts.left_out,
     )

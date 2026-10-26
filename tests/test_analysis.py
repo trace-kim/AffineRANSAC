@@ -294,6 +294,20 @@ def test_invalid_settings_fail_before_any_work(tmp_path):
     check_settings(Settings(min_match_fraction=1.5), "contour CSV")  # not used for contour CSVs
     with pytest.raises(ValueError, match="tile_margin_nm must be >= 0"):
         analyse_contour_folder(tmp_path, Settings(tile_margin_nm=-1.0))
+    with pytest.raises(ValueError, match=r"min_area_px must be >= 0.*min_solidity must be in \[0, 1\].*"
+                                         r"edge_step_px must be > 0 and <= search_px.*normal_span must be >= 1"):
+        check_settings(Settings(min_area_px=-1, min_solidity=1.2, edge_step_px=6.0, normal_span=0), "images")
+
+
+def test_the_contour_settings_are_the_options_of_find_contacts():
+    """D128: the run (process_tile) and the release's contour diagnosis find contacts with these settings, by name."""
+    import inspect
+    from affine_ransac.pipeline import find_contacts
+    options = set(inspect.signature(find_contacts).parameters) - {"image", "seconds"}
+    assert set(analysis.CONTOUR_SETTINGS) == options and set(analysis.CONTOUR_SETTINGS) <= set(settings_for("images"))
+    # the defaults are what the code did before they were settings: results and saved runs do not change
+    defaults = {name: p.default for name, p in inspect.signature(find_contacts).parameters.items() if name in options}
+    assert analysis.contour_options(Settings()) == {**defaults, "detection": Settings().detection}
 
 
 def test_a_folder_that_cannot_be_analysed_fails_before_loading_the_tiles(tmp_path):

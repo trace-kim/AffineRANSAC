@@ -17,6 +17,7 @@ Steps:
      area) is below min_solidity. Contacts are convex (solidity ~1); background pinched off between
      nearly touching bands is concave (~0.7-0.88). "band" uses min_solidity 0.9 unless given.
   5. Centre = centroid of the region's pixels; contour = its outer boundary.
+The regions left out in step 4 are counted per reason (DetectedContacts.left_out), each under the first that applies.
 contact_contrast() then tells real contacts from regions cut out of plain noise (images without pattern):
 the contrast of each contour against a ring around it, in noise sigma (keep_contacts drops the others).
 
@@ -24,7 +25,7 @@ All coordinates are in the pixel frame: (x, y) = (column, row) in pixels, y poin
 pixel centres at integer values (docs/SPEC.md §3).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -32,6 +33,7 @@ from skimage.filters import threshold_multiotsu
 
 METHODS = ("otsu", "otsu3", "band")
 BAND_MIN_SOLIDITY = 0.9
+LEFT_OUT = ("border", "small", "large", "not solid")  # why a region is not a contact (step 4)
 
 
 @dataclass
@@ -40,6 +42,7 @@ class DetectedContacts:
     areas: np.ndarray  # (N,) area in pixels
     contours: list[np.ndarray]  # N arrays of shape (M, 2), boundary points (x, y) in pixels
     threshold: float  # threshold that was used (grey level; for "band" the band threshold)
+    left_out: dict[str, int] = field(default_factory=dict)  # regions not taken as contacts, per reason (LEFT_OUT)
 
 
 def contact_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5, method: str = "otsu"):
@@ -86,26 +89,30 @@ def detect_contacts(
     rows, cols = image.shape
 
     centers, areas, contours = [], [], []
+    left_out = dict.fromkeys(LEFT_OUT, 0)
     for label in range(1, count):  # label 0 is the background
         left, top, width, height, area = stats[label]
-        touches_border = left == 0 or top == 0 or left + width == cols or top + height == rows
-        too_small = area < min_area_px
-        too_large = max_area_px is not None and area > max_area_px
-        if touches_border or too_small or too_large:
-            continue
-        contour = _outer_contour(labels, label, left, top, width, height)
-        if min_solidity is not None and solidity(contour, area) < min_solidity:
-            continue
-
-        centers.append(centroids[label])
-        areas.append(area)
-        contours.append(contour)
+        if left == 0 or top == 0 or left + width == cols or top + height == rows:
+            left_out["border"] += 1
+        elif area < min_area_px:
+            left_out["small"] += 1
+        elif max_area_px is not None and area > max_area_px:
+            left_out["large"] += 1
+        else:
+            contour = _outer_contour(labels, label, left, top, width, height)
+            if min_solidity is not None and solidity(contour, area) < min_solidity:
+                left_out["not solid"] += 1
+            else:
+                centers.append(centroids[label])
+                areas.append(area)
+                contours.append(contour)
 
     return DetectedContacts(
         centers=np.array(centers, dtype=np.float64).reshape(-1, 2),
         areas=np.array(areas, dtype=np.float64),
         contours=contours,
         threshold=float(threshold),
+        left_out=left_out,
     )
 
 
@@ -139,7 +146,7 @@ def contact_contrast(image: np.ndarray, contacts: DetectedContacts, ring_px: int
 def keep_contacts(contacts: DetectedContacts, keep: np.ndarray) -> DetectedContacts:
     """The contacts where keep (N,) bool is True, in the same order."""
     return DetectedContacts(contacts.centers[keep], contacts.areas[keep],
-                            [c for c, k in zip(contacts.contours, keep) if k], contacts.threshold)
+                            [c for c, k in zip(contacts.contours, keep) if k], contacts.threshold, contacts.left_out)
 
 
 def _outer_contour(labels, label, left, top, width, height) -> np.ndarray:

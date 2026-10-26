@@ -5,12 +5,12 @@ import pytest
 
 from affine_ransac.io.design import load_layout
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.features.contact import DetectedContacts
+from affine_ransac.features.contact import DetectedContacts, detect_contacts
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
-from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, inside_frame,
-                                    measurement_pairs, pair_kind, pair_residuals, process_tile, slipped_pairs,
-                                    stitch_design, stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid,
+from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, find_contacts,
+                                    inside_frame, measurement_pairs, pair_kind, pair_residuals, process_tile,
+                                    slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid,
                                     tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
@@ -109,6 +109,30 @@ def test_process_tile_refines_with_the_edge_rule_asked_for(tmp_path):
     plain = process_tile(tmp_path / "tile.jpg", None, (0.0, 0.0), (FOV, FOV), layer=(1, 0), refinement="none")
     assert plain.refined is plain.otsu and plain.seconds["refine"] < 0.01
     np.testing.assert_array_equal(plain.sem_points_nm(), plain.sem_points_nm(refined=False))
+
+
+def test_find_contacts_passes_every_option_on(tmp_path):
+    """D128: find_contacts gives what detect_contacts and refine_edges give with the same options; min_solidity
+    applies to band only; max_area_px 0 is no limit; dark_contacts reaches both steps."""
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
+    image = load_sem_image(tmp_path / "tile.jpg")
+
+    detected, refined, dropped = find_contacts(
+        image, detection="otsu3", detection_blur_px=1.0, min_area_px=30, max_area_px=5000,
+        refinement="steepest gradient", search_px=4.0, edge_step_px=0.5, edge_blur_px=0.7, normal_span=2)
+    expected = detect_contacts(image, True, 1.0, 30, 5000, "otsu3")
+    np.testing.assert_array_equal(detected.centers, expected.centers)
+    np.testing.assert_array_equal(refined.centers,
+                                  refine_edges(image, expected, True, 4.0, 0.5, 0.7, 2, "steepest gradient").centers)
+    assert dropped == 0 and len(detected.centers) > 40
+
+    every = len(find_contacts(image, max_area_px=0)[0].centers)
+    none = find_contacts(image, max_area_px=1)[0]
+    assert len(none.centers) == 0 and none.left_out["large"] == every
+    assert len(find_contacts(image, min_solidity=1.5)[0].centers) == every  # otsu: no solidity check
+    assert len(find_contacts(image, detection="band", min_solidity=1.5)[0].centers) == 0  # unreachable for band
+    _, negative, _ = find_contacts(255 - image, dark_contacts=False)
+    np.testing.assert_allclose(negative.centers, find_contacts(image)[1].centers, atol=0.01)
 
 
 def test_with_refinement_none_the_design_tone_is_chosen_with_the_detected_centres(tmp_path, monkeypatch):

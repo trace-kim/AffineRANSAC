@@ -565,6 +565,20 @@ def test_the_contours_are_found_again_as_the_run_found_them(tmp_path):
                      "run?): ['T2']"]
 
 
+def test_the_contour_settings_reach_every_tile_of_the_run_and_load_contours(tmp_path):
+    """D128: contour settings changed in the parameters (e.g. by the contour diagnosis) are used for every tile, those
+    loaded in worker processes too, and by Load contours, which then gives the run's centres again."""
+    records = write_image_folder(tmp_path)
+    plain = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    changed = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, edge_blur_px=2.0, normal_span=5), records,
+                             log=lambda line: None)
+
+    assert not any(np.array_equal(a, b) for a, b in zip(plain.sem_points, changed.sem_points))
+    lines = []
+    read_contours(changed, log=lines.append)
+    assert lines == []
+
+
 def test_detected_and_refined_contours_and_centres_are_layers(tmp_path, monkeypatch):
     """D113: once loaded, four layers like the others (ticked then): the contours and centres from the detection and
     after refinement, at the placement shown. Contours are drawn for the contacts in view only, none if more than

@@ -3,6 +3,8 @@
 - process_tile(): load one SEM image, detect its contacts (Otsu, then edge refinement) and read
   its design contacts in the tone (normal / reversed) that matches the SEM contacts; tiles where
   neither tone matches are flagged (DesignContacts.ok).
+- find_contacts(): the SEM contacts of one image (detection, contrast check, edge refinement), as process_tile and
+  the release's contour diagnosis find them.
 - stitch_design(): the same for the per-tile design files, which can be offset against each
   other (the same contact drawn at different positions in neighbouring .oas files).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
@@ -27,7 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
-from affine_ransac.features.contact import DetectedContacts, contact_contrast, detect_contacts, keep_contacts
+from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, detect_contacts,
+                                            keep_contacts)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
@@ -183,6 +186,46 @@ class TileResult:
         return sem, design
 
 
+def find_contacts(
+    image: np.ndarray,
+    detection: str = "otsu",
+    dark_contacts: bool = True,
+    detection_blur_px: float = 1.5,
+    min_area_px: int = 20,
+    max_area_px: int = 0,
+    min_solidity: float = BAND_MIN_SOLIDITY,
+    min_contrast: float = 0.0,
+    refinement: str = "mid-level",
+    search_px: float = 5.0,
+    edge_step_px: float = 0.25,
+    edge_blur_px: float = 1.0,
+    normal_span: int = 3,
+    seconds: dict | None = None,
+) -> tuple[DetectedContacts, DetectedContacts, int]:
+    """The contacts of one SEM image (uint8), as every run finds them: (detected, refined, how many detected contacts
+    the contrast check dropped). The options are the settings of the same names (analysis.CONTOUR_SETTINGS, D128).
+
+    detected: features.contact.detect_contacts with method `detection` ("otsu", "otsu3" or "band"), blur, area limits
+    (max_area_px 0: no limit) and, for "band" only, min_solidity; then, if min_contrast > 0, without the contacts whose
+    contrast against a ring around them is below this many noise sigma (contact_contrast; false contacts in images
+    without pattern). refined: features.edges.refine_edges with edge rule `refinement` ("mid-level" or "steepest
+    gradient"), or with "none" the detected contacts themselves: either way what the tile is measured with.
+    seconds: if given, gets the time of each step ("detect", "refine").
+    """
+    t_start = time.perf_counter()
+    detected = detect_contacts(image, dark_contacts, detection_blur_px, min_area_px, max_area_px or None, detection,
+                               min_solidity if detection == "band" else None)
+    found = len(detected.centers)
+    if min_contrast > 0:
+        detected = keep_contacts(detected, contact_contrast(image, detected) >= min_contrast)
+    t_detect = time.perf_counter()
+    refined = detected if refinement == "none" else refine_edges(
+        image, detected, dark_contacts, search_px, edge_step_px, edge_blur_px, normal_span, refinement)
+    if seconds is not None:
+        seconds.update(detect=t_detect - t_start, refine=time.perf_counter() - t_detect)
+    return detected, refined, found - len(detected.centers)
+
+
 def process_tile(
     image_path: str | Path,
     oas_path: str | Path | None,
@@ -197,36 +240,28 @@ def process_tile(
     match_design: bool = True,
     min_contrast: float = 0.0,
     refinement: str = "mid-level",
+    **contour_options,
 ) -> TileResult:
     """Load one tile and find its SEM and design contacts.
 
     center_nm: (x, y) mask position of the image centre; fov_nm: (width, height), nm.
     layer: (layer, datatype) of the contacts in the .oas. The design tone is chosen by matching
     against the refined SEM centres (choose_design_contacts: shift search up to design_search_nm,
-    pairs within design_tolerance_nm). detection: "otsu", "otsu3" or "band" (method of
-    features.contact.detect_contacts). match_design False: the design is read in normal tone without matching it
+    pairs within design_tolerance_nm). match_design False: the design is read in normal tone without matching it
     to the SEM (ok, NaN fraction), for images that do not show their own design (realign.realign_tiles).
-    min_contrast > 0: detected contacts whose contrast against a ring around them is below this many noise sigma
-    are dropped before refinement (features.contact.contact_contrast; false contacts in images without pattern).
-    refinement: the edge rule of the refinement, "mid-level" or "steepest gradient" (features.edges.refine_edges), or
-    "none": no refinement, the detected contours are the refined ones. Either way `refined` holds what the tile is
-    measured with: the design tone is chosen with its centres, and sem_points_nm() gives them.
+    The SEM contacts: find_contacts with search_px, detection, min_contrast, refinement and contour_options (its
+    other options; their defaults if not given). `refined` holds what the tile is measured with: the design tone is
+    chosen with its centres, and sem_points_nm() gives them.
     """
     t_start = time.perf_counter()
     image = load_sem_image(image_path)
     fov_nm = np.asarray(fov_nm, dtype=float)
     pixel_size_nm = fov_nm[0] / image.shape[1]
-    t_read = time.perf_counter()
-    otsu = detect_contacts(image, method=detection)
-    found = len(otsu.centers)
-    if min_contrast > 0:
-        otsu = keep_contacts(otsu, contact_contrast(image, otsu) >= min_contrast)
-    t_detect = time.perf_counter()
-    refined = otsu if refinement == "none" else refine_edges(image, otsu, search_px=search_px, rule=refinement)
-    t_refine = time.perf_counter()
-
-    seconds = {"read": t_read - t_start, "detect": t_detect - t_read, "refine": t_refine - t_detect,
+    seconds = {"read": time.perf_counter() - t_start, "detect": 0.0, "refine": 0.0,  # in the order of the steps
                "oas": 0.0, "contacts": 0.0, "shift": 0.0, "reversed": 0.0}
+    otsu, refined, low_contrast = find_contacts(image, detection, min_contrast=min_contrast, refinement=refinement,
+                                                search_px=search_px, seconds=seconds, **contour_options)
+    t_refine = time.perf_counter()
     if oas_path is None:
         design = DesignContacts(np.empty((0, 2)), False, 0.0, ok=False)
     else:
@@ -251,7 +286,7 @@ def process_tile(
         design=design,
         oas_path=None if oas_path is None else Path(oas_path),
         seconds=seconds,
-        low_contrast=found - len(otsu.centers),
+        low_contrast=low_contrast,
     )
 
 

@@ -45,6 +45,21 @@ def test_small_regions_are_dropped():
     assert len(found.centers) == 1
 
 
+def test_regions_left_out_are_counted_per_reason():
+    """D128: each region not taken as a contact is counted under the first reason that applies."""
+    image = np.full((100, 100), 120, dtype=np.uint8)
+    cv2.circle(image, (30, 30), 6, 30, thickness=-1)  # a contact, ~113 px
+    cv2.circle(image, (70, 70), 12, 30, thickness=-1)  # larger, ~450 px
+    cv2.circle(image, (0, 50), 6, 30, thickness=-1)  # cut by the border
+    image[80:82, 20:22] = 30  # 4-pixel speck
+    image[10:12, 60:62] = 30  # another
+
+    found = detect_contacts(image, blur_sigma=0, min_area_px=20, max_area_px=300)
+
+    np.testing.assert_allclose(found.centers, [[30, 30]], atol=1e-9)
+    assert found.left_out == {"border": 1, "small": 2, "large": 1, "not solid": 0}
+
+
 def test_bright_contacts():
     image = np.full((100, 100), 60, dtype=np.uint8)
     cv2.circle(image, (40, 60), 10, 220, thickness=-1)

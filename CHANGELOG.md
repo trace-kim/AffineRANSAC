@@ -95,5 +95,9 @@ they open, flagged as outdated.
   per row (column) of cells, the mean of the contacts in it, so the larger the cell, the smoother the lines. *Copy
   profiles* and *Export profiles CSV* give these values, headed *grid row* / *grid column* (D125).
 - Registration tab: under each mean per row (dr, dx, dy), its range (max − min) three ways: *all* rows, its largest *ramp* (where the profile turns, wiggles smaller than *Ramp wiggles up to* ignored; *Auto* = 8 × the profile's noise) and *manual*, between two lines you drag on the graph. Tick one to draw its min and max as lines on the graph, with the rows they come from circled and the ramp's rows shaded. View only: saved runs are unaffected (D126, D127).
+- *Analysis → Parameters* lists every option of the contact detection and the edge refinement: besides
+  `detection`, `min_contrast`, `refinement` and `search_px`, now `dark_contacts`, `detection_blur_px`, `min_area_px`,
+  `max_area_px`, `min_solidity` (band only), `edge_step_px`, `edge_blur_px` and `normal_span`. Their defaults are the
+  values used so far, so runs give the same numbers (D128).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

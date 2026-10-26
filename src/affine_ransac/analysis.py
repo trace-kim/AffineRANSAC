@@ -25,12 +25,14 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, fields, replace
+from itertools import repeat
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 from scipy.spatial import cKDTree
 
+from affine_ransac.features.contact import BAND_MIN_SOLIDITY
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
@@ -91,11 +93,26 @@ class Settings:
                                       "the hole. otsu: the dark regions, for images without a bright band. otsu3: the "
                                       "regions darker than the background; finds contacts whose band noise breaks "
                                       "up, but more false regions")
+    dark_contacts: bool = setting(True, "Contacts darker than the background (holes, with a bright band); off: "
+                                        "brighter. Detection and edge refinement")
+    detection_blur_px: float = setting(1.5, "Detection: Gaussian blur (sigma, px) of the image before thresholding; "
+                                            "0 = none")
+    min_area_px: int = setting(20, "Detection: regions of fewer pixels are left out (noise)")
+    max_area_px: int = setting(0, "Detection: regions of more pixels are left out; 0 = no limit")
+    min_solidity: float = setting(BAND_MIN_SOLIDITY, "Detection, band only: regions less solid than this (area / "
+                                                     "convex hull area) are left out. Contacts are ~1, background "
+                                                     "pinched off between nearly touching bands 0.7-0.88; 0 = off")
     search_px: float = setting(5.0, "Edge refinement searches this many pixels in/out along the contour normal")
     refinement: str = setting("mid-level", "Edge of each contact, used for all results. mid-level: where the smoothed "
                                            "image is half-way between the contact's interior and its bright band. "
                                            "steepest gradient: where it rises fastest (noisier; before D122). none: "
                                            "no refinement, the detected regions' centres")
+    edge_step_px: float = setting(0.25, "Edge refinement: the image is sampled along each normal every this many "
+                                        "pixels (<= search_px)")
+    edge_blur_px: float = setting(1.0, "Edge refinement: Gaussian blur (sigma, px) of the image the edges are found "
+                                       "on; 0 = none")
+    normal_span: int = setting(3, "Edge refinement: each contour point's normal runs across the contour points this "
+                                  "many before and after it (smooths the pixel staircase)")
     design_search_nm: float = setting(100.0, "Design-SEM matching: largest offset of one image's SEM contacts "
                                              "against its own .oas, before stitching (its stage error); for a "
                                              "regular array also > pitch / 2")
@@ -118,7 +135,12 @@ class Settings:
 CSV_ONLY = {"tile_margin_nm"}
 RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis only (release/analysis.py)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
-               "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign"}
+               "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
+               "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
+               "normal_span"}
+# The settings that find the contacts in an SEM image (pipeline.find_contacts takes them by these names; D128)
+CONTOUR_SETTINGS = ("detection", "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px", "min_solidity",
+                    "min_contrast", "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
 STITCH_METHODS = ("all overlaps", "measurement order first")
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
            "stitch_method": STITCH_METHODS}
@@ -165,13 +187,25 @@ def check_settings(s: Settings, kind: str):
               "ransac_delay_ms": (s.ransac_delay_ms >= 0, "must be >= 0"),
               "tile_margin_nm": (s.tile_margin_nm >= 0, "must be >= 0"),
               "min_contrast": (s.min_contrast >= 0, "must be >= 0"),
-              "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]")}
+              "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]"),
+              "detection_blur_px": (s.detection_blur_px >= 0, "must be >= 0"),
+              "min_area_px": (s.min_area_px >= 0, "must be >= 0"),
+              "max_area_px": (s.max_area_px >= 0, "must be >= 0 (0: no limit)"),
+              "min_solidity": (0 <= s.min_solidity <= 1, "must be in [0, 1]"),
+              "edge_step_px": (0 < s.edge_step_px <= s.search_px, "must be > 0 and <= search_px"),
+              "edge_blur_px": (s.edge_blur_px >= 0, "must be >= 0"),
+              "normal_span": (s.normal_span >= 1, "must be >= 1")}
     problems += [f"{name} {rule} (is {getattr(s, name)})" for name, (ok, rule) in limits.items()
                  if name in used and not ok]
     problems += [f"{name} must be one of {choices} (is {getattr(s, name)!r})" for name, choices in CHOICES.items()
                  if name in used and getattr(s, name) not in choices]
     if problems:
         raise ValueError("Invalid settings: " + "; ".join(problems))
+
+
+def contour_options(s: Settings) -> dict:
+    """The settings that find the contacts in an SEM image, by name (pipeline.find_contacts, process_tile)."""
+    return {name: getattr(s, name) for name in CONTOUR_SETTINGS}
 
 
 def check_image_records(records: list, layer: tuple[int, int]):
@@ -329,9 +363,9 @@ def worker_count() -> int:
     return max(1, (os.cpu_count() or 2) // 2)
 
 
-def _process_tile(arguments: tuple) -> TileResult:
-    """process_tile(*arguments); at module level so that worker processes can run it."""
-    return process_tile(*arguments)
+def _process_tile(arguments: tuple, options: dict) -> TileResult:
+    """process_tile(*arguments, **options); at module level so that worker processes can run it."""
+    return process_tile(*arguments, **options)
 
 
 def load_image_tiles(records: list, settings: Settings, log: Callable[[str], None] = print,
@@ -353,9 +387,9 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
         log(f"!! {len(without_oas)} image(s) without an .oas: {without_oas}")
 
     def arguments(r):  # plain values only, so they can be sent to a worker process
-        return (r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), layer,
-                s.search_px, s.design_search_nm, s.min_match_fraction, s.detection, s.design_tolerance_nm,
-                not realign, s.min_contrast, s.refinement)
+        return r.image_path, r.oas_path, (r.center_x_nm, r.center_y_nm), (r.fov_x_nm, r.fov_y_nm), layer
+    options = dict(contour_options(s), design_search_nm=s.design_search_nm, min_match_fraction=s.min_match_fraction,
+                   design_tolerance_nm=s.design_tolerance_nm, match_design=not realign)
 
     # A few tiles first: if none matches its design, the settings or the data are wrong; stop now.
     with_oas = [k for k, r in enumerate(records) if r.oas_path is not None]
@@ -363,7 +397,7 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     start = time.perf_counter()
     loaded = {}
     for k in sample:
-        loaded[k] = process_tile(*arguments(records[k]))
+        loaded[k] = process_tile(*arguments(records[k]), **options)
         if progress is not None:
             progress(len(loaded), len(records))
     if not realign and not any(t.design.ok for t in loaded.values()):
@@ -380,7 +414,7 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     workers = worker_count()
     log(f"Loading the other {len(rest)} tiles in {workers} worker processes")
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        for k, tile in zip(rest, pool.map(_process_tile, [arguments(records[k]) for k in rest])):
+        for k, tile in zip(rest, pool.map(_process_tile, [arguments(records[k]) for k in rest], repeat(options))):
             loaded[k] = tile
             done += 1
             if progress is not None:

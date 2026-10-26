@@ -19,6 +19,7 @@ A run that stitched the tiles but measured too few contacts raises AnalysisFaile
 import re
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
+from itertools import repeat
 from pathlib import Path
 from typing import Callable
 
@@ -27,8 +28,9 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
-from affine_ransac.analysis import (ContactSizes, Settings, check_settings, detect_layer, load_image_tiles,
-                                   merged_contact_sizes, report_stitching, worker_count)
+from affine_ransac.analysis import (CONTOUR_SETTINGS, ContactSizes, Settings, check_settings, contour_options,
+                                   detect_layer, load_image_tiles, merged_contact_sizes, report_stitching,
+                                   worker_count)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -53,8 +55,8 @@ DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they di
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
           "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
-              "images": COMMON + ["detection", "search_px", "refinement", "design_search_nm",
-                                  "design_tolerance_nm", "min_match_fraction", "min_contrast", "realign"]}
+              "images": COMMON + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
+                                                           "min_match_fraction", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 
@@ -334,10 +336,10 @@ class TileContours:
                                   # detected ones)
 
 
-def _tile_contours(arguments: tuple) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
-    """process_tile(*arguments) reduced to what TileContours needs, tile-local nm: (detected contours, refined
-    contours, detected centres, refined centres); at module level so that worker processes can run it."""
-    tile = process_tile(*arguments)
+def _tile_contours(arguments: tuple, options: dict) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
+    """process_tile(*arguments, **options) reduced to what TileContours needs, tile-local nm: (detected contours,
+    refined contours, detected centres, refined centres); at module level so that worker processes can run it."""
+    tile = process_tile(*arguments, **options)
 
     def local(points):
         return pixel_to_tile_nm(np.asarray(points, dtype=float).reshape(-1, 2), tile.image.shape, tile.pixel_size_nm)
@@ -352,12 +354,12 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     centres it used (the refined ones; the detected ones with refinement none) must be the run's; tiles where they
     are not (an image changed since the run?) are logged with !!."""
     s = result.settings
-    arguments = [(path, None, center, size, (s.layer, s.datatype), s.search_px, s.design_search_nm,
-                  s.min_match_fraction, s.detection, s.design_tolerance_nm, False, s.min_contrast, s.refinement)
+    arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
     with ProcessPoolExecutor(max_workers=worker_count()) as pool:
-        for k, (found, moved, found_centres, moved_centres) in enumerate(pool.map(_tile_contours, arguments)):
+        found_all = pool.map(_tile_contours, arguments, repeat(contour_options(s)))
+        for k, (found, moved, found_centres, moved_centres) in enumerate(found_all):
             used = moved_centres + result.centers[k]
             if used.shape != result.sem_points[k].shape or not np.allclose(used, result.sem_points[k], atol=0.01):
                 differ.append(result.tile_ids[k])
@@ -370,15 +372,18 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     if differ:
         log(f"!! The contours of {len(differ)} tile(s) do not give the centres of the run (an image changed since the "
             f"run?): {differ}")
-
-    def drawable(contours):  # each closed and followed by a NaN row
-        nan = np.full((1, 2), np.nan)
-        return np.concatenate([np.vstack([c, c[:1], nan]) for c in contours]).astype(np.float32) if contours \
-            else np.empty((0, 2), np.float32)
     start = np.concatenate([[0], np.cumsum([len(c) + 2 for c in detected])]).astype(np.int64)
-    return TileContours(np.concatenate(tiles) if tiles else np.empty(0, int), start, drawable(detected),
-                        drawable(refined), np.concatenate(detected_centres).reshape(-1, 2),
+    return TileContours(np.concatenate(tiles) if tiles else np.empty(0, int), start, drawable_outlines(detected),
+                        drawable_outlines(refined), np.concatenate(detected_centres).reshape(-1, 2),
                         np.concatenate(refined_centres).reshape(-1, 2))
+
+
+def drawable_outlines(contours: list[np.ndarray]) -> np.ndarray:
+    """The contours (each (M, 2)) as one (rows, 2) float32 line to draw with connect="finite": each closed (its first
+    point again) and followed by a NaN row."""
+    nan = np.full((1, 2), np.nan)
+    return np.concatenate([np.vstack([c, c[:1], nan]) for c in contours]).astype(np.float32) if contours \
+        else np.empty((0, 2), np.float32)
 
 
 def read_display_images(paths: list[str], progress: Callable[[float, str], None] = lambda fraction, stage: None
