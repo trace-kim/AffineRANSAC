@@ -20,7 +20,8 @@ contact (Auto: disks of 0.8 x the pitch, or a symbol size in pixels, D121), or t
 per column below it (hidden unless ticked, D118), of dr beside the arrows and of its own component beside dx and dy;
 both follow the map's zoom and pan; in grid average, per row and column of cells (band_means, D125). At start and on
 View All the maps show the contacts' full height, centred on them, at the maps' own width (fit, D117). Each mean per
-row: Auto, or a range typed in the boxes just below it (D119).
+row: Auto, or a range typed in the boxes just below it (D119); under them its min, max and range over all rows, of
+its largest ramp and inside a y interval typed in or dragged on the graph (RowStats, D126).
 Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy profiles / Export
 profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx and dy together
 (D116) or one graph (also in each graph's right-click menu and its Copy button, D120).
@@ -44,7 +45,7 @@ from scipy.spatial import cKDTree
 from affine_ransac.analysis import ContactSizes
 from affine_ransac.overlap import points_in_box
 from affine_ransac.pipeline import PairResult, RejectedPair, StitchResult, contact_stripes, pair_kind, stripe_ranges
-from affine_ransac.registration import band_means, error_summary, grid_means, row_means
+from affine_ransac.registration import band_means, error_summary, grid_means, largest_ramp, noise_sigma, row_means
 from affine_ransac.release import style
 from affine_ransac.release.analysis import ReleaseResult
 from affine_ransac.stitching import placement_corrections
@@ -886,6 +887,122 @@ class RowRange(QtWidgets.QWidget):
         self.setGeometry(QtCore.QRect(QtCore.QPoint(left, on_figure(self.figure, self.plot).bottom() + 2), size))
 
 
+class RowStats(QtWidgets.QWidget):
+    """Min, max and range (max − min) of one mean per row, in a table under its range boxes (D126): over all its rows;
+    of its largest ramp (the profile split where it turns by more than the wiggle height, largest_ramp); inside a y
+    interval (mask µm) typed in, or dragged on the graph once shown. Over the figure (a child of it), so not in its
+    images; the interval drawn on the graph is."""
+    NOISE_TIMES = 8  # Auto wiggle height: this many times the noise of the row means (noise_sigma)
+
+    def __init__(self, plot: pg.PlotItem, figure: pg.GraphicsView, origin_y_nm: float, y_range_nm, above: QtWidgets.QWidget):
+        """y_range_nm: the interval at start; above: the range boxes this table goes under."""
+        super().__init__(figure)
+        self.plot, self.figure, self.above = plot, figure, above
+        self.origin_um = origin_y_nm / 1000  # the plot's y is µm from it
+        self.row_y, self.mean = np.zeros(1), np.zeros(1)
+        self.height_nm = 0.0  # wiggle height, 0: Auto
+        grid = QtWidgets.QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(0)
+        right = QtCore.Qt.AlignmentFlag.AlignRight
+        for col, text in enumerate(("min", "max", "range (nm)"), start=1):
+            grid.addWidget(QtWidgets.QLabel(text), 0, col, alignment=right)
+        self.cells = {}  # row name: its min, max and range labels
+        for row, name in ((1, "all rows"), (2, "largest ramp"), (4, "y interval")):  # each detail on the line below
+            grid.addWidget(QtWidgets.QLabel(name), row, 0)
+            self.cells[name] = [QtWidgets.QLabel() for _ in range(3)]
+            for col, label in enumerate(self.cells[name], start=1):
+                grid.addWidget(label, row, col, alignment=right)
+        self.ramp_at = QtWidgets.QLabel()
+        self.ramp_at.setIndent(12)
+        grid.addWidget(self.ramp_at, 3, 0, 1, 4)
+        self.interval = [QtWidgets.QDoubleSpinBox(decimals=2, minimum=-1e6, maximum=1e6, keyboardTracking=False)
+                         for _ in range(2)]
+        for box, value in zip(self.interval, sorted(y_range_nm)):
+            box.setValue(value / 1000)
+        self.show_band = QtWidgets.QCheckBox("show")
+        self.show_band.setToolTip("Show the y interval on the graph, to drag it or its edges")
+        interval = QtWidgets.QHBoxLayout()
+        interval.setContentsMargins(12, 0, 0, 0)
+        interval.setSpacing(4)
+        for widget in (QtWidgets.QLabel("y"), self.interval[0], QtWidgets.QLabel("to"), self.interval[1],
+                       QtWidgets.QLabel("µm"), self.show_band):
+            interval.addWidget(widget)
+        interval.addStretch(1)
+        grid.addLayout(interval, 5, 0, 1, 4)
+        self.setToolTip("Lowest and highest value of this mean per row and their difference: over all its rows; of its "
+                        "largest ramp (where the profile turns by more than the wiggle height); inside the y interval")
+
+        self.band = pg.LinearRegionItem(orientation="horizontal", brush=translucent(style.MUTED, 40),
+                                        pen=pg.mkPen(style.MUTED))
+        self.band.setZValue(-10)  # under the profile's line
+        self.band.setVisible(False)
+        plot.addItem(self.band, ignoreBounds=True)
+        self.set_band()
+        for box in self.interval:
+            box.valueChanged.connect(self.typed)
+        self.band.sigRegionChanged.connect(self.dragged)
+        self.show_band.toggled.connect(self.band.setVisible)
+        plot.geometryChanged.connect(self.place)
+
+    def set_profile(self, row_y_nm: np.ndarray, mean: np.ndarray):
+        """The profile shown: its rows' y (nm, from the lowest up) and their means."""
+        self.row_y, self.mean = row_y_nm, mean
+        self.update_values()
+
+    def set_height(self, height_nm: float):
+        """Wiggles up to this height do not end a ramp; 0: Auto."""
+        self.height_nm = height_nm
+        self.update_values()
+
+    def wiggle_height(self) -> float:
+        return self.height_nm or self.NOISE_TIMES * noise_sigma(self.mean)
+
+    def update_values(self):
+        self.fill("all rows", self.mean)
+        first, last = largest_ramp(self.mean, self.wiggle_height())
+        self.fill("largest ramp", self.mean[first:last + 1])
+        self.ramp_at.setText(f"at y {self.row_y[first] / 1000:.2f} to {self.row_y[last] / 1000:.2f} µm")
+        low, high = sorted(box.value() * 1000 for box in self.interval)
+        self.fill("y interval", self.mean[(self.row_y >= low) & (self.row_y <= high)])
+        self.place()
+
+    def fill(self, name: str, values: np.ndarray):
+        if len(values) == 0:
+            texts = ["–", "–", "no rows"]
+        else:
+            low, high = float(values.min()), float(values.max())
+            texts = [f"{low:+.2f}", f"{high:+.2f}", f"{high - low:.2f}"]
+        for label, text in zip(self.cells[name], texts):
+            label.setText(text)
+
+    def set_band(self):
+        """The band on the graph from the interval's boxes (mask µm)."""
+        self.band.blockSignals(True)
+        self.band.setRegion(sorted(box.value() - self.origin_um for box in self.interval))
+        self.band.blockSignals(False)
+
+    def typed(self, *_):
+        self.set_band()
+        self.update_values()
+
+    def dragged(self, *_):
+        for box, value in zip(self.interval, self.band.getRegion()):
+            box.blockSignals(True)
+            box.setValue(value + self.origin_um)
+            box.blockSignals(False)
+        self.update_values()
+
+    def place(self):
+        """Under the range boxes, centred on the graph, inside the figure."""
+        size = self.sizeHint()
+        left = on_figure(self.figure, self.plot.vb).center().x() - size.width() // 2
+        left = max(0, min(left, self.figure.width() - size.width()))
+        top = on_figure(self.figure, self.plot).bottom() + 4 + self.above.sizeHint().height()
+        self.setGeometry(QtCore.QRect(QtCore.QPoint(left, top), size))
+
+
 class CopyButton(QtWidgets.QToolButton):
     """A small Copy button over a graph's top-left corner, above its y axis (D120): copies the graph, with the items
     given (a map's colour bar), to the clipboard. Over the figure (a child of it), so not in its images; shown while
@@ -1096,12 +1213,22 @@ class RegistrationView(QtWidgets.QWidget):
         self.line_width = QtWidgets.QSpinBox(minimum=1, maximum=10, value=2, suffix=" px")
         self.line_width.setToolTip("Width of the lines of the means per row and per column")
         self.line_width.valueChanged.connect(self.set_line_width)
-        # Each mean per row has its error range in boxes just below it (D119), in a row of the figure left for them.
+        # Each mean per row has its error range in boxes just below it (D119), and under them its min, max and range
+        # (D126), in a row of the figure left for them.
         self.row_ranges = [RowRange(panel.rows, self.figure) for panel in self.panels]
+        y_range = (r.design_nm[:, 1].min(), r.design_nm[:, 1].max())
+        self.row_stats = [RowStats(panel.rows, self.figure, self.origin[1], y_range, boxes)
+                          for panel, boxes in zip(self.panels, self.row_ranges)]
         room = QtWidgets.QGraphicsWidget()
-        room.setMinimumHeight(self.row_ranges[0].sizeHint().height() + 4)
-        room.setMaximumHeight(self.row_ranges[0].sizeHint().height() + 4)
+        room.setMinimumHeight(self.row_ranges[0].sizeHint().height() + self.row_stats[0].sizeHint().height() + 8)
+        room.setMaximumHeight(room.minimumHeight())
         grid.addItem(room, row=1, col=0)
+        self.wiggle = QtWidgets.QDoubleSpinBox(decimals=2, minimum=0, maximum=1e3, singleStep=0.05, suffix=" nm",
+                                               specialValueText="Auto", keyboardTracking=False)
+        self.wiggle.setToolTip("Wiggles up to this height do not end a ramp of a mean per row (its largest ramp is "
+                               f"printed under it). Auto: {RowStats.NOISE_TIMES} x the noise of each mean per row")
+        self.wiggle.valueChanged.connect(self.set_wiggle)
+        self.wiggle_auto = QtWidgets.QLabel()  # what Auto takes for each mean per row
 
         self.summary = QtWidgets.QLabel()
         self.summary.setWordWrap(True)
@@ -1127,7 +1254,8 @@ class RegistrationView(QtWidgets.QWidget):
             controls.addWidget(button)
         row_controls = QtWidgets.QHBoxLayout()
         for widget in (self.columns_box, QtWidgets.QLabel("    Symbol size"), self.symbol_size,
-                       QtWidgets.QLabel("   Line width"), self.line_width):
+                       QtWidgets.QLabel("   Line width"), self.line_width, QtWidgets.QLabel("   Ramp wiggles up to"),
+                       self.wiggle, self.wiggle_auto):
             row_controls.addWidget(widget)
         row_controls.addStretch(1)
         layout = QtWidgets.QVBoxLayout(self)
@@ -1206,6 +1334,20 @@ class RegistrationView(QtWidgets.QWidget):
         for k, (row_line, column_line) in enumerate(self.map_profiles + self.arrow_profiles):  # dx, dy, dr
             row_line.setData(self.row_mean[:, k], row_um)
             column_line.setData(column_um, self.column_mean[:, k])
+        for stats, k in zip(self.row_stats, (2, 0, 1)):  # panels: dr, dx, dy
+            stats.set_profile(self.row_y, self.row_mean[:, k])
+        self.show_wiggle()
+
+    def set_wiggle(self, height_nm: float):
+        """Wiggles up to this height do not end a ramp of any mean per row; 0: Auto, each its own (D126)."""
+        for stats in self.row_stats:
+            stats.set_height(height_nm)
+        self.show_wiggle()
+
+    def show_wiggle(self):
+        heights = ", ".join(f"{name} {stats.wiggle_height():.2g}" for name, stats in zip(("dr", "dx", "dy"),
+                                                                                        self.row_stats))
+        self.wiggle_auto.setText(f"(Auto: {heights} nm)" if not self.wiggle.value() else "")
 
     def extent(self) -> tuple[np.ndarray, np.ndarray]:
         """(low, high) x and y, µm, of what the maps show when fitted: the contacts shown with half a pitch around

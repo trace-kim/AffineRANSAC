@@ -228,6 +228,32 @@ def test_row_pitch_is_the_spacing_of_neighbouring_row_means():
     np.testing.assert_allclose(row_pitch(design_y, design_y, gap_nm=10)[1], [100.0, 100.0])
 
 
+def test_a_profile_turns_where_it_reverses_by_more_than_the_wiggle_height():
+    from affine_ransac.registration import largest_ramp, turning_points
+    values = np.array([0.0, 0.1, 0.05, 1.0, 2.0, 1.95, 3.0, 1.0, 1.1, 0.5, 1.0])
+    # Wiggles up to 0.2 (0.1 -> 0.05, 2.0 -> 1.95, 1.0 -> 1.1) do not end a ramp: up to 3.0, down to 0.5, up again.
+    np.testing.assert_array_equal(turning_points(values, 0.2), [0, 6, 9, 10])
+    assert largest_ramp(values, 0.2) == (0, 6)
+    # Height 0: every reversal turns, and the tallest ramp is the fall 3.0 -> 1.0.
+    np.testing.assert_array_equal(turning_points(values, 0.0), [0, 1, 2, 4, 5, 6, 7, 8, 9, 10])
+    assert largest_ramp(values, 0.0) == (6, 7)
+    # The first ramp starts at its bottom, not at the profile's first value.
+    np.testing.assert_array_equal(turning_points(np.array([0.1, 0.0, 1.0, 2.0, 0.0]), 0.5), [0, 1, 3, 4])
+    # No reversal taller than the height: one ramp, the whole profile; a single value: no ramp.
+    np.testing.assert_array_equal(turning_points(np.array([0.0, 0.1, 0.0, 0.1]), 0.5), [0, 3])
+    assert largest_ramp(np.array([1.0]), 0.5) == (0, 0)
+
+
+def test_noise_sigma_sees_the_noise_not_a_slope_or_jumps():
+    from affine_ransac.registration import noise_sigma
+    rng = np.random.default_rng(0)
+    rows = np.arange(4000)
+    sawtooth = (rows % 22) / 21  # 1 nm ramps, then a jump down
+    assert noise_sigma(sawtooth + rng.normal(0, 0.05, len(rows))) == pytest.approx(0.05, rel=0.1)
+    assert noise_sigma(rows / 1000 + rng.normal(0, 0.05, len(rows))) == pytest.approx(0.05, rel=0.1)
+    assert noise_sigma(np.array([1.0])) == 0.0
+
+
 def test_neighbours_keep_every_tile_on_the_same_row():
     # Every tile 80 nm off (> P / 2 = 65 nm); only the left column of tiles has missing contacts.
     # Alone, the fully periodic tiles take -50 nm (one row off, error -50 instead of +80); with

@@ -16,7 +16,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from affine_ransac.analysis import ContactSizes, Settings, contrast_summary
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import process_tile
-from affine_ransac.registration import row_means
+from affine_ransac.registration import noise_sigma, row_means
 from affine_ransac.release import app as release_app, style
 from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
                                            read_contours, read_design_images, read_display_images)
@@ -289,6 +289,70 @@ def test_each_mean_per_row_takes_a_range_of_its_own(tmp_path):
     assert x_range(plots[1]) == pytest.approx([-3.0, 3.0])
     plots[2].vb.menu.viewAll.trigger()
     assert dy.auto.isChecked() and plots[2].vb.autoRangeEnabled()[0] and not dx.auto.isChecked()
+    view.close()
+
+
+def test_each_mean_per_row_prints_its_min_max_and_range(tmp_path):
+    """Under each mean per row's range boxes (D126): min, max and range over all its rows, of its largest ramp (and
+    where it is) and inside a y interval, typed in or dragged on the graph once shown; each graph's interval its own,
+    kept when the stripes change. Auto wiggle height: 8 x each profile's noise. The tables lie over the figure, not in
+    its images; the interval is not drawn at start."""
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    settle()
+    texts = lambda stats, name: [label.text() for label in stats.cells[name]]
+    expected = lambda values: [f"{values.min():+.2f}", f"{values.max():+.2f}", f"{np.ptp(values):.2f}"]
+    image = style.render_image(view.figure)
+    for stats, boxes, k in zip(view.row_stats, view.row_ranges, (2, 0, 1)):  # dr, dx, dy
+        mean = view.row_mean[:, k]
+        assert texts(stats, "all rows") == expected(mean)
+        assert texts(stats, "y interval") == expected(mean)  # at start: every row
+        assert stats.wiggle_height() == pytest.approx(8 * noise_sigma(mean))
+        assert not stats.band.isVisible()
+        assert stats.y() >= boxes.geometry().bottom() and not stats.geometry().intersects(boxes.geometry())
+        area = stats.geometry().translated(-view.figure.viewport().pos())  # in the figure's image, at 2x: blank
+        area = area.intersected(QtCore.QRect(0, 0, image.width() // 2, image.height() // 2))
+        assert all(image.pixelColor(2 * x, 2 * y).name() == "#ffffff"
+                   for x in range(area.left(), area.right(), 4) for y in range(area.top(), area.bottom(), 4))
+    assert view.wiggle_auto.text().startswith("(Auto: dr ")
+    assert not any(a.geometry().intersects(b.geometry()) for a, b in zip(view.row_stats, view.row_stats[1:]))
+    view.columns_box.setChecked(True)  # the means per column below: the tables stay above them
+    settle()
+    for panel, stats in zip(view.panels, view.row_stats):
+        assert stats.geometry().bottom() < view.figure.mapFromScene(panel.columns.sceneBoundingRect()).boundingRect().top()
+    view.columns_box.setChecked(False)
+
+    view.wiggle.setValue(100.0)  # no wiggle that tall: the largest ramp is the whole profile
+    dx, dy, y = view.row_stats[1], view.row_stats[2], view.row_y
+    assert texts(dx, "largest ramp") == expected(view.row_mean[:, 0]) and view.wiggle_auto.text() == ""
+    assert dx.ramp_at.text() == f"at y {y[0] / 1000:.2f} to {y[-1] / 1000:.2f} µm"
+    view.wiggle.setValue(0.0)
+    assert dx.wiggle_height() == pytest.approx(8 * noise_sigma(view.row_mean[:, 0]))
+
+    low, high = (y[1] + y[2]) / 2000, (y[5] + y[6]) / 2000  # µm, between rows: rows 2 to 5
+    dx.interval[0].setValue(low)
+    dx.interval[1].setValue(high)
+    assert texts(dx, "y interval") == expected(view.row_mean[2:6, 0])
+    assert dx.band.getRegion() == pytest.approx((low - view.origin[1] / 1000, high - view.origin[1] / 1000), abs=0.01)
+    assert texts(dy, "y interval") == expected(view.row_mean[:, 1])  # the others keep theirs
+    dx.show_band.setChecked(True)
+    assert dx.band.isVisible()
+    dx.band.setRegion(((y[3] + y[4]) / 2000 - view.origin[1] / 1000, high - view.origin[1] / 1000))  # dragged
+    assert dx.interval[0].value() == pytest.approx((y[3] + y[4]) / 2000, abs=0.01)
+    assert texts(dx, "y interval") == expected(view.row_mean[4:6, 0])
+    view.stripes.set_selected([1])  # kept: the rows of that stripe in it
+    assert dx.interval[0].value() == pytest.approx((y[3] + y[4]) / 2000, abs=0.01)
+    inside = (view.row_y >= dx.interval[0].value() * 1000) & (view.row_y <= high * 1000)
+    assert texts(dx, "y interval") == expected(view.row_mean[inside, 0])
+    dx.interval[1].setValue(y[-1] / 1000 + 20)  # no row in it
+    dx.interval[0].setValue(y[-1] / 1000 + 10)
+    assert texts(dx, "y interval") == ["–", "–", "no rows"]
     view.close()
 
 

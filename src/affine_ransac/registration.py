@@ -360,6 +360,49 @@ def band_means(position: np.ndarray, values: np.ndarray, width_nm: float):
     return start + (held + 0.5) * width_nm, mean, count[held]
 
 
+def turning_points(values: np.ndarray, height: float) -> np.ndarray:
+    """Indices where a profile (values in order along it) turns, with its first and last index, so that neighbouring
+    indices bound its ramps. A top counts once the values fall more than height below it, a bottom once they rise
+    more than height above it (a zigzag), so wiggles up to height do not end a ramp."""
+    points, direction, low, high, extreme = [0], 0, 0, 0, 0  # direction: +1 rising, -1 falling, 0 not known yet
+    for k in range(1, len(values)):
+        if direction == 0:  # the first ramp starts at the lowest or highest value before it
+            low = k if values[k] < values[low] else low
+            high = k if values[k] > values[high] else high
+            if values[high] - values[low] > height:
+                direction = 1 if low < high else -1
+                if min(low, high):
+                    points.append(min(low, high))
+                extreme = k
+        elif (values[k] - values[extreme]) * direction > 0:  # further up (down) the ramp
+            extreme = k
+        elif (values[extreme] - values[k]) * direction > height:  # turned
+            points.append(extreme)
+            direction, extreme = -direction, k
+    if direction and extreme != points[-1]:
+        points.append(extreme)
+    if points[-1] != len(values) - 1:
+        points.append(len(values) - 1)
+    return np.array(points)
+
+
+def largest_ramp(values: np.ndarray, height: float) -> tuple[int, int]:
+    """(first, last) index of a profile's tallest ramp (turning_points): the one whose values span the most."""
+    points = turning_points(values, height)
+    if len(points) < 2:
+        return 0, 0
+    return max(zip(points[:-1], points[1:]), key=lambda ends: np.ptp(values[ends[0]:ends[1] + 1]))
+
+
+def noise_sigma(values: np.ndarray) -> float:
+    """Noise of a profile's values: robust σ (1.4826 × MAD) of the steps between neighbours, / √2 (a step is the
+    difference of two noisy values). A slope, or a few jumps, hardly change it."""
+    steps = np.diff(values)
+    if len(steps) == 0:
+        return 0.0
+    return 1.4826 * float(np.median(np.abs(steps - np.median(steps)))) / np.sqrt(2)
+
+
 def row_pitch(design_y: np.ndarray, y: np.ndarray, gap_nm: float = 10.0):
     """Row-to-row pitch along y (nm) of one set of positions y (N,), rows grouped by design y.
 
