@@ -94,9 +94,6 @@ they open, flagged as outdated.
 - Registration tab: with *Values* → *Grid average* the means per row and per column follow the grid too: one point
   per row (column) of cells, the mean of the contacts in it, so the larger the cell, the smoother the lines. *Copy
   profiles* and *Export profiles CSV* give these values, headed *grid row* / *grid column* (D125).
-- Registration tab: under each mean per row (dr, dx, dy), its min, max and range (max − min): over all rows, of its
-  largest ramp (where the profile turns, wiggles smaller than *Ramp wiggles up to* ignored; *Auto* = 8 × the
-  profile's noise), with where that ramp is, and inside a y interval you type in or drag on the graph (tick *show*).
-  View only: saved runs are unaffected (D126).
+- Registration tab: under each mean per row (dr, dx, dy), its range (max − min) three ways: *all* rows, its largest *ramp* (where the profile turns, wiggles smaller than *Ramp wiggles up to* ignored; *Auto* = 8 × the profile's noise) and *manual*, between two lines you drag on the graph. Tick one to draw its min and max as lines on the graph, with the rows they come from circled and the ramp's rows shaded. View only: saved runs are unaffected (D126, D127).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
