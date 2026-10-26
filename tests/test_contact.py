@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from affine_ransac.features.contact import detect_contacts
+from affine_ransac.features.contact import detect_contacts, flatten_background
 from affine_ransac.io.sem_image import crop_databar, load_sem_image
 from sample_sem import write_sem_like
 
@@ -58,6 +58,31 @@ def test_regions_left_out_are_counted_per_reason():
 
     np.testing.assert_allclose(found.centers, [[30, 30]], atol=1e-9)
     assert found.left_out == {"border": 1, "small": 2, "large": 1, "not solid": 0}
+
+
+def ramp_image():
+    """Dark disks (radius 7 px) 50 grey levels below their surroundings, on a background that brightens from 60 to 200
+    across the image (charging, shading); and the disks' centres."""
+    yy, xx = np.mgrid[:200, :300]
+    centres = np.array([(x, y) for x in range(30, 300, 40) for y in range(30, 200, 40)], float)
+    holes = np.zeros(xx.shape, bool)
+    for x, y in centres:
+        holes |= (xx - x) ** 2 + (yy - y) ** 2 <= 49
+    return np.clip(60 + 140 * xx / 299 - 50 * holes, 0, 255).astype(np.uint8), centres
+
+
+def test_flattening_the_background_lets_one_threshold_find_every_contact():
+    """D130: one threshold cannot fit a background that brightens across the image; with the brightness around the
+    contacts subtracted, every contact is found where it is, and the grey levels stay in the image's range."""
+    image, centres = ramp_image()
+    assert len(detect_contacts(image, blur_sigma=0).centers) < len(centres) / 2
+
+    flat = flatten_background(image, 20)
+    found = detect_contacts(flat, blur_sigma=0)
+    assert len(found.centers) == len(centres)
+    np.testing.assert_allclose(found.centers[np.lexsort(found.centers.T[::-1])],
+                               centres[np.lexsort(centres.T[::-1])], atol=0.05)
+    assert abs(float(flat.mean()) - float(image.mean())) < 5
 
 
 def test_bright_contacts():

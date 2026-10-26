@@ -4,7 +4,7 @@ import pytest
 from scipy.spatial import cKDTree
 
 from affine_ransac.features.contact import detect_contacts
-from affine_ransac.features.edges import (RULES, edge_offsets, outward_normals, refine_edges, sample_profiles,
+from affine_ransac.features.edges import (RULES, crossings, edge_offsets, outward_normals, refine_edges, sample_profiles,
                                           without_isolated)
 from affine_ransac.io.sem_image import load_sem_image
 from sample_sem import write_sem_like
@@ -195,6 +195,49 @@ def test_bright_contacts_get_the_contour_of_the_negative_image():
     bright = refine_edges(255 - image, found, dark_contacts=False)
 
     np.testing.assert_allclose(bright.centers, dark.centers, atol=1e-4)
+
+
+def no_band_image(centres, radius, shape=(80, 140), noise=0.0, seed=0, oversample=8) -> np.ndarray:
+    """Dark disks (60, exact sub-pixel coverage) on a grey background (130), no bright band (wafer ADI images, D130);
+    beam blur 1 px, Gaussian noise."""
+    fine_y, fine_x = (np.indices((shape[0] * oversample, shape[1] * oversample)) + 0.5) / oversample - 0.5
+    inside = np.zeros(fine_x.shape, bool)
+    for x, y in centres:
+        inside |= np.hypot(fine_x - x, fine_y - y) < radius
+    coverage = inside.reshape(shape[0], oversample, shape[1], oversample).mean(axis=(1, 3))
+    image = cv2.GaussianBlur((130 - 70 * coverage).astype(np.float32), (0, 0), 1.0)
+    image += np.random.default_rng(seed).normal(0, noise, shape)
+    return np.clip(np.round(image), 0, 255).astype(np.uint8)
+
+
+def test_crossings_find_where_each_profile_rises_through_the_level():
+    offsets = np.arange(-2.0, 2.5, 0.5)
+    profiles = np.array([100 + 10 * offsets, np.full(len(offsets), 50.0)])  # through 105 at +0.5; never
+    np.testing.assert_allclose(crossings(profiles, offsets, 105.0), [0.5, np.nan])
+
+
+def test_threshold_rule_puts_the_contour_on_the_detection_threshold():
+    """D130: each refined point lies where the smoothed image crosses the detection's threshold, one level for every
+    contact; the centre is the disk's."""
+    centres = np.array([[40.3, 39.6], [100.8, 40.2]])
+    image = no_band_image(centres, 12.0)
+    found = detect_contacts(image)
+    refined = refine_edges(image, found, rule="threshold")
+
+    smoothed = cv2.GaussianBlur(image.astype(np.float32), (0, 0), 1.0)  # refine_edges' own smoothing
+    points = np.concatenate(refined.contours)
+    values = sample_profiles(smoothed, points, np.zeros_like(points), np.zeros(1))[:, 0]
+    assert np.abs(values - found.threshold).max() < 0.5
+    np.testing.assert_allclose(refined.centers, centres, atol=0.01)  # found: 0.002 px
+
+
+def test_threshold_rule_on_bright_contacts_is_that_of_the_negative_image():
+    image = no_band_image([[40.3, 39.6], [100.8, 40.2]], 12.0, noise=5)
+    dark = refine_edges(image, detect_contacts(image), rule="threshold")
+    negative = 255 - image
+    bright = refine_edges(negative, detect_contacts(negative, dark_contacts=False), dark_contacts=False,
+                          rule="threshold")
+    np.testing.assert_allclose(bright.centers, dark.centers, atol=0.02)
 
 
 def test_unknown_rule_is_refused():

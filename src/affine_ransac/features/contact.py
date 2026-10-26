@@ -1,5 +1,8 @@
 """Detect contact holes in an SEM image by thresholding.
 
+Before it, on request (pipeline.find_contacts background_px): flatten_background() removes brightness that varies
+across the image (charging, shading), so that one threshold fits the whole image.
+
 Steps:
   1. Blur slightly to suppress pixel noise.
   2. Threshold -> binary mask of candidate contact pixels (dark contacts by default), by method:
@@ -43,6 +46,25 @@ class DetectedContacts:
     contours: list[np.ndarray]  # N arrays of shape (M, 2), boundary points (x, y) in pixels
     threshold: float  # threshold that was used (grey level; for "band" the band threshold)
     left_out: dict[str, int] = field(default_factory=dict)  # regions not taken as contacts, per reason (LEFT_OUT)
+
+
+def flatten_background(image: np.ndarray, size_px: float, dark_contacts: bool = True) -> np.ndarray:
+    """The image (uint8) with its slowly varying background removed. The background: a grey-level closing with a disk
+    size_px across (an opening for bright contacts), which fills every contact narrower than the disk with the
+    brightness around it, then smoothed (Gaussian, sigma 2 x size_px: the closing of a noisy image is noisy itself,
+    and that noise at the scale of a contact would move the centres; D130). For the smoothing the background is
+    continued past the image's edges with its own slope (odd reflection: a mirror would bend a ramp there, and the
+    contacts near the edges, those of the overlaps, would move). Returned: the image minus the background plus the
+    background's mean, so that grey levels stay in the same range."""
+    side = max(3, int(round(size_px)) | 1)  # odd
+    disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (side, side))
+    background = cv2.morphologyEx(image, cv2.MORPH_CLOSE if dark_contacts else cv2.MORPH_OPEN, disk)
+    sigma = 2 * size_px
+    pad = int(np.ceil(3 * sigma))
+    continued = np.pad(background.astype(np.float32), pad, mode="reflect", reflect_type="odd")
+    background = cv2.GaussianBlur(continued, (0, 0), sigma)[pad:-pad, pad:-pad]
+    flat = image.astype(np.float32) - background + background.mean()
+    return np.clip(np.round(flat), 0, 255).astype(np.uint8)
 
 
 def contact_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5, method: str = "otsu"):

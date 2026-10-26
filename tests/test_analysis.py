@@ -297,6 +297,9 @@ def test_invalid_settings_fail_before_any_work(tmp_path):
     with pytest.raises(ValueError, match=r"min_area_px must be >= 0.*min_solidity must be in \[0, 1\].*"
                                          r"edge_step_px must be > 0 and <= search_px.*normal_span must be >= 1"):
         check_settings(Settings(min_area_px=-1, min_solidity=1.2, edge_step_px=6.0, normal_span=0), "images")
+    with pytest.raises(ValueError, match=r"background_px must be 0 \(off\) or >= 3"):
+        check_settings(Settings(background_px=1.0), "images")
+    check_settings(Settings(background_px=0.0, refinement="threshold"), "images")  # off; the threshold rule (D130)
 
 
 def test_the_contour_settings_are_the_options_of_find_contacts():

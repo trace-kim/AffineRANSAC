@@ -88,6 +88,11 @@ class Settings:
     # Images only
     layer: int = setting(100, "Layer of the contacts in the .oas")
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
+    background_px: float = setting(0.0, "Flatten the background first, so that one threshold fits the whole image "
+                                        "when its brightness varies (charging, shading): the brightness around the "
+                                        "contacts (filled in over a disk this many pixels across, then smoothed) is "
+                                        "subtracted. Wider than a contact, narrower than the brightness changes; "
+                                        "0 = off")
     detection: str = setting("band", "How contacts are found (each a region with a first, pixel outline; REFINEMENT "
                                       "then places its edge). band: the regions a bright band encloses, however grey "
                                       "the hole. otsu: the dark regions, for images without a bright band. otsu3: the "
@@ -105,8 +110,10 @@ class Settings:
     search_px: float = setting(5.0, "Edge refinement searches this many pixels in/out along the contour normal")
     refinement: str = setting("mid-level", "Edge of each contact, used for all results. mid-level: where the smoothed "
                                            "image is half-way between the contact's interior and its bright band. "
-                                           "steepest gradient: where it rises fastest (noisier; before D122). none: "
-                                           "no refinement, the detected regions' centres")
+                                           "threshold: where it crosses the detection's threshold, one level for the "
+                                           "whole image: for images without a bright band (flatten the background if "
+                                           "the brightness varies). steepest gradient: where it rises fastest "
+                                           "(noisier; before D122). none: no refinement, the detected regions' centres")
     edge_step_px: float = setting(0.25, "Edge refinement: the image is sampled along each normal every this many "
                                         "pixels (<= search_px)")
     edge_blur_px: float = setting(1.0, "Edge refinement: Gaussian blur (sigma, px) of the image the edges are found "
@@ -137,10 +144,11 @@ RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis on
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
-               "normal_span"}
+               "normal_span", "background_px"}
 # The settings that find the contacts in an SEM image (pipeline.find_contacts takes them by these names; D128)
-CONTOUR_SETTINGS = ("detection", "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px", "min_solidity",
-                    "min_contrast", "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
+CONTOUR_SETTINGS = ("background_px", "detection", "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px",
+                    "min_solidity", "min_contrast", "refinement", "search_px", "edge_step_px", "edge_blur_px",
+                    "normal_span")
 STITCH_METHODS = ("all overlaps", "measurement order first")
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
            "stitch_method": STITCH_METHODS}
@@ -188,6 +196,7 @@ def check_settings(s: Settings, kind: str):
               "tile_margin_nm": (s.tile_margin_nm >= 0, "must be >= 0"),
               "min_contrast": (s.min_contrast >= 0, "must be >= 0"),
               "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]"),
+              "background_px": (s.background_px == 0 or s.background_px >= 3, "must be 0 (off) or >= 3"),
               "detection_blur_px": (s.detection_blur_px >= 0, "must be >= 0"),
               "min_area_px": (s.min_area_px >= 0, "must be >= 0"),
               "max_area_px": (s.max_area_px >= 0, "must be >= 0 (0: no limit)"),

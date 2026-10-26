@@ -15,7 +15,7 @@ from pyqtgraph.Qt import QtCore, QtTest
 from affine_ransac.analysis import CONTOUR_SETTINGS, contour_options
 from affine_ransac.features.contact import contact_mask
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import find_contacts
+from affine_ransac.pipeline import find_contacts, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS
 from affine_ransac.release.contour_dialog import GROUPS, ContourDialog
@@ -104,6 +104,25 @@ def test_settings_that_change_nothing_are_greyed_out(tmp_path):
     assert [name for name, widget in dialog.editors.items() if not widget.isEnabled()] == \
         ["search_px", "edge_step_px", "edge_blur_px", "normal_span"]
     assert not dialog.boxes["Refined contours"].isEnabled() and not dialog.layers["Refined contours"].isVisible()
+
+
+def test_with_the_background_flattened_the_window_shows_the_image_the_contacts_are_found_in(tmp_path):
+    """D130: the image shown, its threshold mask and the grey level under the cursor are those the contacts are found
+    in; the threshold edge rule is a choice."""
+    dialog, path = open_dialog(tmp_path)
+    image = load_sem_image(path)
+    np.testing.assert_array_equal(dialog.image_item.image, image)  # flattening off: the image as loaded
+
+    dialog.editors["background_px"].setValue(40)
+    dialog.editors["refinement"].setCurrentText("threshold")
+    settle(dialog)
+    flattened = prepared_image(image, 40.0)
+    s = replace(SETTINGS, background_px=40.0, refinement="threshold")
+    np.testing.assert_array_equal(dialog.image_item.image, flattened)
+    np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, contact_mask(flattened, method="otsu")[0])
+    x, y = dialog.layers["Refined centres"].getData()
+    np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
+    assert "of the flattened image" in dialog.summary.text() and dialog.values() == s
 
 
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):

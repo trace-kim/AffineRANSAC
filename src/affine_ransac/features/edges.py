@@ -11,6 +11,10 @@ the edge on a lightly smoothed copy of the image. Where the edge is depends on t
   median of their neighbours; a real deviation spans several neighbouring points and is kept.
 - "steepest gradient" (D22, D23): where the intensity changes fastest, dark -> bright going outward
   (bright -> dark for bright contacts). On noisy, low-contrast images single points jump to noise.
+- "threshold" (D130): where the profile crosses the detection's threshold (DetectedContacts.threshold), one level
+  for the whole image: the detected outline, placed sub-pixel. For images without a bright band (whose band level
+  the mid-level rule would take from noise); one level fits only an even background (pipeline background_px).
+  Points without a crossing, or isolated, are replaced as for the mid-level.
 Edge positions are found to sub-pixel precision; the refined centre is the area centroid of the
 refined contour.
 
@@ -25,7 +29,7 @@ import numpy as np
 from affine_ransac.features.contact import DetectedContacts
 from affine_ransac.geometry.polygon import polygon_area, polygon_centroid
 
-RULES = ("mid-level", "steepest gradient")
+RULES = ("mid-level", "steepest gradient", "threshold")
 
 
 def outward_normals(contour: np.ndarray, span: int = 3) -> np.ndarray:
@@ -94,10 +98,14 @@ def interior_level(image: np.ndarray, contour: np.ndarray) -> float:
 def level_offsets(profiles: np.ndarray, offsets: np.ndarray, interior: float) -> np.ndarray:
     """Mid-level edge of one contact, (M,) offsets along its profiles (M, T) (rising outward, a dark contact): where
     each profile rises through half-way between `interior` (its interior grey level) and its band (the median over
-    its profiles of their brightest value from the start outward, offsets >= 0); the crossing nearest the start,
-    sub-sample by linear interpolation. NaN where a profile does not cross."""
+    its profiles of their brightest value from the start outward, offsets >= 0); see crossings."""
     band = np.median(profiles[:, offsets >= 0].max(axis=1))
-    level = (interior + band) / 2
+    return crossings(profiles, offsets, (interior + band) / 2)
+
+
+def crossings(profiles: np.ndarray, offsets: np.ndarray, level: float) -> np.ndarray:
+    """(M,) offsets where each profile (M, T) rises through `level` going outward: the crossing nearest the start,
+    sub-sample by linear interpolation. NaN where a profile does not cross."""
     before, after = profiles[:, :-1], profiles[:, 1:]
     rise = after - before
     at = offsets[:-1] + (offsets[1] - offsets[0]) * (level - before) / np.where(rise != 0, rise, 1)
@@ -166,8 +174,11 @@ def refine_edges(
     else:
         sign = 1.0 if dark_contacts else -1.0  # bright contacts: the same rule on the negative image
         signed = sign * np.asarray(smoothed, dtype=np.float32)
-        shifts = np.concatenate([mid_level_shifts(signed, c, p, offsets)
-                                 for c, p in zip(points, np.split(sign * profiles, starts))])
+        parts = np.split(sign * profiles, starts)
+        if rule == "threshold":  # one level for every contact: the detection's threshold
+            shifts = np.concatenate([without_isolated(crossings(p, offsets, sign * contacts.threshold)) for p in parts])
+        else:
+            shifts = np.concatenate([mid_level_shifts(signed, c, p, offsets) for c, p in zip(points, parts)])
     refined_points = all_points + shifts[:, None] * all_normals
     contours = np.split(refined_points, starts)
 

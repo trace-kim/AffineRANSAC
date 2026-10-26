@@ -103,5 +103,9 @@ they open, flagged as outdated.
   and centres they find, from the detection and after refinement, are drawn on the image and found again as you
   change a setting; a line says how many contacts were found and why the other regions were left out; the
   threshold mask on request. *Apply to parameters* keeps the settings for the next run, *Cancel* leaves them (D129).
+- For images without a bright band (e.g. wafer ADI), two new contour settings, both off by default so runs give the
+  same numbers: `background_px` flattens the background before the contacts are found, so that one threshold fits an
+  image whose brightness varies across it (charging, shading); `refinement` *threshold* places each contour where the
+  smoothed image crosses the detection's threshold, sub-pixel. *Contour diagnosis* shows the flattened image (D130).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

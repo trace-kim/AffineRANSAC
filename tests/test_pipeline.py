@@ -2,16 +2,17 @@ import cv2
 import klayout.db as kdb
 import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 
 from affine_ransac.io.design import load_layout
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.features.contact import DetectedContacts, detect_contacts
+from affine_ransac.features.contact import DetectedContacts, detect_contacts, flatten_background
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, find_contacts,
-                                    inside_frame, measurement_pairs, pair_kind, pair_residuals, process_tile,
-                                    slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid,
-                                    tie_residuals, tile_stripes)
+                                    inside_frame, measurement_pairs, pair_kind, pair_residuals, prepared_image,
+                                    process_tile, slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_affine,
+                                    stitch_tiles_rigid, tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
 from test_stitching import about, rotation
@@ -133,6 +134,24 @@ def test_find_contacts_passes_every_option_on(tmp_path):
     assert len(find_contacts(image, detection="band", min_solidity=1.5)[0].centers) == 0  # unreachable for band
     _, negative, _ = find_contacts(255 - image, dark_contacts=False)
     np.testing.assert_allclose(negative.centers, find_contacts(image)[1].centers, atol=0.01)
+
+
+def test_find_contacts_flattens_the_background_before_every_step():
+    """D130: with background_px every step works on the flattened image (prepared_image), so one threshold, and the
+    threshold edge rule, fit a background that brightens across the image; bright contacts likewise."""
+    from test_contact import ramp_image
+    image, centres = ramp_image()
+    assert prepared_image(image, 0.0) is image
+    np.testing.assert_array_equal(prepared_image(image, 20.0), flatten_background(image, 20.0))
+
+    plain = find_contacts(image, detection="otsu")[1]
+    flat = find_contacts(image, background_px=20.0, detection="otsu", refinement="threshold")[1]
+    assert len(plain.centers) < len(centres) == len(flat.centers)
+    bright = find_contacts(255 - image, background_px=20.0, detection="otsu", refinement="threshold",
+                           dark_contacts=False)[1]
+    # every contact where it is, those near the image's edges too (a mirrored ramp moved them by 0.1 px)
+    for found in (flat, bright):
+        assert len(found.centers) == len(centres) and cKDTree(found.centers).query(centres)[0].max() < 0.03
 
 
 def test_with_refinement_none_the_design_tone_is_chosen_with_the_detected_centres(tmp_path, monkeypatch):

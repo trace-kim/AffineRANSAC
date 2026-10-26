@@ -1,8 +1,8 @@
 """Contour diagnosis (docs/SPEC.md D129): try the contour settings (analysis.CONTOUR_SETTINGS, D128) on one SEM image
 before a run uses them.
 
-ContourDialog shows a loaded image with the contacts the settings find in it, exactly as a run finds them
-(pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
+ContourDialog shows a loaded image, as the contacts are found in it (with the background flattened if asked, D130),
+with the contacts the settings find in it, exactly as a run finds them (pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
 (after edge refinement: what the run measures) and, on request, the threshold mask (the pixels the threshold takes as
 contact). One line says in words how many contacts were found and why the other regions were left out. Every change of
 a setting finds them again, in a background thread, for the newest settings only. Apply to parameters: values() gives
@@ -24,16 +24,17 @@ from affine_ransac.analysis import CHOICES, Settings, check_settings, contour_op
 from affine_ransac.app import editor, editor_value
 from affine_ransac.features.contact import DetectedContacts, contact_mask
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import find_contacts
+from affine_ransac.pipeline import find_contacts, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
 
-GROUPS = (("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
+GROUPS = (("Pre-processing", ("background_px",)),
+          ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
                                         "max_area_px", "min_solidity", "min_contrast")),
           ("Edge refinement", ("refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")))
 REFINEMENT_OPTIONS = ("search_px", "edge_step_px", "edge_blur_px", "normal_span")  # unused with refinement none
-STEPS = {"detection_blur_px": 0.1, "min_area_px": 5, "max_area_px": 100, "min_solidity": 0.01, "min_contrast": 0.5,
+STEPS = {"background_px": 5, "detection_blur_px": 0.1, "min_area_px": 5, "max_area_px": 100, "min_solidity": 0.01, "min_contrast": 0.5,
          "search_px": 0.5, "edge_step_px": 0.05, "edge_blur_px": 0.1}  # spin box steps (the others: 1)
 LAYERS = ("Threshold mask", "Detected contours", "Detected centres", "Refined contours", "Refined centres")
 IMAGE_FILES = "SEM images (*.jpg *.jpeg *.png *.tif *.tiff *.bmp);;All files (*)"
@@ -43,6 +44,7 @@ NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these s
 @dataclass
 class Diagnosis:
     """What the window shows of one image with one set of settings."""
+    image: np.ndarray           # the image the contacts are found in (pipeline.prepared_image)
     detected: DetectedContacts  # after the contrast check
     refined: DetectedContacts   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
@@ -50,10 +52,13 @@ class Diagnosis:
 
 
 def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
-    """The contacts the settings find in the image, as a run finds them, and the threshold mask."""
-    detected, refined, low_contrast = find_contacts(image, **contour_options(s))
-    mask, _ = contact_mask(image, s.dark_contacts, s.detection_blur_px, s.detection)
-    return Diagnosis(detected, refined, low_contrast, mask)
+    """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
+    mask."""
+    prepared = prepared_image(image, s.background_px, s.dark_contacts)
+    # find_contacts would flatten the image first: given it flattened (~0.1-0.3 s), it need not do it again
+    detected, refined, low_contrast = find_contacts(prepared, **contour_options(replace(s, background_px=0.0)))
+    mask, _ = contact_mask(prepared, s.dark_contacts, s.detection_blur_px, s.detection)
+    return Diagnosis(prepared, detected, refined, low_contrast, mask)
 
 
 def summary(d: Diagnosis, s: Settings) -> str:
@@ -63,8 +68,10 @@ def summary(d: Diagnosis, s: Settings) -> str:
     left_out = [f"{count} {reasons[why]}" for why, count in d.detected.left_out.items() if count]
     if d.low_contrast:
         left_out.append(f"{d.low_contrast} below the contrast of {s.min_contrast:g} noise σ")
-    return (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
-            f"{d.detected.threshold:.0f}). " + (f"Regions left out: {', '.join(left_out)}." if left_out else ""))
+    flattened = " of the flattened image" if s.background_px > 0 else ""
+    text = (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
+            f"{d.detected.threshold:.0f}{flattened}). ")
+    return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
 
 
 def applies(name: str, s: Settings) -> bool:
@@ -98,7 +105,8 @@ class ContourDialog(QtWidgets.QDialog):
         self.setWindowTitle("Contour diagnosis")
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint)
         self.settings, self.folder = settings, folder
-        self.image = None     # the SEM image shown (uint8)
+        self.image = None     # the SEM image loaded (uint8)
+        self.shown = None     # the image shown: the one the contacts are found in
         self.request = 0      # number of the newest search asked for
         self.running = False  # a search runs in the background thread
         self.searched.connect(self._searched)
@@ -241,7 +249,7 @@ class ContourDialog(QtWidgets.QDialog):
         except (OSError, ValueError) as error:
             QtWidgets.QMessageBox.warning(self, "Contour diagnosis", f"The image could not be read:\n{error}")
             return
-        self.image, self.folder = image, str(Path(path).parent)
+        self.image, self.shown, self.folder = image, image, str(Path(path).parent)
         self.image_item.setImage(image, levels=(0, 255))
         place(self.image_item, image.shape)
         self.name_label.setText(f"{Path(path).name}   ({image.shape[1]} × {image.shape[0]} px)")
@@ -293,6 +301,8 @@ class ContourDialog(QtWidgets.QDialog):
         self.show_diagnosis(found)
 
     def show_diagnosis(self, d: Diagnosis):
+        self.shown = d.image
+        self.image_item.setImage(d.image, levels=(0, 255))
         self.layers["Threshold mask"].setImage(d.mask, levels=(0, 1))
         place(self.layers["Threshold mask"], d.mask.shape)
         for name, contacts in (("Detected", d.detected), ("Refined", d.refined)):
@@ -315,11 +325,12 @@ class ContourDialog(QtWidgets.QDialog):
                                          f"{name} ({s.detection if name.startswith('Detected') else s.refinement})")
 
     def _show_cursor(self, scene_pos):
-        """The cursor's position and the grey level of the pixel under it (to compare with the threshold)."""
-        if self.image is None:
+        """The cursor's position and the grey level of the pixel under it in the image shown (to compare with the
+        threshold)."""
+        if self.shown is None:
             return
         pos = self.plot.vb.mapSceneToView(scene_pos)
         column, row = round(pos.x()), round(pos.y())
-        rows, cols = self.image.shape
-        grey = f", grey level {self.image[row, column]}" if 0 <= row < rows and 0 <= column < cols else ""
+        rows, cols = self.shown.shape
+        grey = f", grey level {self.shown[row, column]}" if 0 <= row < rows and 0 <= column < cols else ""
         self.cursor_label.setText(f"x = {pos.x():.1f} px, y = {pos.y():.1f} px{grey}")
