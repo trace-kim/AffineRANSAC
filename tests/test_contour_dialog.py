@@ -102,7 +102,10 @@ def test_settings_that_change_nothing_are_greyed_out(tmp_path):
     assert dialog.editors["min_solidity"].isEnabled()
     dialog.editors["refinement"].setCurrentText("none")
     assert [name for name, widget in dialog.editors.items() if not widget.isEnabled()] == \
-        ["search_px", "edge_step_px", "edge_blur_px", "normal_span"]
+        ["median_px", "nlm_h", "tv_weight", "search_px", "edge_step_px", "edge_blur_px", "normal_span"]
+    for method, option in (("median", "median_px"), ("non-local means", "nlm_h"), ("total variation", "tv_weight")):
+        dialog.editors["denoise"].setCurrentText(method)  # each method's option only
+        assert [name for name in ("median_px", "nlm_h", "tv_weight") if dialog.editors[name].isEnabled()] == [option]
     assert not dialog.boxes["Refined contours"].isEnabled() and not dialog.layers["Refined contours"].isVisible()
 
 
@@ -122,7 +125,7 @@ def test_with_the_background_flattened_the_window_shows_the_image_the_contacts_a
     np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, contact_mask(flattened, method="otsu")[0])
     x, y = dialog.layers["Refined centres"].getData()
     np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
-    assert "of the flattened image" in dialog.summary.text() and dialog.values() == s
+    assert "of the image flattened" in dialog.summary.text() and dialog.values() == s
 
 
 def test_upscaled_the_window_shows_the_upscaled_image_over_the_image_as_loaded(tmp_path):
@@ -143,6 +146,22 @@ def test_upscaled_the_window_shows_the_upscaled_image_over_the_image_as_loaded(t
     x, y = dialog.layers["Refined centres"].getData()
     np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
     assert "of the image upscaled 2×" in dialog.summary.text() and dialog.values() == s
+
+
+def test_denoised_the_window_shows_the_image_denoised_then_upscaled(tmp_path):
+    """D132: the image shown is the one the contacts are found in, denoised before it is upscaled; the line says so."""
+    dialog, path = open_dialog(tmp_path)
+    image = load_sem_image(path)
+    dialog.editors["denoise"].setCurrentText("median")
+    dialog.editors["median_px"].setValue(5)
+    dialog.editors["upscale"].setValue(2)
+    settle(dialog)
+    s = replace(SETTINGS, denoise="median", median_px=5, upscale=2)
+    np.testing.assert_array_equal(dialog.image_item.image, prepared_image(image, denoise="median", median_px=5,
+                                                                          upscale=2))
+    x, y = dialog.layers["Refined centres"].getData()
+    np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
+    assert "of the image denoised (median) and upscaled 2×" in dialog.summary.text() and dialog.values() == s
 
 
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):

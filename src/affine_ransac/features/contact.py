@@ -1,8 +1,9 @@
 """Detect contact holes in an SEM image by thresholding.
 
 Before it, on request (pipeline.find_contacts background_px): flatten_background() removes brightness that varies
-across the image (charging, shading), so that one threshold fits the whole image; then (upscale) upscaled_image()
-interpolates the image to more pixels, and in_image_pixels() puts the contacts found in it back in the image's pixels.
+across the image (charging, shading), so that one threshold fits the whole image; then (denoise) denoised_image()
+removes pixel noise (median, non-local means or total variation); then (upscale) upscaled_image() interpolates the image
+to more pixels, and in_image_pixels() puts the contacts found in it back in the image's pixels.
 
 Steps:
   1. Blur slightly to suppress pixel noise.
@@ -34,10 +35,13 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 from skimage.filters import threshold_multiotsu
+from skimage.restoration import denoise_tv_chambolle
 
 METHODS = ("otsu", "otsu3", "band")
 BAND_MIN_SOLIDITY = 0.9
 LEFT_OUT = ("border", "small", "large", "not solid")  # why a region is not a contact (step 4)
+DENOISERS = ("none", "median", "non-local means", "total variation")  # denoised_image methods (D132)
+NLM_PATCH_PX, NLM_SEARCH_PX = 7, 21  # non-local means: patch and search window, OpenCV's recommended sizes
 
 
 @dataclass
@@ -66,6 +70,29 @@ def flatten_background(image: np.ndarray, size_px: float, dark_contacts: bool = 
     background = cv2.GaussianBlur(continued, (0, 0), sigma)[pad:-pad, pad:-pad]
     flat = image.astype(np.float32) - background + background.mean()
     return np.clip(np.round(flat), 0, 255).astype(np.uint8)
+
+
+def denoised_image(image: np.ndarray, method: str = "none", median_px: int = 3, nlm_h: float = 10.0,
+                   tv_weight: float = 0.1) -> np.ndarray:
+    """The image (uint8) with its pixel noise removed by `method` (D132); "none": the image itself.
+    "median": each pixel the median of a median_px x median_px window (odd): removes isolated bright or dark pixels and
+    spots narrower than half the window, and keeps straight edges where they are.
+    "non-local means": each pixel a weighted mean of the pixels whose NLM_PATCH_PX patch looks like its own, within
+    NLM_SEARCH_PX (cv2.fastNlMeansDenoising); nlm_h (grey levels) sets how alike: larger removes more noise, and detail.
+    "total variation": the image closest to it with the least total variation (Chambolle's algorithm,
+    skimage.restoration.denoise_tv_chambolle on the grey levels / 255): flat regions with sharp edges between them;
+    tv_weight: larger is flatter."""
+    if method == "none":
+        return image
+    if method == "median":
+        return cv2.medianBlur(image, median_px)
+    if method == "non-local means":
+        return cv2.fastNlMeansDenoising(image, None, h=nlm_h, templateWindowSize=NLM_PATCH_PX,
+                                        searchWindowSize=NLM_SEARCH_PX)
+    if method == "total variation":
+        flat = denoise_tv_chambolle(image / 255.0, weight=tv_weight)
+        return np.clip(np.round(flat * 255), 0, 255).astype(np.uint8)
+    raise ValueError(f"denoise must be one of {DENOISERS}, not {method!r}")
 
 
 def upscaled_image(image: np.ndarray, factor: int) -> np.ndarray:

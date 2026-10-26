@@ -2,7 +2,9 @@ import cv2
 import numpy as np
 import pytest
 
-from affine_ransac.features.contact import (DetectedContacts, detect_contacts, flatten_background,
+from skimage.restoration import denoise_tv_chambolle
+
+from affine_ransac.features.contact import (DetectedContacts, denoised_image, detect_contacts, flatten_background,
                                             in_image_pixels, upscaled_image)
 from affine_ransac.io.sem_image import crop_databar, load_sem_image
 from sample_sem import write_sem_like
@@ -102,6 +104,29 @@ def test_an_upscaled_image_covers_the_same_area_and_its_contacts_map_back():
         np.testing.assert_allclose(found.centers, [[6, 4]], atol=1e-6)
         np.testing.assert_allclose(found.contours[0], [[6, 4]], atol=1e-6)
         assert found.areas[0] == 16 and found.threshold == 100.0
+
+
+def test_each_denoising_method_is_the_librarys_own():
+    """D132: OpenCV's median and non-local means (patch 7 px, search 21 px), scikit-image's total variation
+    (Chambolle) on the grey levels / 255; none gives the image itself."""
+    image = np.random.default_rng(0).integers(0, 256, (40, 50)).astype(np.uint8)
+    assert denoised_image(image) is image
+    np.testing.assert_array_equal(denoised_image(image, "median", median_px=5), cv2.medianBlur(image, 5))
+    np.testing.assert_array_equal(denoised_image(image, "non-local means", nlm_h=12.0),
+                                  cv2.fastNlMeansDenoising(image, None, 12.0, 7, 21))
+    flat = denoise_tv_chambolle(image / 255.0, weight=0.2)
+    np.testing.assert_array_equal(denoised_image(image, "total variation", tv_weight=0.2),
+                                  np.clip(np.round(flat * 255), 0, 255).astype(np.uint8))
+    with pytest.raises(ValueError, match="denoise must be one of"):
+        denoised_image(image, "wavelet")
+
+
+def test_the_median_removes_isolated_pixels_and_keeps_an_edge_where_it_is():
+    edge = np.full((20, 20), 60, np.uint8)
+    edge[:, 10:] = 130
+    spotted = edge.copy()
+    spotted[5, 4], spotted[12, 15] = 200, 0  # a bright pixel in the dark side, a dark one in the bright side
+    np.testing.assert_array_equal(denoised_image(spotted, "median"), edge)
 
 
 def test_bright_contacts():

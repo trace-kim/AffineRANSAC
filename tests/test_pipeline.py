@@ -6,8 +6,8 @@ from scipy.spatial import cKDTree
 
 from affine_ransac.io.design import load_layout
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.features.contact import (DetectedContacts, detect_contacts, flatten_background, in_image_pixels,
-                                            upscaled_image)
+from affine_ransac.features.contact import (DetectedContacts, denoised_image, detect_contacts, flatten_background,
+                                            in_image_pixels, upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, find_contacts,
@@ -181,6 +181,22 @@ def test_find_contacts_upscales_the_image_with_its_options_in_pixels_of_the_imag
     assert distances(refined).max() < 0.1
     # an area limit of the image as given, at every factor
     assert len(find_contacts(image, upscale=4, min_area_px=2 * int(plain.areas.max()))[0].centers) == 0
+
+
+def test_find_contacts_denoises_the_image_before_it_upscales_it(tmp_path):
+    """D132: the contacts are found in the image denoised, with each method's own option, then upscaled
+    (prepared_image); the contrast check sees the denoised image too."""
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
+    image = load_sem_image(tmp_path / "tile.jpg")
+    for method, option in (("median", {"median_px": 5}), ("non-local means", {"nlm_h": 15.0}),
+                           ("total variation", {"tv_weight": 0.2})):
+        denoised = denoised_image(image, method, **option)
+        np.testing.assert_array_equal(prepared_image(image, denoise=method, upscale=2, **option),
+                                      upscaled_image(denoised, 2))
+        expected = find_contacts(denoised, upscale=2, min_contrast=3.0)
+        found = find_contacts(image, denoise=method, upscale=2, min_contrast=3.0, **option)
+        np.testing.assert_array_equal(found[1].centers, expected[1].centers)
+        assert found[2] == expected[2] and len(found[1].centers) > 40
 
 
 def test_with_refinement_none_the_design_tone_is_chosen_with_the_detected_centres(tmp_path, monkeypatch):

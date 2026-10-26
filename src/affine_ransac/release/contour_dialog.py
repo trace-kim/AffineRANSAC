@@ -1,8 +1,8 @@
 """Contour diagnosis (docs/SPEC.md D129): try the contour settings (analysis.CONTOUR_SETTINGS, D128) on one SEM image
 before a run uses them.
 
-ContourDialog shows a loaded image, as the contacts are found in it (with the background flattened, D130, and
-upscaled, D131, if asked), with the contacts the settings find in it, exactly as a run finds them
+ContourDialog shows a loaded image, as the contacts are found in it (with the background flattened, D130, denoised,
+D132, and upscaled, D131, if asked), with the contacts the settings find in it, exactly as a run finds them
 (pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
 (after edge refinement: what the run measures) and, on request, the threshold mask (the pixels the threshold takes as
 contact). One line says in words how many contacts were found and why the other regions were left out. Every change of
@@ -30,13 +30,15 @@ from affine_ransac.release import style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
 
-GROUPS = (("Pre-processing", ("background_px", "upscale")),
+GROUPS = (("Pre-processing", ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale")),
           ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
                                         "max_area_px", "min_solidity", "min_contrast")),
           ("Edge refinement", ("refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")))
 REFINEMENT_OPTIONS = ("search_px", "edge_step_px", "edge_blur_px", "normal_span")  # unused with refinement none
-STEPS = {"background_px": 5, "detection_blur_px": 0.1, "min_area_px": 5, "max_area_px": 100, "min_solidity": 0.01, "min_contrast": 0.5,
-         "search_px": 0.5, "edge_step_px": 0.05, "edge_blur_px": 0.1}  # spin box steps (the others: 1)
+DENOISE_OPTIONS = {"median_px": "median", "nlm_h": "non-local means", "tv_weight": "total variation"}  # each method's
+STEPS = {"background_px": 5, "median_px": 2, "tv_weight": 0.01, "detection_blur_px": 0.1, "min_area_px": 5,
+         "max_area_px": 100, "min_solidity": 0.01, "min_contrast": 0.5, "search_px": 0.5, "edge_step_px": 0.05,
+         "edge_blur_px": 0.1}  # spin box steps (the others: 1)
 LAYERS = ("Threshold mask", "Detected contours", "Detected centres", "Refined contours", "Refined centres")
 IMAGE_FILES = "SEM images (*.jpg *.jpeg *.png *.tif *.tiff *.bmp);;All files (*)"
 NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these settings find in it."
@@ -55,9 +57,10 @@ class Diagnosis:
 def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
     """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
     mask."""
-    flat = prepared_image(image, s.background_px, s.dark_contacts)
-    # find_contacts would flatten the image first: given it flattened (~0.1-0.3 s), it need not do it again
-    detected, refined, low_contrast = find_contacts(flat, **contour_options(replace(s, background_px=0.0)))
+    flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight)
+    # find_contacts would flatten and denoise the image first: given it so (up to a few s), it need not do it again
+    detected, refined, low_contrast = find_contacts(flat, **contour_options(replace(s, background_px=0.0,
+                                                                                    denoise="none")))
     shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
     mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
     return Diagnosis(shown, detected, refined, low_contrast, mask)
@@ -70,18 +73,24 @@ def summary(d: Diagnosis, s: Settings) -> str:
     left_out = [f"{count} {reasons[why]}" for why, count in d.detected.left_out.items() if count]
     if d.low_contrast:
         left_out.append(f"{d.low_contrast} below the contrast of {s.min_contrast:g} noise σ")
-    upscaled = f" upscaled {s.upscale}×" if s.upscale > 1 else ""
-    of = f" of the flattened image{upscaled}" if s.background_px > 0 else f" of the image{upscaled}" if upscaled else ""
+    steps = [step for step, done in (("flattened", s.background_px > 0),
+                                     (f"denoised ({s.denoise})", s.denoise != "none"),
+                                     (f"upscaled {s.upscale}×", s.upscale > 1)) if done]
+    if len(steps) > 1:
+        steps = [", ".join(steps[:-1]) + " and " + steps[-1]]
+    of = f" of the image {steps[0]}" if steps else ""
     text = (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
             f"{d.detected.threshold:.0f}{of}). ")
     return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
 
 
 def applies(name: str, s: Settings) -> bool:
-    """Whether a contour setting changes anything, given the others: min_solidity for band only, the refinement's
-    options unless refinement is none."""
+    """Whether a contour setting changes anything, given the others: min_solidity for band only, each denoising
+    method's option for that method only, the refinement's options unless refinement is none."""
     if name == "min_solidity":
         return s.detection == "band"
+    if name in DENOISE_OPTIONS:
+        return s.denoise == DENOISE_OPTIONS[name]
     return name not in REFINEMENT_OPTIONS or s.refinement != "none"
 
 

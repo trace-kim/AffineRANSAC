@@ -111,5 +111,9 @@ they open, flagged as outdated.
   many times as many pixels per side before the contacts are found in it, for contacts only a few pixels across; the
   contacts come back in the image's own pixels, and the other settings stay in pixels of the image as loaded. *Contour
   diagnosis* shows the upscaled image (D131).
+- Contour setting `denoise` (none by default, so runs give the same numbers): removes pixel noise before the
+  contacts are found, after the flattening and before the upscaling: *median* (window `median_px`), *non-local means*
+  (strength `nlm_h`) or *total variation* (`tv_weight`). *Contour diagnosis* shows the denoised image and greys the
+  options of the methods not chosen (D132).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

@@ -32,7 +32,7 @@ from typing import Callable
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.features.contact import BAND_MIN_SOLIDITY
+from affine_ransac.features.contact import BAND_MIN_SOLIDITY, DENOISERS
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
@@ -93,6 +93,17 @@ class Settings:
                                         "contacts (filled in over a disk this many pixels across, then smoothed) is "
                                         "subtracted. Wider than a contact, narrower than the brightness changes; "
                                         "0 = off")
+    denoise: str = setting("none", "Remove pixel noise before the contacts are found (after the flattening, before "
+                                   "the upscaling). median: each pixel the median of a window MEDIAN_PX wide: removes "
+                                   "isolated bright or dark pixels and small spots, keeps edges. non-local means: each "
+                                   "pixel a mean of the pixels whose surroundings look alike (NLM_H); can wipe out "
+                                   "contacts only a few pixels across. total variation: flat regions with sharp edges "
+                                   "between them (TV_WEIGHT). none: off")
+    median_px: int = setting(3, "Denoise median: window width in pixels (odd); removes spots narrower than half of it")
+    nlm_h: float = setting(10.0, "Denoise non-local means: strength in grey levels (OpenCV h); larger removes more "
+                                 "noise, and more detail")
+    tv_weight: float = setting(0.1, "Denoise total variation: weight (on grey levels / 255); larger gives flatter "
+                                    "regions and removes more detail")
     upscale: int = setting(1, "Interpolate the image (bicubic) to this many times as many pixels per side, then find "
                               "the contacts in it (after the flattening): finer threshold outlines and centres for "
                               "contacts only a few pixels across. The other settings in pixels stay pixels of the "
@@ -148,14 +159,14 @@ RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis on
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
-               "normal_span", "background_px", "upscale"}
+               "normal_span", "background_px", "upscale", "denoise", "median_px", "nlm_h", "tv_weight"}
 # The settings that find the contacts in an SEM image (pipeline.find_contacts takes them by these names; D128)
-CONTOUR_SETTINGS = ("background_px", "upscale", "detection", "dark_contacts", "detection_blur_px", "min_area_px",
-                    "max_area_px", "min_solidity", "min_contrast", "refinement", "search_px", "edge_step_px",
-                    "edge_blur_px", "normal_span")
+CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale", "detection",
+                    "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
+                    "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
 STITCH_METHODS = ("all overlaps", "measurement order first")
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
-           "stitch_method": STITCH_METHODS}
+           "stitch_method": STITCH_METHODS, "denoise": DENOISERS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
 # with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
 BEFORE = {"refinement": "steepest gradient"}  # D122
@@ -203,6 +214,9 @@ def check_settings(s: Settings, kind: str):
               "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]"),
               "background_px": (s.background_px == 0 or s.background_px >= 3, "must be 0 (off) or >= 3"),
               "upscale": (1 <= s.upscale <= MAX_UPSCALE, f"must be 1 (off) to {MAX_UPSCALE}"),
+              "median_px": (s.median_px >= 3 and s.median_px % 2 == 1, "must be odd and >= 3"),
+              "nlm_h": (s.nlm_h > 0, "must be > 0"),
+              "tv_weight": (s.tv_weight > 0, "must be > 0"),
               "detection_blur_px": (s.detection_blur_px >= 0, "must be >= 0"),
               "min_area_px": (s.min_area_px >= 0, "must be >= 0"),
               "max_area_px": (s.max_area_px >= 0, "must be >= 0 (0: no limit)"),

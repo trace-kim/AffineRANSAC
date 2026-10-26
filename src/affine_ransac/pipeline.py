@@ -29,8 +29,9 @@ from pathlib import Path
 
 import numpy as np
 
-from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, detect_contacts,
-                                            flatten_background, in_image_pixels, keep_contacts, upscaled_image)
+from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, denoised_image,
+                                            detect_contacts, flatten_background, in_image_pixels, keep_contacts,
+                                            upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
@@ -186,19 +187,24 @@ class TileResult:
         return sem, design
 
 
-def prepared_image(image: np.ndarray, background_px: float = 0.0, dark_contacts: bool = True,
-                   upscale: int = 1) -> np.ndarray:
+def prepared_image(image: np.ndarray, background_px: float = 0.0, dark_contacts: bool = True, denoise: str = "none",
+                   median_px: int = 3, nlm_h: float = 10.0, tv_weight: float = 0.1, upscale: int = 1) -> np.ndarray:
     """The image the contacts are found in (find_contacts): with its background flattened over background_px
-    (features.contact.flatten_background) if that is > 0, then upscaled `upscale` times (upscaled_image); with neither,
-    the image itself."""
+    (features.contact.flatten_background) if that is > 0, then denoised (denoised_image: method `denoise` with its
+    option), then upscaled `upscale` times (upscaled_image); with none of them, the image itself. Denoised before it
+    is upscaled: interpolation spreads each noisy pixel over several, which no longer look like noise (D132)."""
     flat = flatten_background(image, background_px, dark_contacts) if background_px > 0 else image
-    return upscaled_image(flat, upscale)
+    return upscaled_image(denoised_image(flat, denoise, median_px, nlm_h, tv_weight), upscale)
 
 
 def find_contacts(
     image: np.ndarray,
-    *,  # 15 options: by name only
+    *,  # 19 options: by name only
     background_px: float = 0.0,
+    denoise: str = "none",
+    median_px: int = 3,
+    nlm_h: float = 10.0,
+    tv_weight: float = 0.1,
     upscale: int = 1,
     detection: str = "otsu",
     dark_contacts: bool = True,
@@ -217,20 +223,20 @@ def find_contacts(
     """The contacts of one SEM image (uint8), as every run finds them: (detected, refined, how many detected contacts
     the contrast check dropped). The options are the settings of the same names (analysis.CONTOUR_SETTINGS, D128).
 
-    Every step works on prepared_image (background_px > 0: the background flattened first, D130; upscale > 1: then
-    upscaled that many times, D131). The options in pixels, and normal_span (contour points), are those of the image
-    as given: in the upscaled image they are `upscale` times larger (areas its square), and the contacts are returned
-    in the image's own pixels.
+    Every step works on prepared_image (background_px > 0: the background flattened first, D130; denoise: then
+    denoised, D132; upscale > 1: then upscaled that many times, D131). The options in pixels, and normal_span (contour
+    points), are those of the image as given: in the upscaled image they are `upscale` times larger (areas its square),
+    and the contacts are returned in the image's own pixels.
     detected: features.contact.detect_contacts with method `detection` ("otsu", "otsu3" or "band"), blur, area limits
     (max_area_px 0: no limit) and, for "band" only, min_solidity; then, if min_contrast > 0, without the contacts whose
-    contrast against a ring around them is below this many noise sigma (contact_contrast, on the image not upscaled:
-    its own noise; false contacts in images without pattern). refined: features.edges.refine_edges with edge rule
-    `refinement` ("mid-level", "steepest gradient" or "threshold"), or with "none" the detected contacts themselves:
-    either way what the tile is measured with. seconds: if given, gets the time of each step ("detect" includes the
-    flattening and the upscaling, "refine").
+    contrast against a ring around them is below this many noise sigma (contact_contrast, on the image not upscaled,
+    denoised if asked: its own noise; false contacts in images without pattern). refined: features.edges.refine_edges
+    with edge rule `refinement` ("mid-level", "steepest gradient" or "threshold"), or with "none" the detected contacts
+    themselves: either way what the tile is measured with. seconds: if given, gets the time of each step ("detect" includes the
+    flattening, the denoising and the upscaling, "refine").
     """
     t_start = time.perf_counter()
-    image = prepared_image(image, background_px, dark_contacts)
+    image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
     f = upscale
     big = upscaled_image(image, f)
     detected = detect_contacts(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,

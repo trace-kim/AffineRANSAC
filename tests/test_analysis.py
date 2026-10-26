@@ -304,6 +304,10 @@ def test_invalid_settings_fail_before_any_work(tmp_path):
         with pytest.raises(ValueError, match=rf"upscale must be 1 \(off\) to {analysis.MAX_UPSCALE}"):
             check_settings(Settings(upscale=factor), "images")
     check_settings(Settings(upscale=4), "images")  # D131
+    with pytest.raises(ValueError, match=r"median_px must be odd and >= 3.*nlm_h must be > 0.*tv_weight must be > 0.*"
+                                         r"denoise must be one of"):
+        check_settings(Settings(median_px=4, nlm_h=0.0, tv_weight=0.0, denoise="wavelet"), "images")
+    check_settings(Settings(denoise="total variation", median_px=5), "images")  # D132
 
 
 def test_the_contour_settings_are_the_options_of_find_contacts():
