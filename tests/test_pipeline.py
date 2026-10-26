@@ -10,10 +10,10 @@ from affine_ransac.features.contact import (DetectedContacts, denoised_image, de
                                             in_image_pixels, upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
-from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, contact_spacing,
-                                    design_outlines, find_contacts, inside_frame, measurement_pairs, overlap_checks,
-                                    pair_kind, pair_residuals, placed_image_by_image, prepared_image, process_tile,
-                                    slipped_pairs, stitch_design, stitch_image_by_image, stitch_tiles,
+from affine_ransac.pipeline import (MIN_AGREEMENT, DesignContacts, TileResult, choose_design_contacts,
+                                    contact_spacing, design_outlines, find_contacts, inside_frame, measurement_pairs,
+                                    overlap_checks, pair_kind, pair_residuals, placed_image_by_image, prepared_image,
+                                    process_tile, slipped_pairs, stitch_design, stitch_image_by_image, stitch_tiles,
                                     stitch_tiles_affine, stitch_tiles_rigid, tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
@@ -450,7 +450,7 @@ def test_image_by_image_lines_up_overlaps_that_pairing_at_the_stage_position_can
     worst = max(np.abs(r).max() for r in pair_residuals(points, stitch, stitch.corrections))
     assert worst < 2  # every overlap agrees (noise 0.3 nm per contact)
     assert whole_pitches(stitch.corrections, truth, 50)  # on a repeating pattern a whole pitch is not seen
-    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, stitch.corrections, tolerance_nm=0.5))
+    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, stitch.corrections, tolerance_nm=0.5, search_nm=100))
 
 
 def test_image_by_image_changes_nothing_while_the_images_lie_within_half_a_pitch():
@@ -516,21 +516,21 @@ def test_the_overlap_check_names_every_overlap_of_an_image_placed_wrong():
     quarter of the 50 nm pitch) its contacts fall between the other's, by less they pair but lie apart."""
     errors = np.random.default_rng(4).normal(0, 4, (12, 2))
     points, centers, fovs, truth = mosaic(errors, GRID_50)
-    right = overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0)
+    right = overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0, search_nm=100)
     assert len(right) > 12 and all(c.lines_up for c in right)  # the 120 nm overlaps hold two rows each
     assert min(c.agreement for c in right) > 0.95 and max(c.offset_nm for c in right) < 0.5
 
     wrong = truth.copy()
     wrong[5] += (20.0, 0.0)
     wrong[6] += (0.0, 5.0)
-    checks = {(c.i, c.j): c for c in overlap_checks(points, centers, fovs, wrong, tolerance_nm=1.0)}
+    checks = {(c.i, c.j): c for c in overlap_checks(points, centers, fovs, wrong, tolerance_nm=1.0, search_nm=100)}
     assert {ij for ij, c in checks.items() if not c.lines_up} == {(c.i, c.j) for c in right if {5, 6} & {c.i, c.j}}
     assert checks[4, 5].agreement < 0.1  # 20 nm off: nothing pairs
     assert checks[2, 6].agreement > 0.95 and abs(checks[2, 6].offset_nm - 5) < 0.5  # 5 nm off: every contact pairs
 
     pitch = truth.copy()
     pitch[5] += (50.0, 0.0)  # a whole pitch on a repeating pattern: nothing to see, and nothing changes (D105)
-    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, pitch, tolerance_nm=1.0))
+    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, pitch, tolerance_nm=1.0, search_nm=100))
 
 
 def test_image_by_image_takes_the_shift_pairing_every_contact_not_a_smaller_one_pairing_most():
@@ -557,6 +557,23 @@ def test_image_by_image_does_not_depend_on_a_tolerance_near_the_noise():
     guide = placed_image_by_image(points, centers, fovs, search_nm=100)
 
     assert not np.isnan(guide).any() and whole_pitches(guide - guide.mean(axis=0), truth, 50)
+
+
+def test_the_overlap_check_sees_a_whole_pitch_slip_where_the_pattern_does_not_fully_repeat():
+    """D140: a fifth of the contacts missing, tile 5 placed one pitch off: most of its overlap contacts still pair
+    (about 80 %, above MIN_AGREEMENT), but the shift one pitch back pairs clearly more, so they do not line up. On the
+    full grid the same slip lines up (every whole-pitch shift ties)."""
+    contacts = GRID_50[np.random.default_rng(5).random(len(GRID_50)) > 0.2]
+    points, centers, fovs, truth = mosaic(np.zeros((12, 2)), contacts)
+    slipped = truth.copy()
+    slipped[5] += (50.0, 0.0)
+
+    checks = overlap_checks(points, centers, fovs, slipped, tolerance_nm=1.0, search_nm=100)
+
+    bad = [c for c in checks if not c.lines_up]
+    assert {(c.i, c.j) for c in bad} == {(1, 5), (4, 5), (5, 6), (5, 9)}  # its sides; a corner holds too few contacts
+    assert all(c.better and c.agreement > MIN_AGREEMENT for c in bad)
+    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0, search_nm=100))
 
 
 def test_image_by_image_leaves_an_image_without_matching_contacts_unplaced():

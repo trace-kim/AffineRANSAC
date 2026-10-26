@@ -758,8 +758,8 @@ def checked_overlaps(points, centers, sizes, stitch: StitchResult, reference: np
     those fitted more than max_match_nm from the shift the stitching in measurement order (reference) predicts
     (pipeline.slipped_pairs, D75)."""
     if s.stitch_method == "image by image":
-        checks = overlap_checks(points, centers, sizes, stitch.corrections, s.overlap_tolerance_nm, s.outlier_factor,
-                                s.min_matched)
+        checks = overlap_checks(points, centers, sizes, stitch.corrections, s.overlap_tolerance_nm, s.max_match_nm,
+                                s.outlier_factor, s.min_matched)
         log(overlap_check_text(checks))
         found = [(c.i, c.j) for c in checks if not c.lines_up]
     else:
@@ -779,14 +779,16 @@ def overlap_check_text(checks: list[OverlapCheck]) -> str:
     offset = offset[np.isfinite(offset)]
     apart = f"median {np.median(offset):.2f} nm, largest {offset.max():.2f} nm" if offset.size else "no contact paired"
     return (f"SEM overlaps where the stitching placed their images: {len(checks)} checked; contacts paired up: median "
-            f"{np.median(agreement):.0%}, lowest {agreement.min():.0%}; the two images apart: {apart}")
+            f"{np.median(agreement):.0%}, lowest {agreement.min():.0%}; the two images apart: {apart}; "
+            f"{sum(c.better for c in checks)} where another shift pairs clearly more")
 
 
 def slip_text(s: Settings) -> str:
     """What the SEM overlaps that checked_overlaps finds are, for the log line that lists them, by stitching method."""
     if s.stitch_method == "image by image":
-        return ("do not line up where the stitching placed their images (fewer than half their contacts pair up, or the "
-                "two images lie more than overlap_tolerance_nm apart)")
+        return ("do not line up where the stitching placed their images (fewer than half their contacts pair up, "
+                "another shift of one image pairs clearly more, or the two images lie more than overlap_tolerance_nm "
+                "apart)")
     return ("fitted more than max_match_nm away from the shift the stitching in measurement order predicts (contacts "
             "paired one row off?)" + ("" if s.stitch_method == "measurement order first"
                                       else "; the stitching method 'measurement order first' avoids this"))

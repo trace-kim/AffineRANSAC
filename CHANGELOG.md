@@ -143,5 +143,8 @@ they open, flagged as outdated.
   `overlap_tolerance_nm` no longer pairs anything (only the check after the stitching uses it), so contact noise above
   it no longer leaves overlaps not matched or tiles not stitched. An overlap left out says on the Stitching tab how
   many of its contacts paired (D139).
+- Stitching *image by image*: the check after the stitching also flags an overlap where another shift of one image
+  pairs clearly more of its contacts than where it is, e.g. an image a whole pitch off where the pattern does not fully
+  repeat (most contacts still pair there). Numbers unchanged (D140).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

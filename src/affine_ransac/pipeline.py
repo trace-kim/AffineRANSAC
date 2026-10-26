@@ -509,13 +509,15 @@ def placement_options(points: list[np.ndarray], corrections: np.ndarray, placed:
                       search_nm: float, gate: float, min_matched: int) -> list[Placement]:
     """The ways to place tile k against its placed neighbours `placed` that agree best, smallest correction first; []
     if none. Its candidate shifts (matching.candidate_shifts of its overlap contacts against theirs, any size up to
-    search_nm) are each refined until they settle (fitted_placement). Those pairing fewer than min_matched contacts,
+    search_nm from where tile k is: its correction, or its nominal position if it has none) are each refined until
+    they settle (fitted_placement). Those pairing fewer than min_matched contacts,
     LINED_UP times as many as the one pairing the most (e.g. a sliver of an overlap whose few contacts happen to
     pair) or MIN_AGREEMENT of what they should are left out; of the others, the one agreeing best and those tied with
     it (ties)."""
+    start = np.nan_to_num(corrections[k])
     theirs = np.concatenate([points[o][shared[o, k]] + corrections[o] for o in placed])
-    mine = np.concatenate([points[k][shared[k, o]] for o in placed])
-    fits = [fitted_placement(points, corrections, placed, k, -shift, gate)  # mine + correction = theirs
+    mine = np.concatenate([points[k][shared[k, o]] + start for o in placed])
+    fits = [fitted_placement(points, corrections, placed, k, start - shift, gate)  # mine + correction = theirs
             for shift in candidate_shifts(theirs, mine, search_nm, gate)]
     most = max((f.pairs for f in fits), default=0)
     fits = [f for f in fits if f.pairs >= max(min_matched, LINED_UP * most) and f.agreement >= MIN_AGREEMENT]
@@ -611,11 +613,13 @@ class OverlapCheck:
     j: int
     agreement: float  # of the contacts both images should see, the share of the image with fewer that pair up
     offset_nm: float  # length of B − A of those pairs at the placement (robust fit, fit_overlap), nm; NaN: no pairs
-    lines_up: bool    # agreement >= MIN_AGREEMENT and offset_nm <= the tolerance
+    better: bool      # another shift of tile j against tile i agrees clearly better (placement_options, ties)
+    lines_up: bool    # agreement >= MIN_AGREEMENT, no better shift, and offset_nm <= the tolerance
 
 
 def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, corrections: np.ndarray,
-                   tolerance_nm: float, outlier_factor: float = 3.0, min_matched: int = 5) -> list[OverlapCheck]:
+                   tolerance_nm: float, search_nm: float, outlier_factor: float = 3.0,
+                   min_matched: int = 5) -> list[OverlapCheck]:
     """Whether the overlaps line up at the placement `corrections` ((n_tiles, 2), e.g. StitchResult.corrections),
     whatever paired them (D137). points: per tile, contact centres in mask nm at the nominal placement; centers, fovs:
     (n_tiles, 2), nm.
@@ -624,12 +628,16 @@ def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarr
     PAIRING_GATE times contact_spacing (seen_pairs): wide against the noise, well below half the pitch, so a contact
     never pairs with its neighbour. agreement counts the pairs per contact of the image with fewer, so contacts one
     image failed to detect do not count. An image placed wrong by less than the gate shows in the offset, one placed
-    wrong by more in the agreement; by a whole pitch on a repeating pattern it lines up (and that does not matter,
-    D105). Overlaps where either image has fewer than min_matched such contacts (e.g. corners) are not checked.
+    wrong by more in the agreement. The agreement is also compared with that of the other shifts of tile j against
+    tile i (up to search_nm from where it is, placement_options): one clearly better (ties) means the overlap does
+    not line up even if most of its contacts pair, e.g. an image placed a whole pitch off where the pattern does not
+    fully repeat (D140). By a whole pitch on a pattern that repeats it lines up: every such shift ties (and that does
+    not matter, D105). Overlaps where either image has fewer than min_matched such contacts (e.g. corners) are not
+    checked.
     """
     gate = PAIRING_GATE * contact_spacing(points)
     checks = []
-    for i, j, _ in overlapping_pairs(centers, fovs):
+    for i, j, box in overlapping_pairs(centers, fovs):
         if np.isnan(corrections[[i, j]]).any():
             continue
         a, b = points[i] + corrections[i], points[j] + corrections[j]
@@ -639,7 +647,12 @@ def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarr
         agreement = len(ia) / seen
         offset = (float(np.linalg.norm(fit_overlap(a[ia], b[ib], outlier_factor=outlier_factor).shift)) if len(ia)
                   else np.nan)
-        checks.append(OverlapCheck(i, j, agreement, offset, agreement >= MIN_AGREEMENT and offset <= tolerance_nm))
+        shared = {(i, j): points_in_box(points[i], box, margin=gate), (j, i): points_in_box(points[j], box, margin=gate)}
+        options = placement_options(points, corrections, [i], j, shared, search_nm, gate, min_matched)
+        better = bool(options) and not ties(max(options, key=lambda f: f.agreement), Placement(corrections[j], len(ia),
+                                                                                              seen))
+        lines_up = agreement >= MIN_AGREEMENT and not better and offset <= tolerance_nm
+        checks.append(OverlapCheck(i, j, agreement, offset, better, lines_up))
     return checks
 
 
