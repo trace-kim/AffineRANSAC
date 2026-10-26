@@ -10,10 +10,11 @@ from affine_ransac.features.contact import (DetectedContacts, denoised_image, de
                                             in_image_pixels, upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
-from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, design_outlines, find_contacts,
-                                    inside_frame, measurement_pairs, pair_kind, pair_residuals, placed_image_by_image,
-                                    prepared_image, process_tile, slipped_pairs, stitch_design, stitch_tiles,
-                                    stitch_tiles_affine, stitch_tiles_rigid, tie_residuals, tile_stripes)
+from affine_ransac.pipeline import (DesignContacts, TileResult, choose_design_contacts, contact_spacing,
+                                    design_outlines, find_contacts, inside_frame, measurement_pairs, overlap_checks,
+                                    pair_kind, pair_residuals, placed_image_by_image, prepared_image, process_tile,
+                                    slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_affine,
+                                    stitch_tiles_rigid, tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
 from test_stitching import about, rotation
@@ -475,6 +476,34 @@ def test_image_by_image_finds_large_offsets_exactly_where_the_pattern_does_not_r
                           guide=placed_image_by_image(points, centers, fovs, search_nm=150, tolerance_nm=10))
 
     np.testing.assert_allclose(stitch.corrections, truth, atol=0.3)
+
+
+def test_the_contact_spacing_is_the_pitch_of_the_array():
+    points, _, _, _ = mosaic(np.zeros((12, 2)), GRID_50)
+    assert abs(contact_spacing(points) - 50) < 1
+    assert np.isnan(contact_spacing([np.zeros((1, 2)), np.empty((0, 2))]))
+
+
+def test_the_overlap_check_names_every_overlap_of_an_image_placed_wrong():
+    """D137: whatever paired them, the overlaps of an image placed wrong do not line up: by more than the gate (a
+    quarter of the 50 nm pitch) its contacts fall between the other's, by less they pair but lie apart."""
+    errors = np.random.default_rng(4).normal(0, 4, (12, 2))
+    points, centers, fovs, truth = mosaic(errors, GRID_50)
+    right = overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0)
+    assert len(right) > 12 and all(c.lines_up for c in right)  # the 120 nm overlaps hold two rows each
+    assert min(c.agreement for c in right) > 0.95 and max(c.offset_nm for c in right) < 0.5
+
+    wrong = truth.copy()
+    wrong[5] += (20.0, 0.0)
+    wrong[6] += (0.0, 5.0)
+    checks = {(c.i, c.j): c for c in overlap_checks(points, centers, fovs, wrong, tolerance_nm=1.0)}
+    assert {ij for ij, c in checks.items() if not c.lines_up} == {(c.i, c.j) for c in right if {5, 6} & {c.i, c.j}}
+    assert checks[4, 5].agreement < 0.1  # 20 nm off: nothing pairs
+    assert checks[2, 6].agreement > 0.95 and abs(checks[2, 6].offset_nm - 5) < 0.5  # 5 nm off: every contact pairs
+
+    pitch = truth.copy()
+    pitch[5] += (50.0, 0.0)  # a whole pitch on a repeating pattern: nothing to see, and nothing changes (D105)
+    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, pitch, tolerance_nm=1.0))
 
 
 def test_image_by_image_leaves_an_image_without_matching_contacts_unplaced():

@@ -127,5 +127,10 @@ they open, flagged as outdated.
 - *Analysis → Parameters*: save the parameters under a name of your choice (*Save as...*) and load them again
   (*Load*, then OK), e.g. one set per dataset; *Delete* removes one. The dialog opens on the set in use. Each set
   holds the parameters of both image and contour CSV folders (D136).
+- Stitching *image by image*: a check that can fail. After the stitching, every overlap is checked where its two
+  images were placed: an overlap where fewer than half the contacts pair up, or whose images lie more than
+  `overlap_tolerance_nm` apart, is an *Error* on the Stitching tab and listed in the log, which also gives the median
+  and worst of both numbers. The check it replaces could never report anything, so badly stitched images showed as
+  "Stitching OK". Numbers unchanged (D137).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

@@ -54,6 +54,7 @@ def test_the_release_stitches_image_by_image_on_request(tmp_path):
     np.testing.assert_allclose(result.stitch.corrections, STAGE - STAGE.mean(axis=0), atol=0.2)
     assert "Stitching method: image by image (all 6 images placed image by image)" in lines
     assert result.slipped == [] and len(result.stitch.unplaced) == 0
+    assert any(line.startswith("SEM overlaps where the stitching placed their images: ") for line in lines)  # D137
     assert "overlap_tolerance_nm" in PARAMETERS["contour CSV"] and "overlap_tolerance_nm" in PARAMETERS["images"]
 
     (tmp_path / "images").mkdir()
@@ -459,7 +460,7 @@ def test_the_stitching_status_says_how_serious_it_is(tmp_path):
     assert "(CD000000 / CD000003)" in text
     result.settings = replace(result.settings, stitch_method="image by image")  # D133: checked on its own placement
     text = status(result)
-    assert "Error: 1 overlap(s) disagree with where their images were placed." in text and "row off" not in text
+    assert "Error: 1 overlap(s) do not line up." in text and "row off" not in text
     result.settings = replace(result.settings, stitch_method="all overlaps")
 
     result.slipped = None  # a run saved before the check was kept

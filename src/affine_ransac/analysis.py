@@ -39,9 +39,10 @@ from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import correct_points, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
-from affine_ransac.pipeline import (REFINEMENTS, StitchResult, TileResult, measurement_pairs, placed_image_by_image,
-                                    process_tile, slipped_pairs, stitch_design, stitch_tiles, stitch_tiles_rigid,
-                                    tile_boxes_from_points, tile_neighbours, tile_stripes)
+from affine_ransac.pipeline import (REFINEMENTS, OverlapCheck, StitchResult, TileResult, measurement_pairs,
+                                    overlap_checks, placed_image_by_image, process_tile, slipped_pairs, stitch_design,
+                                    stitch_tiles, stitch_tiles_rigid, tile_boxes_from_points, tile_neighbours,
+                                    tile_stripes)
 from affine_ransac.realign import realign_tiles
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, merge_observations, merge_values,
                                         paired_errors)
@@ -61,7 +62,8 @@ class Settings:
                                         "between neighbouring images, any size")
     overlap_tolerance_nm: float = setting(2.0, "Stitching image by image: overlap contacts pair within this once "
                                                 "the offset is found (< pitch / 2); an overlap whose contacts do not "
-                                                "line up within it at the placement is left out")
+                                                "line up within it at the placement is left out. After the stitching, "
+                                                "an overlap whose two images lie further apart than this is an error")
     design_max_match_nm: float = setting(25.0, "Design overlaps: the largest offset between neighbouring files "
                                                "(< pitch / 2)")
     outlier_factor: float = setting(3.0, "Overlap outlier if its residual > this x the median residual")
@@ -631,9 +633,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
         + (f" ({placement_text(reference)})" if by_image else ""))
     for name, result in (("SEM", raw_stitch), ("Design", design_stitch)):
         report_stitching(log, name, result, tile_ids)
-    slipped = slipped_pairs(raw_stitch, reference, s.overlap_tolerance_nm if by_image else s.max_match_nm)
-    if slipped:
-        log(f"!! {len(slipped)} SEM overlap(s) fitted {slip_text(s)}: {[(tile_ids[i], tile_ids[j]) for i, j in slipped]}")
+    checked_overlaps(sem_points, centers, sizes, raw_stitch, reference, s, log, tile_ids)
 
     # Raw errors per placement (no affine), one entry per physical contact.
     observations = {placement: errors(sem_points, sem_c, design_c) for placement, (sem_c, design_c)
@@ -751,13 +751,45 @@ def placement_text(guide: np.ndarray) -> str:
             f"nominal position")
 
 
-def slip_text(s: Settings) -> str:
-    """What the SEM overlaps that slipped_pairs finds are, for the log line that lists them, by stitching method."""
+def checked_overlaps(points, centers, sizes, stitch: StitchResult, reference: np.ndarray, s: Settings, log,
+                     tile_ids) -> list[tuple[int, int]]:
+    """The SEM overlaps (i, j) the stitching got wrong, logged with !!. Image by image: those that do not line up
+    where the stitching placed their images (pipeline.overlap_checks, D137; its numbers logged too). Otherwise:
+    those fitted more than max_match_nm from the shift the stitching in measurement order (reference) predicts
+    (pipeline.slipped_pairs, D75)."""
     if s.stitch_method == "image by image":
-        return "more than overlap_tolerance_nm away from the shift the placement image by image predicts"
-    return ("more than max_match_nm away from the shift the stitching in measurement order predicts (contacts paired one "
-            "row off?)" + ("" if s.stitch_method == "measurement order first"
-                           else "; the stitching method 'measurement order first' avoids this"))
+        checks = overlap_checks(points, centers, sizes, stitch.corrections, s.overlap_tolerance_nm, s.outlier_factor,
+                                s.min_matched)
+        log(overlap_check_text(checks))
+        found = [(c.i, c.j) for c in checks if not c.lines_up]
+    else:
+        found = slipped_pairs(stitch, reference, s.max_match_nm)
+    if found:
+        log(f"!! {len(found)} SEM overlap(s) {slip_text(s)}: {[(tile_ids[i], tile_ids[j]) for i, j in found]}")
+    return found
+
+
+def overlap_check_text(checks: list[OverlapCheck]) -> str:
+    """The overlap checks in one log line: how many, the share of their contacts that pair up, and how far apart their
+    two images lie (the median and the worst of each)."""
+    if not checks:
+        return "SEM overlaps where the stitching placed their images: none checked (too few contacts)"
+    agreement = np.array([c.agreement for c in checks])
+    offset = np.array([c.offset_nm for c in checks])
+    offset = offset[np.isfinite(offset)]
+    apart = f"median {np.median(offset):.2f} nm, largest {offset.max():.2f} nm" if offset.size else "no contact paired"
+    return (f"SEM overlaps where the stitching placed their images: {len(checks)} checked; contacts paired up: median "
+            f"{np.median(agreement):.0%}, lowest {agreement.min():.0%}; the two images apart: {apart}")
+
+
+def slip_text(s: Settings) -> str:
+    """What the SEM overlaps that checked_overlaps finds are, for the log line that lists them, by stitching method."""
+    if s.stitch_method == "image by image":
+        return ("do not line up where the stitching placed their images (fewer than half their contacts pair up, or the "
+                "two images lie more than overlap_tolerance_nm apart)")
+    return ("fitted more than max_match_nm away from the shift the stitching in measurement order predicts (contacts "
+            "paired one row off?)" + ("" if s.stitch_method == "measurement order first"
+                                      else "; the stitching method 'measurement order first' avoids this"))
 
 
 def tile_edges_y(centers: np.ndarray, sizes: np.ndarray) -> np.ndarray:

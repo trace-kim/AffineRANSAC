@@ -3,7 +3,8 @@ loaded with allow_pickle=False), written after every run and opened instead of a
 opened again.
 
 The contact sizes, once measured (Contact size tab), are optional arrays: a file without them loads with none. So
-are the SEM overlaps that look paired one row off (`slipped`, D109): a file saved before loads with None (not known).
+are the SEM overlaps the stitching got wrong (`slipped`: paired one row off, D109, or not lining up, D137): a file
+saved before loads with None (not known).
 The tiles kept to measure them are not saved (the images are large).
 
 Where: CACHE_NAME in the data folder; if that cannot be written (read-only share), the same file under the

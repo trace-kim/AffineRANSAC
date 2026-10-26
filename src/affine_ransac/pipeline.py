@@ -12,6 +12,7 @@
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
 - stitch_tiles_affine(): one affine per tile instead, from the same pairs and tie contacts.
 - tie_residuals(): how well the tie contacts agree after either stitching.
+- overlap_checks(): whether each overlap lines up at a placement, whatever paired its contacts (D137).
 
 - tile_boxes_from_points(): tile centres and sizes for data without a metadata CSV (e.g. the
   pre-analysed contour CSVs): the bounding box of the contacts each tile reports.
@@ -28,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, denoised_image,
                                             detect_contacts, flatten_background, in_image_pixels, keep_contacts,
@@ -37,7 +39,7 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.matching import match_with_shift, scored_shifts_together
+from affine_ransac.matching import match_points, match_with_shift, scored_shifts_together
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
@@ -480,6 +482,60 @@ def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: n
             place(k, -min(lined_up, key=lambda m: np.linalg.norm(m.shift)).shift)  # mine + correction = theirs
         else:
             tried[k] = gain[k]
+
+
+PAIRING_GATE = 0.25  # overlap_checks: contacts pair within this fraction of the contact spacing (well below half)
+MIN_AGREEMENT = 0.5  # overlap_checks: an overlap lines up only if at least this share of its contacts pair
+
+
+def contact_spacing(points: list[np.ndarray]) -> float:
+    """The typical distance between neighbouring contacts, nm (the pitch of a contact array): over the tiles, the
+    median of each tile's median distance from a contact to its nearest one. NaN if no tile has two contacts."""
+    spacings = [np.median(cKDTree(p).query(p, k=2)[0][:, 1]) for p in points if len(p) >= 2]
+    return float(np.median(spacings)) if spacings else np.nan
+
+
+@dataclass
+class OverlapCheck:
+    i: int
+    j: int
+    agreement: float  # of the contacts both images should see, the share of the image with fewer that pair up
+    offset_nm: float  # length of B − A of those pairs at the placement (robust fit, fit_overlap), nm; NaN: no pairs
+    lines_up: bool    # agreement >= MIN_AGREEMENT and offset_nm <= the tolerance
+
+
+def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, corrections: np.ndarray,
+                   tolerance_nm: float, outlier_factor: float = 3.0, min_matched: int = 5) -> list[OverlapCheck]:
+    """Whether the overlaps line up at the placement `corrections` ((n_tiles, 2), e.g. StitchResult.corrections),
+    whatever paired them (D137). points: per tile, contact centres in mask nm at the nominal placement; centers, fovs:
+    (n_tiles, 2), nm.
+
+    Every overlap of two placed tiles is checked. The contacts of one image that the other should see are those
+    inside the box of all the other's contacts, so the rows an image loses at its own frame are not expected of it.
+    They pair within PAIRING_GATE times contact_spacing: wide against the noise, well below half the pitch, so a
+    contact never pairs with its neighbour. agreement counts the pairs per contact of the image with fewer, so
+    contacts one image failed to detect do not count. An image placed wrong by less than the gate shows in the
+    offset, one placed wrong by more in the agreement; by a whole pitch on a repeating pattern it lines up (and that
+    does not matter, D105). Overlaps where either image has fewer than min_matched such contacts (e.g. corners) are
+    not checked.
+    """
+    gate = PAIRING_GATE * contact_spacing(points)
+    placed = [p + c for p, c in zip(points, corrections)]
+    extents = [(p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()) if len(p) else None for p in placed]
+    checks = []
+    for i, j, _ in overlapping_pairs(centers, fovs):
+        if np.isnan(corrections[[i, j]]).any() or extents[i] is None or extents[j] is None:
+            continue
+        a = placed[i][points_in_box(placed[i], extents[j], margin=gate)]
+        b = placed[j][points_in_box(placed[j], extents[i], margin=gate)]
+        if min(len(a), len(b)) < min_matched:
+            continue
+        ia, ib = match_points(a, b, gate)
+        agreement = len(ia) / min(len(a), len(b))
+        offset = (float(np.linalg.norm(fit_overlap(a[ia], b[ib], outlier_factor=outlier_factor).shift)) if len(ia)
+                  else np.nan)
+        checks.append(OverlapCheck(i, j, agreement, offset, agreement >= MIN_AGREEMENT and offset <= tolerance_nm))
+    return checks
 
 
 def stitch_ties(points: list[np.ndarray], stitch: StitchResult) -> list[tuple[np.ndarray, np.ndarray]]:
