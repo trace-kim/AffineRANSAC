@@ -604,7 +604,21 @@ pitch (40 nm grid, 24 images of 1.44 µm, 3 % missed, 1 % false contacts, stage 
 row or more off (errors 40, 57, 89 nm); the candidate that follows the stitching was always among the 9, but pruned for
 8–14 tiles; with every candidate allowed (one change) 4–8 tiles remain, chosen by the group's fewest absolute
 mismatches, which favours the larger shifts (smaller boxes). D136's stitching gives the same (12–19 of 24), so it is not
-from D137–D140. No missed or false contacts: 0–1 tiles. Known limit: an offset
+from D137–D140. No missed or false contacts: 0–1 tiles. *Known problem 2 (diagnosed 2026-10-27, not fixed yet): on a
+drifting mosaic whole regions are placed whole pitches off, and the check passes them.* User: tiles visibly stitched
+wrong at 40 nm pitch, `max_match_nm` 50, with no Error on them; tiles 80 and 81 stitched (−14.2, −34.6) and (−17.9,
++9.9) nm, one pitch + 4.5 nm apart. Synthetic, the user's settings (84 images of 2.88 µm in a serpentine, 280 nm
+overlaps, 40 nm grid with 2 % of the pattern's contacts missing, 2 % missed and 0.5 % false detections, drift 1.5 / 1.0
+nm per image): 57 of 84 images whole pitches off the start image (D136: 59), 127 overlaps wrong, 6 flagged. Traced: the
+right shift is among an image's options, often with the best agreement (0.980 against 0.962–0.971), but within the
+counting noise of `ties`, so all tie and the smallest correction is taken: the copy nearest the stage position in the
+start image's frame, wrong by round(drift since the start / pitch) pitches. Images placed after it follow it, so whole
+runs of images slip together and only their boundaries are wrong. One change at a time: without drift no slip; a
+200 nm search, ties toward the placed neighbours' mean, or toward the neighbour nearest in measurement order (also
+both with 200 nm) still 38–66 slipped (the first image of a stripe is placed against the stripe before, measured
+minutes earlier). The evidence is there for a group, not for one overlap: a stripe moved one pitch at the right
+placement leaves 137–152 extra unpaired contacts along its boundary against a counting noise of 40, but only 3–6 of its
+61 boundary overlaps tell it on their own, which is why the check (per overlap) flags so few. Known limit: an offset
 about as large as an overlap is wide cannot be found. Cost (D138): 8.3 s for 80 images of 2.88 µm (50 nm grid,
 3,100 contacts each, 280 nm overlaps, `max_match_nm` 100 nm; 7.3 s before D138); an image is evaluated again each time
 a neighbour is placed, and the pairs use trees (`seen_pairs`).
