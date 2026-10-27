@@ -89,7 +89,7 @@ RESULTS = {
                    6.441456148, 6.821792166, 0.0, 0.0]},
 }
 
-# Per FORMAT: the arrays (without the optional contact_sizes/*) and the info keys of a run file.
+# Per FORMAT: the arrays (without the optional contact_sizes/* and intrafield/*, D141) and the info keys of a run file.
 STITCH = ["corrections", "pairs/box", "pairs/center", "pairs/ia/data", "pairs/ia/lengths", "pairs/ib/data",
           "pairs/ib/lengths", "pairs/ij", "pairs/inliers/data", "pairs/inliers/lengths", "pairs/residuals/data",
           "pairs/residuals/lengths", "pairs/rotation", "pairs/shift", "rejected/box", "rejected/counts",

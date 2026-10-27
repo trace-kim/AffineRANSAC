@@ -36,7 +36,7 @@ from affine_ransac.features.contact import BAND_MIN_SOLIDITY, DENOISERS
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
-from affine_ransac.intrafield import correct_points, estimate_map
+from affine_ransac.intrafield import IntrafieldMap, correct_points, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
 from affine_ransac.pipeline import (REFINEMENTS, OverlapCheck, StitchResult, TileResult, measurement_pairs,
@@ -81,6 +81,11 @@ class Settings:
     moving_window_per_stripe: bool = setting(False, "Moving-window affine fitted per stripe: every image corrected by "
                                                     "the windows of its own stripe (stripes are measured at different "
                                                     "times and drift differently); off: every window spans all stripes")
+    in_image_correction: bool = setting(False, "Remove the distortion shared by all SEM images (the same at the same "
+                                               "place in every image, e.g. of the scan) from the measured centres "
+                                               "before stitching: measured against the design in every image after "
+                                               "that image's own affine, on INTRAFIELD_NODES nodes per axis. Mask "
+                                               "errors that repeat at the image spacing would be removed with it")
     intrafield_nodes: int = setting(9, "In-image distortion map: nodes per axis over the image, edge to edge")
     drift_window_um: float = setting(40.0, "Drift curve: height of the local straight-line fit along y")
     first_stripe_upward: bool = setting(True, "Serpentine scan: the first stripe (smallest x) was measured from its "
@@ -165,7 +170,8 @@ class Settings:
 
 
 CSV_ONLY = {"tile_margin_nm"}
-RELEASE_ONLY = {"moving_window_per_stripe"}  # used by the release's analysis only (release/analysis.py)
+RELEASE_ONLY = {"moving_window_per_stripe", "in_image_correction"}  # used by the release's analysis only
+                                                                     # (release/analysis.py)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
@@ -657,12 +663,9 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     if np.isnan(image_centers).any():
         log("!! No image centres (contour CSVs without DesignX, DesignY): the in-image correction is left out")
     else:
-        nominal = observations["nominal"]
-        n = len(sem_points)
-        design_local = [nominal.design_nm[nominal.tile == k] - image_centers[k] for k in range(n)]
-        sem_local = [nominal.sem_nm[nominal.tile == k] - image_centers[k] for k in range(n)]
-        intrafield = estimate_map(design_local, sem_local, s.intrafield_nodes)
-        log(f"In-image map from {intrafield.images} of {n} images, up to {np.abs(intrafield.shift_nm).max():.3f} nm")
+        intrafield = in_image_map(observations["nominal"], image_centers, s.intrafield_nodes)
+        log(f"In-image map from {intrafield.images} of {len(sem_points)} images, "
+            f"up to {np.abs(intrafield.shift_nm).max():.3f} nm")
         ic_points = [correct_points(p, c, intrafield) for p, c in zip(sem_points, image_centers)]
         ic_stitch = stitch(ic_points, "In-image corrected SEM, all overlaps")
         ic = merged_contacts(ic_points, ic_stitch.corrections)
@@ -716,6 +719,17 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
         design_points=design_points, design_stitch=design_stitch, stitchings=stitchings,
         sets=sets, drift=drift, stripe_drift=stripe_drifts, log=[])
     return result, observations, merged
+
+
+def in_image_map(observations: DesignErrors, image_centers: np.ndarray, nodes: int) -> IntrafieldMap:
+    """The in-image distortion map (intrafield.estimate_map, D53) from every tile's contacts paired with its design at
+    the nominal placement (observations), relative to its image centre (image_centers: (n_tiles, 2), mask nm). Also
+    used by the release (D141)."""
+    order = np.argsort(observations.tile, kind="stable")  # each tile's contacts together, in their order
+    starts = np.searchsorted(observations.tile[order], np.arange(1, len(image_centers)))
+    design_local = [d - c for d, c in zip(np.split(observations.design_nm[order], starts), image_centers)]
+    sem_local = [p - c for p, c in zip(np.split(observations.sem_nm[order], starts), image_centers)]
+    return estimate_map(design_local, sem_local, nodes)
 
 
 def _fitted(sem_nm, design_nm, s: Settings, log, name: str, moving: bool = True) -> ContactSet:

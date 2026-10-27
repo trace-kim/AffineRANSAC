@@ -1,7 +1,8 @@
 """The release's analysis of one folder (docs/SPEC.md D77): only what the Stitching and the Registration,
-moving window tabs show. No corrections (in-image map, drift curves), no RANSAC.
+moving window tabs show. No drift corrections, no RANSAC; the in-image map only on request (D141).
 
-Steps: load the tiles (images: detection + design; contour CSVs: the paired centres), stitch the SEM and the
+Steps: load the tiles (images: detection + design; contour CSVs: the paired centres), with settings.in_image_correction
+remove the distortion shared by all images from the SEM centres (D53), stitch the SEM and the
 design (translation per tile; settings.stitch_method), the error of every contact (measured SEM − design)
 at the stitched placement, merged over the overlaps, then the moving-window affine (settings.moving_window_per_stripe:
 each stripe on its own, every image corrected by its own stripe's windows).
@@ -29,11 +30,12 @@ from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
 from affine_ransac.analysis import (CONTOUR_SETTINGS, ContactSizes, Settings, check_settings, checked_overlaps,
-                                   contour_options, detect_layer, load_image_tiles, merged_contact_sizes,
-                                   placement_text, report_stitching, worker_count)
+                                   contour_options, detect_layer, in_image_map, load_image_tiles,
+                                   merged_contact_sizes, placement_text, report_stitching, worker_count)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
+from affine_ransac.intrafield import IntrafieldMap, correct_points
 from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
@@ -55,7 +57,8 @@ DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they di
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
 # it is detected from the file numbers, which follow the measurement order (user; scan_direction).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
-          "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm"]
+          "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm",
+          "in_image_correction", "intrafield_nodes"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
                                                            "min_match_fraction", "realign"]}
@@ -81,7 +84,8 @@ class ReleaseResult:
     centers: np.ndarray               # (n_tiles, 2) tile centres, mask nm
     sizes: np.ndarray                 # (n_tiles, 2) tile sizes (images: FOV), nm
     stripe: np.ndarray                # (n_tiles,) stripe of each tile, 0 = smallest x (pipeline.tile_stripes)
-    sem_points: list[np.ndarray]      # per tile, SEM centres at the nominal placement, mask nm
+    sem_points: list[np.ndarray]      # per tile, SEM centres at the nominal placement, mask nm (the in-image map
+                                      # removed, if intrafield): what was stitched
     design_points: list[np.ndarray]   # per tile, design centres at the nominal placement, mask nm
     stitch: StitchResult              # SEM stitching
     design_stitch: StitchResult
@@ -102,6 +106,8 @@ class ReleaseResult:
     # stitching in measurement order predicts (paired one contact row off?), or, image by image, not lining up where
     # the stitching placed their images (D137); None: a run saved before this was kept (D109)
     slipped: list[tuple[int, int]] | None = field(default_factory=list)
+    # the in-image distortion map removed from sem_points (settings.in_image_correction, D141); None: not removed
+    intrafield: IntrafieldMap | None = None
 
 
 class AnalysisFailed(RuntimeError):
@@ -136,7 +142,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         record(f"Contact layer {layer}/{datatype} (the only layer with shapes in the .oas files)")
         tile_ids, tiles = load_image_tiles(
             records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"))
-        centers = np.array([t.center_nm for t in tiles])
+        centers = image_centers = np.array([t.center_nm for t in tiles])
         sizes = np.array([t.fov_nm for t in tiles])
         stripe = tile_stripes(centers)
         sem_points = [t.sem_points_nm() for t in tiles]
@@ -148,8 +154,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         oas_paths = [str(t.oas_path) if t.oas_path is not None else "" for t in tiles]
         oas_centers = np.array([t.center_nm if t.oas_center_nm is None else t.oas_center_nm for t in tiles])
 
-        def errors(sem_corrections, design_corrections):  # each tile matched to its own design
-            return design_errors(sem_points, design_points, sem_corrections, design_corrections, design_ok,
+        def errors(points, sem_corrections, design_corrections):  # each tile matched to its own design
+            return design_errors(points, design_points, sem_corrections, design_corrections, design_ok,
                                  s.design_search_nm, s.design_tolerance_nm, neighbours,
                                  follow_stitching=s.stitch_method == "image by image")
     else:
@@ -164,24 +170,31 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         sem_points = [t.sem_nm for t in tiles]
         design_points = [t.design_nm for t in tiles]
         centers, sizes = tile_boxes_from_points(design_points, s.tile_margin_nm)
-        stripe = tile_stripes(centers, np.array([t.center_nm for t in tiles]))  # image centres, if in the files
+        image_centers = np.array([t.center_nm for t in tiles])  # NaN without the DesignX, DesignY columns
+        stripe = tile_stripes(centers, image_centers)
         design_stitch = stitch_tiles(design_points, centers, sizes, s.design_max_match_nm, s.outlier_factor,
                                      s.min_matched, label="design")
         image_paths, oas_paths, oas_centers = [], [], np.empty((0, 2))
 
-        def errors(sem_corrections, design_corrections):  # CSV rows are already paired
-            return paired_errors(sem_points, design_points, sem_corrections, design_corrections)
+        def errors(points, sem_corrections, design_corrections):  # CSV rows are already paired
+            return paired_errors(points, design_points, sem_corrections, design_corrections)
 
     names = [Path(r.image_path).stem for r in records] if kind == "images" else tile_ids
     record(f"{stripe.max() + 1} stripe(s)")
     s = replace(s, first_stripe_upward=scan_direction(names, centers, stripe, s.first_stripe_upward, record))
+    intrafield = None
+    if s.in_image_correction:  # from the contacts paired at the nominal placement, before the stitching (D53)
+        progress(LOAD_SHARE, "In-image distortion map")
+        zero = np.zeros((len(sem_points), 2))
+        sem_points, intrafield = in_image_corrected(sem_points, errors(sem_points, zero, zero), image_centers,
+                                                    s.intrafield_nodes, record)
     progress(LOAD_SHARE, "Stitching")
     stitch, slipped = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
     report_stitching(record, "Design", design_stitch, tile_ids)
 
     progress(LOAD_SHARE + 0.1, "Comparing with the design")
     sem_corrections, design_corrections = placement_corrections(stitch.corrections, design_stitch.corrections)["mean"]
-    observations = errors(sem_corrections, design_corrections)
+    observations = errors(sem_points, sem_corrections, design_corrections)
     if observations.skipped:
         record(f"!! {len(observations.skipped)} tile(s) NOT MEASURED: "
                f"{ {tile_ids[k]: reason for k, reason in observations.skipped.items()} }")
@@ -191,7 +204,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     def result(moving, kept=None):
         return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
                              sem_points, design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm,
-                             moving, image_paths, lines, oas_paths, oas_centers, tiles=kept, slipped=slipped)
+                             moving, image_paths, lines, oas_paths, oas_centers, tiles=kept, slipped=slipped,
+                             intrafield=intrafield)
     if len(contacts.count) < 3:
         raise AnalysisFailed(f"Only {len(contacts.count)} measured contact(s). The Stitching tab shows the tiles, "
                              f"their SEM images and design, and why each tile was not measured",
@@ -277,6 +291,24 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
     return stitch, checked_overlaps(sem_points, centers, sizes, stitch, reference, s, log, tile_ids)
 
 
+def in_image_corrected(sem_points: list[np.ndarray], observations: DesignErrors, image_centers: np.ndarray, nodes: int,
+                       log) -> tuple[list[np.ndarray], IntrafieldMap | None]:
+    """The SEM points (per tile, mask nm) with the distortion shared by all images removed (D53, D141), and its map,
+    measured on observations (every tile's contacts paired with its design at the nominal placement); image_centers:
+    (n_tiles, 2), mask nm. Without image centres (contour CSVs without DesignX, DesignY) or without an image of 3
+    paired contacts, the points as they are and None (logged with !!)."""
+    if np.isnan(image_centers).any():
+        log("!! No image centres (contour CSVs without DesignX, DesignY): the in-image correction is left out")
+        return sem_points, None
+    if np.bincount(observations.tile, minlength=len(sem_points)).max() < 3:
+        log("!! No image has 3 contacts paired with its design: the in-image correction is left out")
+        return sem_points, None
+    m = in_image_map(observations, image_centers, nodes)
+    log(f"In-image correction: map of {nodes} x {nodes} nodes from {m.images} of {len(sem_points)} images, "
+        f"up to {np.abs(m.shift_nm).max():.3f} nm")
+    return [correct_points(p, c, m) for p, c in zip(sem_points, image_centers)], m
+
+
 
 def read_design_images(result: ReleaseResult, progress: Callable[[float, str], None] = lambda fraction, stage: None
                        ) -> list[np.ndarray | None]:
@@ -358,8 +390,9 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
                   log: Callable[[str], None] = lambda text: None) -> TileContours:
     """The contours of an image run (TileContours), found again as the run found them: each SEM image detected and
     refined with the run's settings (process_tile without its design), in worker processes like the tiles. The
-    centres it used (the refined ones; the detected ones with refinement none) must be the run's; tiles where they
-    are not (an image changed since the run?) are logged with !!."""
+    centres it used (the refined ones; the detected ones with refinement none; with the run's in-image map removed,
+    if it had one) must be the run's; tiles where they are not (an image changed since the run?) are logged with !!.
+    The contours and centres returned are the detection's, without the map: they lie on the image."""
     s = result.settings
     arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
@@ -368,6 +401,8 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
         found_all = pool.map(_tile_contours, arguments, repeat(contour_options(s)))
         for k, (found, moved, found_centres, moved_centres) in enumerate(found_all):
             used = moved_centres + result.centers[k]
+            if result.intrafield is not None:  # the run stitched its centres with the map removed (D141)
+                used = correct_points(used, result.centers[k], result.intrafield)
             if used.shape != result.sem_points[k].shape or not np.allclose(used, result.sem_points[k], atol=0.01):
                 differ.append(result.tile_ids[k])
             tiles.append(np.full(len(found), k))

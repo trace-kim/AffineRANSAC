@@ -1312,11 +1312,12 @@ class RegistrationView(QtWidgets.QWidget):
         window = f"moving-window affine: window {s.moving_window_um:g} µm, step {s.moving_step_um:g} µm"
         fitted = "fitted per stripe, every image by its own stripe's windows" if s.moving_window_per_stripe else \
             "fitted on every contact"
+        measured = "measured (SEM, in-image distortion removed)" if r.intrafield is not None else "measured (SEM)"
         total = self.in_stripe.shape[1]
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
         self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.contact_rows[0])} rows, "
-                             f"{len(self.contact_columns[0])} columns. Error = measured (SEM) − design after the "
+                             f"{len(self.contact_columns[0])} columns. Error = {measured} − design after the "
                              f"{window}, {fitted}: {summary_text(self.error_nm)}.")
         self.fitted = True  # show them all
         self.set_values()

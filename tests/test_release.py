@@ -13,7 +13,7 @@ import pyqtgraph as pg
 import pytest
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import ContactSizes, Settings, contrast_summary
+from affine_ransac.analysis import ContactSizes, Settings, contrast_summary, settings_for
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import process_tile
 from affine_ransac.registration import largest_ramp, noise_sigma, row_means
@@ -106,6 +106,64 @@ def test_the_moving_window_can_be_fitted_per_stripe(tmp_path):
     view = RegistrationView(loaded, use_opengl=False)
     assert "fitted per stripe, every image by its own stripe's windows" in view.summary.text()
     view.close()
+
+
+def test_the_in_image_correction_removes_a_distortion_shared_by_all_images(tmp_path):
+    """D141: a distortion the same in every image and not affine (a twist, up to 2.4 nm at the image corners) stays in
+    the moving-window error (no window affine follows it from tile to tile); with in_image_correction the map is
+    removed before the stitching, only the 0.1 nm noise is left, the run keeps the map and the Registration tab says
+    so. A parameter of both kinds of folder in the release only."""
+    def twist(k, local, mask):
+        t = 1.2e-6 * local[:, 0] * local[:, 1]
+        return np.column_stack([t, t])
+    write_contour_folder(tmp_path, sem_error=twist)
+    lines = []
+    with pytest.warns(UserWarning):
+        plain = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    with pytest.warns(UserWarning):
+        corrected = analyse_folder(tmp_path, "contour CSV", replace(Settings(), in_image_correction=True),
+                                   log=lines.append)
+
+    assert plain.intrafield is None and np.sqrt((plain.moving.residuals ** 2).mean()) > 0.5
+    assert np.sqrt((corrected.moving.residuals ** 2).mean(axis=0)).max() < 0.11
+    assert corrected.intrafield.images == 6 and 2.0 < np.abs(corrected.intrafield.shift_nm).max() < 2.6
+    assert any(line.startswith("In-image correction: map of 9 x 9 nodes from 6 of 6 images, up to ") for line in lines)
+    save_cache(corrected, tmp_path / "user")
+    loaded, _ = load_cache(tmp_path, tmp_path / "user")
+    np.testing.assert_array_equal(loaded.intrafield.shift_nm, corrected.intrafield.shift_nm)
+    assert loaded.intrafield.images == 6 and loaded.settings.in_image_correction
+    pg.mkQApp()
+    view = RegistrationView(loaded, use_opengl=False)
+    assert "Error = measured (SEM, in-image distortion removed) − design" in view.summary.text()
+    view.close()
+    for kind in ("contour CSV", "images"):
+        assert {"in_image_correction", "intrafield_nodes"} <= set(PARAMETERS[kind])
+        assert "in_image_correction" not in settings_for(kind)  # the research app always computes both
+
+
+def test_without_image_centres_the_in_image_correction_is_left_out(tmp_path):
+    write_contour_folder(tmp_path, local_columns=False)
+    lines = []
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", replace(Settings(), in_image_correction=True),
+                                log=lines.append)
+    assert result.intrafield is None and result.moving is not None
+    assert ("!! No image centres (contour CSVs without DesignX, DesignY): the in-image correction is left out"
+            in lines)
+
+
+def test_load_contours_gives_the_centres_of_an_in_image_corrected_run(tmp_path):
+    """The run stitched its centres with the map removed: found again from the images, they are the run's once the
+    map is removed from them too (no !!), while the contours stay where the detection put them."""
+    records = write_image_folder(tmp_path)
+    result = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, in_image_correction=True), records,
+                            log=lambda line: None)
+    lines = []
+    c = read_contours(result, log=lines.append)
+
+    assert result.intrafield is not None and lines == []
+    moved = [np.abs(c.refined_centres[c.tile == k] + result.centers[k] - result.sem_points[k]).max() for k in range(4)]
+    assert min(moved) > 0.01  # the run's centres are not the detection's
 
 
 def test_image_folder_reports_progress_per_tile_and_keeps_the_image_paths(tmp_path):

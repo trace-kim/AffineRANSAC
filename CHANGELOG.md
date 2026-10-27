@@ -146,5 +146,11 @@ they open, flagged as outdated.
 - Stitching *image by image*: the check after the stitching also flags an overlap where another shift of one image
   pairs clearly more of its contacts than where it is, e.g. an image a whole pitch off where the pattern does not fully
   repeat (most contacts still pair there). Numbers unchanged (D140).
+- New parameter `in_image_correction` (off by default, so runs give the same numbers), with `intrafield_nodes`: removes
+  the distortion shared by all SEM images (the same at the same place in every image, e.g. of the scan) from the
+  measured centres before the stitching, measured against the design (D53). For datasets whose images are distorted:
+  the moving window cannot remove what repeats in every tile. The log gives the map's largest shift, and the
+  Registration tab's summary says the distortion was removed. A run file of a corrected run keeps the map (optional
+  arrays; files saved before open as before) (D141).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
