@@ -8,6 +8,8 @@ at the stitched placement, merged over the overlaps, then the moving-window affi
 each stripe on its own, every image corrected by its own stripe's windows).
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 
+For the Stitching tab's placement Stitched + affine (D142): each tile's moving-window affine (tile_affines).
+
 On request (the Contact size tab, hidden unless turned on): an image run keeps its loaded tiles in memory
 (keep_tiles), and measure_contact_sizes measures the area, xCD and yCD of every contact on them. For display on
 request: the SEM images (read_display_images), the design pattern (read_design_images) and every contact's contour
@@ -308,6 +310,32 @@ def in_image_corrected(sem_points: list[np.ndarray], observations: DesignErrors,
         f"up to {np.abs(m.shift_nm).max():.3f} nm")
     return [correct_points(p, c, m) for p, c in zip(sem_points, image_centers)], m
 
+
+
+def window_affine(moving: MovingWindowResult, window: int) -> np.ndarray:
+    """(3, 3) the affine of one moving window, SEM -> design, in mask nm (its model is fitted about its reference)."""
+    model, reference = moving.models[window], moving.references[window]
+    absolute = model.copy()
+    absolute[:2, 2] = model[:2, 2] + reference - model[:2, :2] @ reference
+    return absolute
+
+
+def tile_affines(r: ReleaseResult) -> np.ndarray:
+    """(n_tiles, 3, 3) per tile the moving-window affine that corrects its image as a whole (window_affine), mask nm,
+    for the Stitching tab's placement Stitched + affine (D142): the window whose centre is nearest the tile's stitched
+    design centre in y, of the tile's own stripe if the windows were fitted per stripe (D123). Each contact's error
+    uses the window nearest its own design y, so a contact near a step between two windows may have been corrected
+    by the other one."""
+    m = r.moving
+    design_shift = np.nan_to_num(placement_corrections(r.stitch.corrections, r.design_stitch.corrections)["mean"][1])
+    y = r.centers[:, 1] + design_shift[:, 1]
+    affines = []
+    for k in range(len(r.centers)):
+        windows = np.arange(len(m.centres_nm))
+        if len(m.stripe) and (m.stripe == r.stripe[k]).any():
+            windows = windows[m.stripe == r.stripe[k]]
+        affines.append(window_affine(m, windows[np.argmin(np.abs(m.centres_nm[windows] - y[k]))]))
+    return np.array(affines)
 
 
 def read_design_images(result: ReleaseResult, progress: Callable[[float, str], None] = lambda fraction, stage: None

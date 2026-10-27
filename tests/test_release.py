@@ -18,13 +18,15 @@ from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import process_tile
 from affine_ransac.registration import largest_ramp, noise_sigma, row_means
 from affine_ransac.release import app as release_app, style
+from affine_ransac.geometry.affine import apply_affine
 from affine_ransac.release.analysis import (DEFAULTS, PARAMETERS, AnalysisFailed, analyse_folder, measure_contact_sizes,
-                                           read_contours, read_design_images, read_display_images)
+                                           read_contours, read_design_images, read_display_images, tile_affines,
+                                           window_affine)
 from affine_ransac.release.app import MaskRegWindow
 from affine_ransac.release.cache import BACKUPS, CACHE_NAME, cache_paths, load_cache, save_cache
 from affine_ransac.release.views import (NEEDS_TILES, NOT_IMAGES, ContactSizeTab, ContactSizeView, RegistrationView,
                                          StitchingView)
-from test_analysis import IMAGE_SETTINGS, STAGE, write_contour_folder, write_image_folder
+from test_analysis import IMAGE_SETTINGS, PITCH, STAGE, write_contour_folder, write_image_folder
 
 
 def test_contour_folder_gives_the_stitching_and_the_moving_window_error(tmp_path):
@@ -525,6 +527,83 @@ def test_the_stitching_status_says_how_serious_it_is(tmp_path):
     assert "saved before MaskReg kept the check" in status(result)
 
 
+def rotated_run(folder, **settings):
+    """The contour test folder with the measured field rotated by 1 mrad (an affine the stitching leaves in), analysed
+    with moving windows of 2 µm every 1 µm (several windows over its 8 µm)."""
+    folder.mkdir(exist_ok=True)
+    write_contour_folder(folder, sem_error=lambda k, local, mask: mask @ np.array([[0.0, 1e-3], [-1e-3, 0.0]]))
+    with pytest.warns(UserWarning):
+        return analyse_folder(folder, "contour CSV", replace(Settings(), moving_window_um=2.0, moving_step_um=1.0,
+                                                             **settings), log=lambda line: None)
+
+
+def test_each_tile_is_corrected_by_the_moving_window_of_its_place(tmp_path):
+    """D142: a window's affine in mask nm gives each contact its registration error (design + residual); a tile as a
+    whole takes the window nearest its stitched design centre, of its own stripe when fitted per stripe."""
+    r = rotated_run(tmp_path)
+    m = r.moving
+    assert len(m.centres_nm) > 3
+    corrected = np.array([apply_affine(window_affine(m, w), p[None])[0] for w, p in zip(m.window, r.sem_nm)])
+    np.testing.assert_allclose(corrected, r.design_nm + m.residuals, atol=1e-6)
+    y = r.centers[:, 1] + r.design_stitch.corrections[:, 1]
+    nearest = [int(np.argmin(np.abs(m.centres_nm - y_k))) for y_k in y]
+    np.testing.assert_array_equal(tile_affines(r), [window_affine(m, w) for w in nearest])
+
+    per_stripe = rotated_run(tmp_path / "per stripe", moving_window_per_stripe=True)
+    p = per_stripe.moving
+    windows = [window_affine(p, w) for w in range(len(p.centres_nm))]
+    chosen = [next(w for w, a in enumerate(windows) if np.array_equal(a, t)) for t in tile_affines(per_stripe)]
+    assert [int(p.stripe[w]) for w in chosen] == per_stripe.stripe.tolist()
+
+
+def test_stitched_plus_affine_shows_the_measured_side_as_the_registration_errors_do(tmp_path):
+    """D142: the placement Stitched + affine moves the measured centres and SEM images by their tile's moving-window
+    affine (the design stays stitched); the SEM–design pairs (off at start) join each contact's design centre to its
+    measured centre, in this placement its registration error at true length, in red where longer than half the
+    contact spacing (paired with a neighbouring design contact); none at the nominal placement."""
+    pg.mkQApp()
+    r = rotated_run(tmp_path)
+    r.moving.residuals[0] += (PITCH, 0.0)  # contact 0 as if paired with its neighbour on the right
+    view = StitchingView(r, use_opengl=False)
+    assert [view.placement.itemText(i) for i in range(view.placement.count())] == ["Stitched", "Nominal",
+                                                                                   "Stitched + affine"]
+    normal, long = view.layers["SEM–design pairs"]
+    assert not view.boxes["SEM–design pairs"].isChecked() and not normal.isVisible() and not long.isVisible()
+    # arrows: per pair its shaft (design centre, measured centre) and two head strokes
+    np.testing.assert_allclose(np.column_stack(normal.getData())[1::6] + view.origin, r.sem_nm)  # before the affine
+    view.set_images([(np.zeros((8, 8), np.uint8), (8, 8)) for _ in r.centers])
+
+    view.placement.setCurrentIndex(2)
+    view.boxes["SEM–design pairs"].setChecked(True)
+    assert normal.isVisible() and long.isVisible()
+    points = np.column_stack(normal.getData()) + view.origin
+    np.testing.assert_allclose(points[0::6], r.design_nm[1:], atol=1e-6)
+    np.testing.assert_allclose(points[1::6], r.design_nm[1:] + r.moving.residuals[1:], atol=1e-6)
+    np.testing.assert_allclose(np.column_stack(long.getData())[:2] + view.origin,
+                               [r.design_nm[0], r.design_nm[0] + r.moving.residuals[0]], atol=1e-6)
+    assert len(long.getData()[0]) == 6
+    affines, shift = tile_affines(r), view.shifts["stitched"][0]
+    expected = np.concatenate([apply_affine(affines[k], p + shift[k]) for k, p in enumerate(r.sem_points)])
+    np.testing.assert_allclose(np.column_stack(view.layers["Measured centres"].getData()) + view.origin, expected,
+                               atol=1e-6)
+    design = np.concatenate([p + view.shifts["stitched"][1][k] for k, p in enumerate(r.design_points)])
+    np.testing.assert_allclose(np.column_stack(view.layers["Design centres"].getData()) + view.origin, design)
+    for k, item in enumerate(view.image_items):  # the image's centre where its tile's affine puts the stitched one
+        centre = item.mapToParent(QtCore.QPointF(4.0, 4.0))
+        np.testing.assert_allclose([centre.x(), centre.y()],
+                                   apply_affine(affines[k], (r.centers[k] + shift[k])[None])[0] - view.origin, atol=1e-6)
+
+    view.placement.setCurrentIndex(1)
+    assert normal.getData()[0] is None or len(normal.getData()[0]) == 0
+    centre = view.image_items[0].mapToParent(QtCore.QPointF(4.0, 4.0))
+    np.testing.assert_allclose([centre.x(), centre.y()], r.centers[0] - view.origin, atol=1e-6)
+    view.close()
+
+    failed = StitchingView(replace(r, moving=None), use_opengl=False)  # a failed run has no moving window
+    assert failed.placement.count() == 2
+    failed.close()
+
+
 def corner_folder_view(tmp_path):
     """The image test folder analysed with min_matched 2, which leaves one design corner overlap not matched (tiles 1
     and 2: each .oas file has 2 contacts in it, they share 1), in a Stitching tab laid out offscreen."""
@@ -706,6 +785,12 @@ def test_detected_and_refined_contours_and_centres_are_layers(tmp_path, monkeypa
     np.testing.assert_allclose(refined + view.origin,
                                np.concatenate(result.sem_points) + view.shifts["stitched"][0][view.contours.tile])
 
+    view.placement.setCurrentIndex(2)  # D142: stitched + affine, each tile's centres by its moving-window affine
+    affines = tile_affines(result)
+    np.testing.assert_allclose(
+        np.column_stack(view.layers["Refined centres"].getData()) + view.origin,
+        np.concatenate([apply_affine(affines[k], p + view.shifts["stitched"][0][k])
+                        for k, p in enumerate(result.sem_points)]), atol=1e-6)
     view.placement.setCurrentIndex(1)  # nominal: the centres are the run's, as measured
     np.testing.assert_allclose(np.column_stack(view.layers["Refined centres"].getData()) + view.origin,
                                np.concatenate(result.sem_points))

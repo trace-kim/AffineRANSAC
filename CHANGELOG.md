@@ -152,5 +152,10 @@ they open, flagged as outdated.
   the moving window cannot remove what repeats in every tile. The log gives the map's largest shift, and the
   Registration tab's summary says the distortion was removed. A run file of a corrected run keeps the map (optional
   arrays; files saved before open as before) (D141).
+- Stitching tab: placement *Stitched + affine* shows the measured side (SEM images, centres, contours) also corrected
+  by the moving-window affine, as the registration errors are, over the design at its stitched placement. Layer
+  *SEM–design pairs* (off at start): an arrow from each contact's design centre to its measured centre, in this
+  placement its registration error at true length; red where longer than half the contact spacing, so the measured
+  contact was paired with a neighbouring design contact. Numbers unchanged (D142).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

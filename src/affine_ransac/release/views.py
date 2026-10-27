@@ -1,7 +1,10 @@
 """The release's tabs (docs/SPEC.md D77), pyqtgraph, presentation style (style.py).
 
 StitchingView: tile outlines, overlaps used, design and measured (SEM) centres, at the nominal or the stitched
-placement, under a status line that grades the stitching (stitching_verdict, D109); on request (off at start, D76)
+placement, or stitched + affine (D142: the measured side, images, centres and contours, also corrected by each tile's
+moving-window affine, as the registration errors), under a status line that grades the stitching (stitching_verdict,
+D109); the SEM–design pairs (a line from each contact's design centre to its measured centre, red where longer than
+half the contact spacing: paired with a neighbouring design contact); on request (off at start, D76)
 the overlaps not matched (filled in the colour of their stitching, D107), the tiles not stitched (thick red outline)
 and the tile names (D108); the SEM images on request (Load SEM images: the app reads them in the background and calls
 set_images), with an opacity slider; the design pattern on request (Load design: the .oas contacts filled, one colour
@@ -43,22 +46,29 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
 from affine_ransac.analysis import ContactSizes
+from affine_ransac.geometry.affine import apply_affine, recentre
 from affine_ransac.overlap import points_in_box
 from affine_ransac.pipeline import (PAIRING_GATE, PairResult, RejectedPair, StitchResult, contact_spacing,
                                     contact_stripes, pair_kind, stripe_ranges)
 from affine_ransac.registration import band_means, error_summary, grid_means, largest_ramp, noise_sigma, row_means
 from affine_ransac.release import style
-from affine_ransac.release.analysis import ReleaseResult
+from affine_ransac.release.analysis import ReleaseResult, tile_affines
 from affine_ransac.stitching import placement_corrections
 from affine_ransac.view_contact_size import QUANTITIES, size_summary, value_levels
 from affine_ransac.view_points import box_outlines, tile_rectangles
 from affine_ransac.view_registration import JET, colorize, draw_map
 
-PLACEMENTS = {"stitched": "Stitched", "nominal": "Nominal"}
+PLACEMENTS = {"stitched": "Stitched", "nominal": "Nominal", "corrected": "Stitched + affine"}  # D142: the last
+PLACEMENT_TIP = ("Stitched: every tile moved by its stitching. Stitched + affine: the measured side (SEM images, "
+                 "centres, contours) also corrected by the moving-window affine, as the registration errors are; the "
+                 "design stays stitched. Nominal: as measured, at the stage positions")
 LAYER_TIPS = {  # the Stitching tab's check boxes
     "Overlaps not matched": "Overlaps where both images (orange) or both .oas files (blue) have at least min_matched "
                             "contacts, but fewer of them pair up: left out of the stitching. Click one to see why",
     "Tiles not stitched": "Tiles that no used overlap links to the others: they have no position and are not measured",
+    "SEM–design pairs": "A line from every contact's design centre to its measured centre at the placement shown: in "
+                        "Stitched + affine its registration error, as the arrows, at true length. Red: longer than half "
+                        "the contact spacing, so the measured contact was paired with a neighbouring design contact",
 }
 HINT = "Click a tile to see which image it is. With Overlaps not matched shown, click a box to see why it was not matched."
 CONTOURS = ("Detected contours", "Refined contours", "Detected centres", "Refined centres")  # layers on request
@@ -216,6 +226,17 @@ def translucent(color: str, alpha: int = 70) -> QtGui.QBrush:
     return QtGui.QBrush(fill)
 
 
+def qtransform(matrix: np.ndarray) -> QtGui.QTransform:
+    """A (3, 3) affine on column vectors (x, y, 1) as a QTransform."""
+    return QtGui.QTransform(matrix[0, 0], matrix[1, 0], matrix[0, 1], matrix[1, 1], matrix[0, 2], matrix[1, 2])
+
+
+def matrix_of(transform: QtGui.QTransform) -> np.ndarray:
+    """A QTransform (affine) as a (3, 3) matrix on column vectors (x, y, 1)."""
+    t = transform
+    return np.array([[t.m11(), t.m21(), t.dx()], [t.m12(), t.m22(), t.dy()], [0.0, 0.0, 1.0]])
+
+
 def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -> pg.ImageItem:
     """A (possibly downsampled) SEM image covering its tile: pixel size = FOV / image width of the full image
     (full_shape, as the pipeline), image centre at center_nm, image rows downwards (y up on the plot)."""
@@ -243,7 +264,12 @@ class StitchingView(QtWidgets.QWidget):
         self.shifts = {"nominal": (np.zeros_like(r.centers), np.zeros_like(r.centers)),
                        "stitched": tuple(np.nan_to_num(c) for c in
                                          placement_corrections(r.stitch.corrections, r.design_stitch.corrections)["mean"])}
+        self.shifts["corrected"] = self.shifts["stitched"]
+        # Stitched + affine (D142): each tile's moving-window affine in plot data (about the origin); a failed run has
+        # no moving window, so no such placement
+        self.affines = None if r.moving is None else np.array([recentre(a, self.origin) for a in tile_affines(r)])
         self.image_items = []
+        self.image_bases = []  # per SEM image, (3, 3) from its pixels to its nominal place, plot data (set_images)
         self.design_items = []  # (tile index, item)
 
         self.graphics = figure(use_opengl)
@@ -262,6 +288,13 @@ class StitchingView(QtWidgets.QWidget):
         used = "detected" if r.settings.refinement == "none" else "refined"  # the centres the run used
         self.layers["Measured centres"] = self.plot.plot(pen=None, symbol="o", symbolSize=3, symbolPen=None,
                                                          symbolBrush=style.SEM, name=f"Measured (SEM) centres, {used}")
+        # D142: each contact's design centre joined to its measured centre (the error vector: the arrows' colour);
+        # longer than half the contact spacing in red: paired with a neighbouring design contact
+        self.long_pair_nm = contact_spacing(r.design_points) / 2
+        self.layers["SEM–design pairs"] = [
+            self.plot.plot(pen=pg.mkPen(style.DR, width=1), connect="pairs", name="SEM–design pairs"),
+            self.plot.plot(pen=pg.mkPen(style.FAILURE, width=2.5), connect="pairs",
+                           name=f"Pairs longer than half the contact spacing ({self.long_pair_nm:.0f} nm)")]
         # Failures: overlaps not matched filled in the colour of their stitching (measured or design), tiles not
         # stitched outlined thick in red, tiles not measured (a failed run) hatched in red.
         self.layers["Overlaps not matched"] = [
@@ -288,11 +321,14 @@ class StitchingView(QtWidgets.QWidget):
         controls = QtWidgets.QHBoxLayout()  # the placement and the layers
         controls.addWidget(QtWidgets.QLabel("Placement:"))
         self.placement = QtWidgets.QComboBox()
-        self.placement.addItems(PLACEMENTS.values())
+        self.placement.addItems([label for key, label in PLACEMENTS.items() if key != "corrected"
+                                 or self.affines is not None])
+        self.placement.setToolTip(PLACEMENT_TIP)
         self.placement.currentIndexChanged.connect(lambda _: self.update_positions())
         controls.addWidget(self.placement)
         controls.addSpacing(16)
-        hidden = {"Overlaps not matched", "Tiles not stitched", "Tiles not measured", "Tile names"}  # off at start (D76)
+        hidden = {"Overlaps not matched", "Tiles not stitched", "Tiles not measured", "Tile names",
+                  "SEM–design pairs"}  # off at start (D76)
         for name in self.layers:
             box = QtWidgets.QCheckBox(name)
             box.setToolTip(LAYER_TIPS.get(name, ""))
@@ -433,24 +469,57 @@ class StitchingView(QtWidgets.QWidget):
         return list(PLACEMENTS)[self.placement.currentIndex()]
 
     def update_positions(self):
-        """Put the centres (and images) at the chosen placement."""
+        """Put the centres, images, contours and SEM–design pairs at the chosen placement."""
         r = self.result
         sem_shift, design_shift = self.shifts[self.mode()]
-        sem = np.concatenate([p + sem_shift[k] for k, p in enumerate(r.sem_points)]) - self.origin
+        sem = np.concatenate([self._corrected(p + sem_shift[k] - self.origin, k) for k, p in enumerate(r.sem_points)])
         design = np.concatenate([p + design_shift[k] for k, p in enumerate(r.design_points)]) - self.origin
         self.layers["Measured centres"].setData(sem[:, 0], sem[:, 1])
         self.layers["Design centres"].setData(design[:, 0], design[:, 1])
-        for k, item in enumerate(self.image_items):
-            item.setPos(*sem_shift[k])
+        for k, (item, base) in enumerate(zip(self.image_items, self.image_bases)):
+            moved = np.eye(3)
+            moved[:2, 2] = sem_shift[k]
+            if self.mode() == "corrected":
+                moved = self.affines[k] @ moved
+            item.setTransform(qtransform(moved @ base))
         for k, item in self.design_items:  # a realigned tile's design is not its own file: the files stay put
             item.setPos(*(design_shift[k] if not r.settings.realign else (0.0, 0.0)))
         if self.contours is not None:
             c = self.contours
             for name, centres in (("Detected centres", c.detected_centres), ("Refined centres", c.refined_centres)):
-                xy = centres + self._contour_offsets()
+                xy = self._contour_points(centres, np.arange(len(centres)))
                 self.layers[name].setData(xy[:, 0], xy[:, 1])
             self.update_contours()
+        self.draw_pairs()
         self.draw_selection()  # images loaded since come to the front
+
+    def _corrected(self, xy: np.ndarray, tiles) -> np.ndarray:
+        """Measured points as plot data at the stitched (or nominal) placement, in Stitched + affine also moved by the
+        moving-window affine of their tile (D142); tiles: the tile of every point, or one tile for all."""
+        if self.mode() != "corrected":
+            return xy
+        a = self.affines[tiles]
+        if a.ndim == 2:
+            return apply_affine(a, xy)
+        return np.einsum("nij,nj->ni", a[:, :2, :2], xy) + a[:, :2, 2]
+
+    def draw_pairs(self):
+        """The SEM–design pairs at the placement shown (D142): from each contact's design centre to its measured centre,
+        stitched, or in Stitched + affine corrected as its registration error (design + the moving window's residual);
+        none at the nominal placement, where a contact seen by several images has no one position. Longer than half
+        the contact spacing: the red layer. Drawn as arrows (arrow_segments), so that pairs one pitch long, which meet
+        end to end, can be told apart."""
+        r, mode = self.result, self.mode()
+        start = r.design_nm - self.origin
+        if mode == "nominal":
+            end = np.full_like(start, np.nan)
+        else:
+            end = start + (r.moving.residuals if mode == "corrected" else r.sem_nm - r.design_nm)
+        length = np.linalg.norm(end - start, axis=1)
+        shown = np.isfinite(length)
+        long = shown & (length > self.long_pair_nm)
+        for item, keep in zip(self.layers["SEM–design pairs"], (shown & ~long, long)):
+            item.setData(*arrow_segments(start[keep], end[keep] - start[keep]), connect="pairs")
 
     def update_visibility(self, *_):
         for name, items in self.layers.items():
@@ -594,10 +663,12 @@ class StitchingView(QtWidgets.QWidget):
         for item in self.image_items:
             self.plot.removeItem(item)
         self.image_items = []
+        self.image_bases = []
         for (image, full_shape), center, size in zip(images, self.result.centers, self.result.sizes):
             item = tile_image_item(image, center - self.origin, size[0], full_shape)
             self.plot.addItem(item)
             self.image_items.append(item)
+            self.image_bases.append(matrix_of(item.transform()))  # its pixels to its nominal place (update_positions)
         self.images_box.setEnabled(True)
         self.opacity.setEnabled(True)
         self.set_opacity(self.opacity.value())
@@ -654,11 +725,11 @@ class StitchingView(QtWidgets.QWidget):
         self.update_positions()
         self.update_visibility()
 
-    def _contour_offsets(self) -> np.ndarray:
-        """(n, 2) what turns each loaded contact's tile-local nm into plot data: its tile's centre and shift at the
-        placement shown, minus the origin."""
-        tile = self.contours.tile
-        return self.result.centers[tile] + self.shifts[self.mode()][0][tile] - self.origin
+    def _contour_points(self, xy: np.ndarray, contact: np.ndarray) -> np.ndarray:
+        """Points of loaded contacts in tile-local nm (xy; contact: the loaded contact of each point) as plot data at
+        the placement shown: their tile's centre and shift, in Stitched + affine also its affine (D142)."""
+        tile = self.contours.tile[contact]
+        return self._corrected(xy + self.result.centers[tile] + self.shifts[self.mode()][0][tile] - self.origin, tile)
 
     def update_contours(self):
         """Draw the contours of the contacts in view (with a margin), at the placement shown; none if more than
@@ -667,8 +738,7 @@ class StitchingView(QtWidgets.QWidget):
         c = self.contours
         if c is None:
             return
-        offsets = self._contour_offsets()
-        centres = c.refined_centres + offsets
+        centres = self._contour_points(c.refined_centres, np.arange(len(c.refined_centres)))
         (x0, x1), (y0, y1) = self.plot.vb.viewRange()
         margin = 0.05 * max(x1 - x0, y1 - y0)
         inside = np.flatnonzero((centres[:, 0] > x0 - margin) & (centres[:, 0] < x1 + margin)
@@ -680,9 +750,9 @@ class StitchingView(QtWidgets.QWidget):
             inside = inside[:0]
         lengths = c.start[inside + 1] - c.start[inside]
         rows = np.repeat(c.start[inside] - np.cumsum(lengths) + lengths, lengths) + np.arange(lengths.sum())
-        offset = np.repeat(offsets[inside], lengths, axis=0)
+        contact = np.repeat(inside, lengths)
         for name, points in (("Detected contours", c.detected), ("Refined contours", c.refined)):
-            xy = points[rows] + offset
+            xy = self._contour_points(points[rows], contact)  # the NaN rows between contours stay NaN
             self.layers[name].setData(xy[:, 0], xy[:, 1], connect="finite")
 
     def set_opacity(self, percent: int):
