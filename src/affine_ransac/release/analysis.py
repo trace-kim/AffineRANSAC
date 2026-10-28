@@ -4,8 +4,9 @@ moving window tabs show. No drift corrections, no RANSAC; the in-image map only 
 Steps: load the tiles (images: detection + design; contour CSVs: the paired centres), with settings.in_image_correction
 remove the distortion shared by all images from the SEM centres (D53), stitch the SEM and the
 design (translation per tile; settings.stitch_method), the error of every contact (measured SEM − design)
-at the stitched placement, merged over the overlaps, then the moving-window affine (settings.moving_window_per_stripe:
-each stripe on its own, every image corrected by its own stripe's windows).
+at the stitched placement (images: paired where the stitching put them, D143), merged over the overlaps, then the
+moving-window affine (settings.moving_window_per_stripe: each stripe on its own, every image corrected by its own
+stripe's windows).
 progress(fraction, stage) reports how far the run is, 0..1, for the status bar.
 
 For the Stitching tab's placement Stitched + affine (D142): each tile's moving-window affine (tile_affines).
@@ -45,15 +46,17 @@ from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, m
                                     outlines_inside_frame, placed_image_by_image, process_tile,
                                     stitch_design, stitch_image_by_image, stitch_tiles, stripe_directions,
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
-from affine_ransac.registration import DesignErrors, MergedErrors, design_errors, merge_observations, paired_errors
+from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, design_errors_after_stitching,
+                                        merge_observations, offset_steps, paired_errors)
 from affine_ransac.stitching import placement_corrections
 
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 7  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
+ANALYSIS = 8  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
               # design tone with the detected centres too (D124); 6: image by image places by agreement (D138); 7:
-              # and pairs its overlaps within a quarter of the contact spacing, using those that line up (D139)
+              # and pairs its overlaps within a quarter of the contact spacing, using those that line up (D139); 8:
+              # the design pairs chosen where the stitching put the images (D143)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -115,7 +118,7 @@ class ReleaseResult:
 class AnalysisFailed(RuntimeError):
     """A run that stopped after the stitching. result: what was found up to there (tiles, centres, stitchings; no
     contacts, moving None), to show on the Stitching tab, never saved; not_measured: tile index -> why no error
-    was computed for that tile (registration.design_errors)."""
+    was computed for that tile (registration.design_errors_after_stitching)."""
 
     def __init__(self, message: str, result: ReleaseResult, not_measured: dict[int, str]):
         super().__init__(message)
@@ -156,10 +159,15 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         oas_paths = [str(t.oas_path) if t.oas_path is not None else "" for t in tiles]
         oas_centers = np.array([t.center_nm if t.oas_center_nm is None else t.oas_center_nm for t in tiles])
 
-        def errors(points, sem_corrections, design_corrections):  # each tile matched to its own design
-            return design_errors(points, design_points, sem_corrections, design_corrections, design_ok,
-                                 s.design_search_nm, s.design_tolerance_nm, neighbours,
-                                 follow_stitching=s.stitch_method == "image by image")
+        def nominal_errors(points):  # before the stitching (the in-image map): each tile matched to its own design
+            zero = np.zeros((len(points), 2))
+            return design_errors(points, design_points, zero, zero, design_ok, s.design_search_nm,
+                                 s.design_tolerance_nm, neighbours)
+
+        def errors(points, sem_corrections, design_corrections):  # paired where the stitching put the images (D143)
+            return design_errors_after_stitching(points, design_points, sem_corrections, design_corrections,
+                                                 design_ok, neighbours, s.design_search_nm, s.design_tolerance_nm,
+                                                 s.group_radius_nm)
     else:
         all_tiles = read_contour_folder(folder)
         tiles = [t for t in all_tiles if len(t.design_nm)]
@@ -181,14 +189,17 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         def errors(points, sem_corrections, design_corrections):  # CSV rows are already paired
             return paired_errors(points, design_points, sem_corrections, design_corrections)
 
+        def nominal_errors(points):
+            zero = np.zeros((len(points), 2))
+            return errors(points, zero, zero)
+
     names = [Path(r.image_path).stem for r in records] if kind == "images" else tile_ids
     record(f"{stripe.max() + 1} stripe(s)")
     s = replace(s, first_stripe_upward=scan_direction(names, centers, stripe, s.first_stripe_upward, record))
     intrafield = None
     if s.in_image_correction:  # from the contacts paired at the nominal placement, before the stitching (D53)
         progress(LOAD_SHARE, "In-image distortion map")
-        zero = np.zeros((len(sem_points), 2))
-        sem_points, intrafield = in_image_corrected(sem_points, errors(sem_points, zero, zero), image_centers,
+        sem_points, intrafield = in_image_corrected(sem_points, nominal_errors(sem_points), image_centers,
                                                     s.intrafield_nodes, record)
     progress(LOAD_SHARE, "Stitching")
     stitch, slipped = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
@@ -200,6 +211,11 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     if observations.skipped:
         record(f"!! {len(observations.skipped)} tile(s) NOT MEASURED: "
                f"{ {tile_ids[k]: reason for k, reason in observations.skipped.items()} }")
+    steps = offset_steps(observations, neighbours, s.design_tolerance_nm) if kind == "images" else []
+    if steps:
+        record(f"!! The design pairs step by more than design_tolerance_nm between {len(steps)} pair(s) of "
+               f"neighbouring images (stitched off each other? one side paired on its own): "
+               f"{[(tile_ids[i], tile_ids[j]) for i, j in steps[:10]]}{' ...' if len(steps) > 10 else ''}")
     contacts = merge_observations(observations, design_stitch.corrections, s.group_radius_nm)
     record(f"{len(observations.tile)} observations -> {len(contacts.count)} contacts")
 

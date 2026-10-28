@@ -11,7 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
-First numbered version. Saved runs: format 3, analysis 7. Runs saved by earlier copies of MaskReg carry no version:
+First numbered version. Saved runs: format 3, analysis 8. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 
 - *File → Folders...*: choose the folder of `maskreg.ini` and the folder where FTP downloads are kept (D96).
@@ -157,5 +157,12 @@ they open, flagged as outdated.
   *SEM–design pairs* (off at start): an arrow from each contact's design centre to its measured centre, in this
   placement its registration error at true length; red where longer than half the contact spacing, so the measured
   contact was paired with a neighbouring design contact. Numbers unchanged (D142).
+- **Analysis 8.** Image folders: the SEM–design pairs are chosen where the stitching put the images, each image
+  following the pairs of its neighbours, against its own `.oas` contacts and its neighbours'. Before, each image was
+  paired with its own design at its stage position; where the stitching moved images whole pitches from there (a
+  repeating pattern), their errors stepped by whole pitches from image to image, and the moving-window map showed
+  rainbow-like bands. An image the stitching put more than `design_tolerance_nm` off its neighbours is paired on its
+  own as before, and the log names it (`!!`). Folders whose images sit where their own design pairs them give the same
+  numbers (D143).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

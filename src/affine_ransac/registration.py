@@ -8,6 +8,8 @@ so a common offset, rotation or scale shows up as a pattern in the error map.
    (stitch_design), which can be offset against each other. Each tile's SEM contacts are matched
    to its own design contacts (mutual nearest, within a gate), so a contact in an overlap gets one
    observation per tile that sees it (2 in a strip, up to 4 in a corner).
+   design_errors_after_stitching(): the same, each tile's pairs chosen where the stitching put it, on the row its
+   neighbours pair on (D143), so that tiles the stitching moved whole pitches cannot pair a row off.
 2. merge_observations(): one entry per physical CONTACT. Observations whose stitched design
    positions lie within a small radius (and come from different tiles) are the same contact;
    their SEM and design positions are averaged and their spread is kept (SPEC S5).
@@ -22,8 +24,13 @@ from dataclasses import dataclass, replace
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.matching import choose_shift, consistent_choice, near_ties, scored_shifts
+from affine_ransac.matching import (choose_shift, consistent_choice, match_points_tree, match_with_shift, near_ties,
+                                    scored_shifts)
 from affine_ransac.stitching import apply_correction, connected_groups
+
+# design_errors_after_stitching: a tile following its neighbours must pair at least this share of its SEM contacts
+# (fewer pair by chance where its image does not line up with theirs, on a pattern that nearly repeats)
+MIN_FOLLOWED = 0.5
 
 
 @dataclass
@@ -34,8 +41,9 @@ class DesignErrors:
     error_nm: np.ndarray           # (N, 2) registration_error(sem_nm, design_nm), nm
     design_nominal_nm: np.ndarray  # (N, 2) design centre at the nominal placement (for grouping)
     skipped: dict                  # tile index -> reason why it was not measured (no error computed)
-    # Per tile, from the matching (design_errors only; None for paired_errors): the SEM − design
-    # shift used to choose the pairs, at the nominal placement (D86; NaN if not matched); whether other shifts matched equally well
+    # Per tile, from the matching (None for paired_errors): the SEM − design shift used to choose the pairs, at the
+    # nominal placement (D86; design_errors_after_stitching: after the corrections, D143; NaN if not matched); whether
+    # other shifts matched equally well
     # (tied: no missing contact or other feature decides, so the neighbours did); and the largest
     # difference from a neighbour's
     # shift (NaN without matched neighbours; about one pitch = paired one row off).
@@ -119,23 +127,16 @@ def design_errors(
     corrections too.
     """
     n = len(sem_points)
-    skipped, stitched, candidates = {}, {}, [[] for _ in range(n)]
-    for k, (sem, design) in enumerate(zip(sem_points, design_points)):
-        if not design_ok[k]:
-            skipped[k] = "design tone not matched (flagged)"
-        elif np.isnan(sem_corrections[k]).any():
-            skipped[k] = "SEM tile not stitched"
-        elif np.isnan(design_corrections[k]).any():
-            skipped[k] = "design tile not stitched"
-        else:
-            stitched[k] = (apply_correction(sem, sem_corrections[k]),
-                           apply_correction(design, design_corrections[k]))
-            # Pairs chosen at the nominal placement, where a tile is only its own stage error away
-            # from its design; the corrections move the pairs, they do not change them (D86).
-            candidates[k] = scored_shifts(design, sem if pair_points is None else pair_points[k], search_nm,
-                                          tolerance_nm)
-            if not candidates[k]:
-                skipped[k] = "no SEM contact matched the design"
+    skipped, stitched = _stitched_tiles(sem_points, design_points, sem_corrections, design_corrections, design_ok)
+    candidates = [[] for _ in range(n)]
+    for k in stitched:
+        # Pairs chosen at the nominal placement, where a tile is only its own stage error away
+        # from its design; the corrections move the pairs, they do not change them (D86).
+        candidates[k] = scored_shifts(design_points[k], sem_points[k] if pair_points is None else pair_points[k],
+                                      search_nm, tolerance_nm)
+        if not candidates[k]:
+            skipped[k] = "no SEM contact matched the design"
+    skipped = dict(sorted(skipped.items()))
 
     moved = np.zeros((n, 2))  # what the corrections move each tile's SEM against its design (follow_stitching)
     if follow_stitching:
@@ -174,6 +175,157 @@ def design_errors(
     return errors
 
 
+def _stitched_tiles(sem_points, design_points, sem_corrections, design_corrections, design_ok) -> tuple[dict, dict]:
+    """(skipped, stitched): per tile that cannot be measured, why; per other tile, its (SEM, design) points with their
+    corrections applied."""
+    skipped, stitched = {}, {}
+    for k, (sem, design) in enumerate(zip(sem_points, design_points)):
+        if not design_ok[k]:
+            skipped[k] = "design tone not matched (flagged)"
+        elif np.isnan(sem_corrections[k]).any():
+            skipped[k] = "SEM tile not stitched"
+        elif np.isnan(design_corrections[k]).any():
+            skipped[k] = "design tile not stitched"
+        else:
+            stitched[k] = (apply_correction(sem, sem_corrections[k]), apply_correction(design, design_corrections[k]))
+    return skipped, stitched
+
+
+def design_errors_after_stitching(
+    sem_points: list[np.ndarray],
+    design_points: list[np.ndarray],
+    sem_corrections: np.ndarray,
+    design_corrections: np.ndarray,
+    design_ok,
+    neighbours: list[tuple[int, int]],
+    search_nm: float = 100.0,
+    tolerance_nm: float = 10.0,
+    radius_nm: float = 5.0,
+) -> DesignErrors:
+    """design_errors with each tile's pairs chosen AFTER the corrections, on the row its neighbours pair on (D143).
+
+    Arguments as design_errors (design_corrections: shifts, as merge_observations needs); neighbours: (i, j) pairs of
+    overlapping tiles (pipeline.tile_neighbours); radius_nm: design contacts of two files closer than this are the
+    same contact (as merge_observations).
+    On a repeating pattern the stitching can move an image whole pitches from its stage position, further than
+    search_nm, while its overlaps still line up. A tile matched to its design on its own, at the nominal placement,
+    then pairs a row away from its neighbours: an abrupt step of a pitch in the errors. So the tiles are paired one at
+    a time where the stitching put them, against their own design and their neighbours' (an image moved off its own
+    file's field still has design contacts there):
+    1. A tile with paired neighbours takes the SEM − design offset of their pairs inside its own stitched image (the
+       same contacts, seen by both: their median), pairs its contacts within tolerance_nm of it (mutual nearest), and
+       pairs again at the median offset of those pairs. The waiting tile with the most such neighbour pairs goes first.
+       The offset is followed from tile to tile, so a scale added up over many tiles, or a drift, is followed too:
+       no affine is needed.
+    2. Where no waiting tile has such pairs (the first tile of every group of neighbours), the one with the most
+       contacts is matched on its own at the nominal placement (matching.match_with_shift: the shift search up to
+       search_nm, the smallest of tied shifts), then paired again where its corrections put it, as in 1.
+    A tile that pairs fewer than MIN_FOLLOWED of its SEM contacts over the design in 1 (stitched more than
+    tolerance_nm off the neighbours it followed, or they off it; on a pattern that nearly repeats a few still pair by
+    chance) waits for the pairs of other neighbours, and is matched on its own as in 2 if none come: a step at that
+    seam, which neighbour_jump_nm shows. Contacts of an image moved out beyond every design file are not paired.
+    Each error is the full stitched SEM − design of a pair; a pair with a neighbour's design contact has
+    design_index -1 (no row in the tile's own design). match_shift_nm holds each tile's offset after the corrections
+    and neighbour_jump_nm their largest difference between neighbours; ambiguous and match_mismatches are None.
+    """
+    n = len(sem_points)
+    skipped, stitched = _stitched_tiles(sem_points, design_points, sem_corrections, design_corrections, design_ok)
+    adjacent = [[] for _ in range(n)]
+    for i, j in neighbours:
+        adjacent[i].append(j)
+        adjacent[j].append(i)
+    image = {k: (s.min(axis=0), s.max(axis=0)) for k, (s, _) in stitched.items() if len(s)}  # stitched SEM box
+    waiting = np.zeros(n, bool)
+    waiting[list(stitched)] = True
+    contacts = np.array([min(len(s), len(d)) for s, d in zip(sem_points, design_points)])
+    support = np.zeros(n)              # neighbour pairs inside each tile's stitched image ...
+    evidence = [[] for _ in range(n)]  # ... and their SEM − design differences
+    found, shifts = {}, np.full((n, 2), np.nan)
+
+    while waiting.any():
+        first = not (support[waiting] > 0).any()  # no waiting tile has a paired neighbour: a new group starts
+        k = int(np.argmax(np.where(waiting, contacts if first else support, -1)))
+        waiting[k] = False
+        sem = stitched[k][0]
+        if first:  # matched on its own, at the nominal placement
+            match, _ = match_with_shift(design_points[k], sem_points[k], search_nm, tolerance_nm)
+            own = stitched[k][1]
+            offset = np.median(sem[match.ib] - own[match.ia], axis=0) if match.score else None
+        else:
+            offset = np.median(np.concatenate(evidence[k]), axis=0)
+        design, rows = _design_around(k, stitched, adjacent, radius_nm)
+        ia, ib = _paired_at(design, sem, offset, tolerance_nm) if offset is not None else ([], [])
+        if not first and not _followed(sem - offset, design, len(ia)):  # stitched off the neighbours it followed (or
+            support[k], evidence[k] = 0, []                               # they off it): again with others' pairs,
+            waiting[k] = True                                             # or on its own
+            continue
+        if len(ia) == 0:
+            skipped[k] = "no SEM contact matched the design"
+            continue
+        found[k] = design[ia], rows[ia], ib
+        difference = sem[ib] - design[ia]
+        shifts[k] = np.median(difference, axis=0)
+        for u in adjacent[k]:  # the same contacts, seen by a waiting neighbour: its evidence
+            if waiting[u] and u in image:
+                low, high = image[u]
+                inside = np.all((sem[ib] >= low) & (sem[ib] <= high), axis=1)
+                if inside.any():
+                    evidence[u].append(difference[inside])
+                    support[u] += inside.sum()
+
+    tiles, designs, nominals, sems, indices = [], [], [], [], []
+    for k in sorted(found):
+        design, rows, ib = found[k]
+        own = rows >= 0
+        nominal = design - design_corrections[k]  # a neighbour's contact: where this tile's design would have it
+        nominal[own] = design_points[k][rows[own]]
+        tiles.append(np.full(len(ib), k))
+        designs.append(design)
+        nominals.append(nominal)
+        sems.append(stitched[k][0][ib])
+        indices.append((ib, rows))
+    errors = _collect(tiles, designs, nominals, sems, indices, dict(sorted(skipped.items())))
+    errors.match_shift_nm = shifts
+    errors.neighbour_jump_nm = neighbour_jumps(shifts, neighbours)
+    return errors
+
+
+def _followed(sem: np.ndarray, design: np.ndarray, paired: int) -> bool:
+    """Whether `paired` pairs are at least MIN_FOLLOWED of the SEM points (moved by the offset they were paired at)
+    over the design's box: an image moved out beyond every design file only counts the contacts with design under
+    them."""
+    if paired == 0:
+        return False
+    over = np.all((sem >= design.min(axis=0)) & (sem <= design.max(axis=0)), axis=1)
+    return paired >= MIN_FOLLOWED * over.sum()
+
+
+def _design_around(k: int, stitched: dict, adjacent: list, radius_nm: float) -> tuple[np.ndarray, np.ndarray]:
+    """Tile k's stitched design and its neighbours' design contacts beyond it: (points, row of each in tile k's design
+    points, -1 for a neighbour's contact). A neighbour's contact closer than radius_nm to one already in is the same
+    contact."""
+    points = stitched[k][1]
+    rows = np.arange(len(points))
+    for u in adjacent[k]:
+        if u not in stitched:
+            continue
+        other = stitched[u][1]
+        if len(points) and len(other):
+            other = other[cKDTree(points).query(other)[0] > radius_nm]
+        points = np.vstack([points, other])
+        rows = np.concatenate([rows, np.full(len(other), -1)])
+    return points, rows
+
+
+def _paired_at(design: np.ndarray, sem: np.ndarray, offset: np.ndarray, tolerance_nm: float):
+    """(design rows, SEM rows) of the pairs of design + offset and sem within tolerance_nm (mutual nearest), paired
+    again at the median SEM − design of those pairs."""
+    ia, ib = match_points_tree(design + offset, sem, tolerance_nm)
+    if len(ia):
+        ia, ib = match_points_tree(design + np.median(sem[ib] - design[ia], axis=0), sem, tolerance_nm)
+    return ia, ib
+
+
 def neighbour_jumps(shifts: np.ndarray, neighbours: list[tuple[int, int]]) -> np.ndarray:
     """(n_tiles,) largest distance of each tile's shift from a neighbour's shift, nm (a seam where
     tiles pair one row off shows about one pitch on both sides; a median would hide it where most
@@ -189,6 +341,16 @@ def neighbour_jumps(shifts: np.ndarray, neighbours: list[tuple[int, int]]) -> np
         if others and not np.isnan(shifts[k, 0]):
             jumps[k] = np.linalg.norm(np.array(others) - shifts[k], axis=1).max()
     return jumps
+
+
+def offset_steps(errors: DesignErrors, neighbours: list[tuple[int, int]], step_nm: float) -> list[tuple[int, int]]:
+    """Neighbouring tiles (i, j) whose SEM − design offsets (match_shift_nm) differ by more than step_nm: a step in
+    the errors between them, e.g. one of them matched on its own (design_errors_after_stitching). [] without
+    offsets (paired_errors)."""
+    if errors.match_shift_nm is None:
+        return []
+    shifts = errors.match_shift_nm
+    return [(i, j) for i, j in neighbours if np.linalg.norm(shifts[i] - shifts[j]) > step_nm]  # NaN: not paired
 
 
 def paired_errors(
@@ -295,14 +457,17 @@ def merge_values(merged: MergedErrors, errors: DesignErrors, sem_values: list[np
     """Per merged contact, the mean of values measured per tile (e.g. contact sizes) over its
     observations: sem_values[t] (n_t, k) has a row per SEM point of tile t, design_values[t] per design
     point, in the order passed to design_errors / paired_errors. NaN values are left out of a mean
-    (NaN if all are). merged must be merge_observations(errors, ...). Returns (M, k) SEM and design."""
+    (NaN if all are), as are observations without a row (index -1: paired with a neighbour's design contact,
+    design_errors_after_stitching). merged must be merge_observations(errors, ...). Returns (M, k) SEM and design."""
     labels = np.repeat(np.arange(len(merged.members)), [len(m) for m in merged.members])
     rows = np.concatenate(merged.members) if merged.members else np.empty(0, int)
 
     def mean(values, index):
         starts = np.concatenate([[0], np.cumsum([len(v) for v in values])[:-1]])
         flat = np.concatenate(values)
-        observed = flat[starts[errors.tile[rows]] + index[rows]]
+        with_row = index[rows] >= 0
+        observed = np.full((len(rows), flat.shape[1]), np.nan)
+        observed[with_row] = flat[starts[errors.tile[rows[with_row]]] + index[rows[with_row]]]
         found = np.isfinite(observed)
         total = np.zeros((len(merged.members), flat.shape[1]))
         count = np.zeros_like(total)

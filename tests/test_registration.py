@@ -304,3 +304,161 @@ def test_on_a_repeating_pattern_the_pairs_can_follow_the_stitched_placement():
 
     assert spread(follow=False) > 25  # tiles a pitch (50 nm) apart
     assert spread(follow=True) < 3    # noise only (0.3 nm per contact) and the overlap fits
+
+
+def stitched_whole_pitches_off():
+    """The mosaic above, its images then moved further whole pitches, as the stitching can on a repeating pattern
+    while every overlap still lines up: a random walk (neighbours up to a pitch apart per axis, -150 to 50 nm).
+    Returns the points, each tile's design (its .oas: its own field), the corrections and the neighbours."""
+    from affine_ransac.pipeline import placed_image_by_image, stitch_tiles, tile_neighbours
+    from test_pipeline import GRID_50, mosaic
+
+    errors = np.random.default_rng(1).normal(0, 20, (12, 2))
+    points, centers, fovs, _ = mosaic(errors, GRID_50)
+    design = [GRID_50[np.all(np.abs(GRID_50 - c) < 500 - 10, axis=1)] for c in centers]
+    guide = placed_image_by_image(points, centers, fovs, search_nm=100)
+    with pytest.warns(UserWarning):  # corners
+        stitch = stitch_tiles(points, centers, fovs, max_match_nm=10, guide=guide)
+    rng = np.random.default_rng(0)
+    a, b = np.cumsum(rng.integers(-1, 2, (3, 2)), axis=0), np.cumsum(rng.integers(-1, 2, (4, 2)), axis=0)
+    moves = np.array([(a[c] + b[r]) * 50.0 for c in range(3) for r in range(4)])  # the tiles' order in mosaic()
+    return points, design, stitch.corrections + moves, tile_neighbours(centers, fovs)
+
+
+def test_pairs_after_stitching_follow_images_stitched_whole_pitches_off():
+    """D143: each tile matched to its own design pairs whole pitches away from its neighbours (steps in the errors);
+    paired where the stitching put it, following its neighbours, every tile gets the same error, and the strip an
+    image was moved off its own .oas field pairs with its neighbours' design contacts."""
+    from scipy.spatial import cKDTree
+    from affine_ransac.registration import design_errors_after_stitching
+
+    points, design, corrections, neighbours = stitched_whole_pitches_off()
+    zero = np.zeros((12, 2))
+    old = design_errors(points, design, corrections, zero, [True] * 12, search_nm=100, tolerance_nm=10,
+                        neighbours=neighbours, follow_stitching=True)
+    new = design_errors_after_stitching(points, design, corrections, zero, [True] * 12, neighbours, search_nm=100,
+                                        tolerance_nm=10)
+
+    assert np.ptp(old.error_nm, axis=0).max() > 25  # tiles whole pitches apart
+    assert new.skipped == {}
+    assert np.ptp(new.error_nm, axis=0).max() < 3  # noise only (0.3 nm per contact) and the overlap fits
+    assert np.nanmax(new.neighbour_jump_nm) < 1
+    offset, every_design = np.median(new.error_nm, axis=0), cKDTree(np.vstack(design))
+    for k in range(12):  # every SEM contact with a design contact of any file where the stitching put it is paired
+        assert (new.tile == k).sum() == (every_design.query(points[k] + corrections[k] - offset)[0] < 10).sum()
+    foreign = new.design_index < 0  # paired with a neighbour's design contact: where its own design would have it
+    assert foreign.any()
+    np.testing.assert_array_equal(new.design_nominal_nm[foreign], new.design_nm[foreign])  # no design corrections
+
+
+def test_a_tile_stitched_off_its_neighbours_leaves_their_pairs_alone():
+    """A tile stitched 20 nm off its neighbours (more than tolerance_nm) cannot follow them: it is matched on its own
+    and shows as a step (neighbour_jump_nm, offset_steps: the MaskReg log); the others keep one error, also when it
+    is the first tile paired."""
+    from affine_ransac.registration import design_errors_after_stitching, offset_steps
+
+    points, design, corrections, neighbours = stitched_whole_pitches_off()
+    first = int(np.argmax([min(len(p), len(d)) for p, d in zip(points, design)]))
+    for bad in [first, (first + 5) % 12]:
+        moved = corrections.copy()
+        moved[bad, 0] += 20
+        found = design_errors_after_stitching(points, design, moved, np.zeros((12, 2)), [True] * 12, neighbours,
+                                              search_nm=100, tolerance_nm=10)
+        assert found.skipped == {}
+        assert np.ptp(found.error_nm[found.tile != bad], axis=0).max() < 3
+        assert found.neighbour_jump_nm[bad] > 10
+        assert offset_steps(found, neighbours, 10) == [(i, j) for i, j in neighbours if bad in (i, j)]
+    assert offset_steps(paired_errors(points, points, corrections, corrections), neighbours, 10) == []  # no offsets
+
+
+def test_a_tile_whose_contacts_pair_only_by_chance_where_its_neighbours_pair_is_matched_on_its_own():
+    """On a grid that nearly repeats (100 nm, contacts up to 20 nm off it), a tile stitched 100 nm off its neighbours
+    still pairs a few contacts at their offset, by chance: fewer than half, so it is matched on its own (its own
+    pairs, the step of the stitching in its errors) instead of keeping those."""
+    from affine_ransac.pipeline import tile_neighbours
+    from affine_ransac.registration import design_errors_after_stitching
+    from test_pipeline import mosaic
+
+    rng = np.random.default_rng(3)
+    grid = np.array([(x, y) for x in np.arange(-600, 2400, 100.0) for y in np.arange(-600, 3300, 100.0)])
+    contacts = grid + rng.uniform(-20, 20, grid.shape)
+    points, centers, fovs, truth = mosaic(rng.normal(0, 20, (12, 2)), contacts)
+    design = [contacts[np.all(np.abs(contacts - c) < 500 - 10, axis=1)] for c in centers]
+    corrections = truth.copy()
+    corrections[5, 0] += 100
+
+    found = design_errors_after_stitching(points, design, corrections, np.zeros((12, 2)), [True] * 12,
+                                          tile_neighbours(centers, fovs))
+
+    own = found.tile == 5
+    assert own.sum() > 0.9 * len(points[5])
+    common = np.median(found.error_nm[~own], axis=0)  # every other tile: one error (noise 0.3 nm)
+    np.testing.assert_allclose(found.error_nm[~own], np.tile(common, ((~own).sum(), 1)), atol=2)
+    np.testing.assert_allclose(found.error_nm[own] - common, np.tile([100.0, 0.0], (own.sum(), 1)), atol=2)
+
+
+def test_pairs_after_stitching_are_each_tiles_own_pairs_where_those_are_right():
+    """Without repeats, and stitched right, every tile's own match is right: pairing after the stitching keeps those
+    pairs and errors, and adds the contacts just outside a tile's own .oas field that its stage error brought into
+    its image."""
+    from scipy.spatial import cKDTree
+    from affine_ransac.pipeline import tile_neighbours
+    from affine_ransac.registration import design_errors_after_stitching
+    from test_pipeline import mosaic
+
+    rng = np.random.default_rng(3)
+    contacts = rng.uniform((-600, -600), (2400, 3300), (1200, 2))
+    contacts = contacts[cKDTree(contacts).query(contacts, k=2)[0][:, 1] > 30]  # random, none closer than 30 nm
+    points, centers, fovs, truth = mosaic(rng.normal(0, 20, (12, 2)), contacts)
+    design = [contacts[np.all(np.abs(contacts - c) < 500 - 10, axis=1)] for c in centers]
+    neighbours, zero = tile_neighbours(centers, fovs), np.zeros((12, 2))
+
+    old = design_errors(points, design, truth, zero, [True] * 12, neighbours=neighbours)
+    new = design_errors_after_stitching(points, design, truth, zero, [True] * 12, neighbours)
+
+    own = new.design_index >= 0
+    assert 0 < (~own).sum() < 0.1 * len(own)
+    found = {(t, s, d): e for t, s, d, e in zip(new.tile[own], new.sem_index[own], new.design_index[own],
+                                                new.error_nm[own])}
+    assert set(found) == set(zip(old.tile, old.sem_index, old.design_index))
+    for t, s, d, e in zip(old.tile, old.sem_index, old.design_index, old.error_nm):
+        np.testing.assert_allclose(found[(t, s, d)], e)
+
+
+def test_pairs_after_stitching_follow_a_scale_added_up_over_many_tiles():
+    """The SEM 0.8 % too large, 31 images in a row stitched with shifts: the errors reach 105 nm at the ends (two
+    pitches, more than search_nm) while neighbours differ by 7 nm. Followed from tile to tile, every contact keeps
+    its own design contact."""
+    from affine_ransac.pipeline import tile_neighbours
+    from affine_ransac.registration import design_errors_after_stitching
+
+    m, step = 0.008, 880.0
+    centers = np.array([(c * step, 0.0) for c in range(31)])
+    middle = centers.mean(axis=0)
+    grid = np.array([(x, y) for x in np.arange(-500, 31 * step, 50.0) for y in np.arange(-450, 500, 50.0)])
+    design = [grid[np.all(np.abs(grid - c) < 500 - 10, axis=1)] for c in centers]
+    rng = np.random.default_rng(5)
+    sems = [c + (1 + m) * (d - c) + rng.normal(0, 0.3, d.shape) for c, d in zip(centers, design)]  # each image larger
+    corrections = m * (centers - middle)  # what stitching with shifts makes of it
+    neighbours = tile_neighbours(centers, np.full((31, 2), 1000.0))
+
+    found = design_errors_after_stitching(sems, design, corrections, np.zeros((31, 2)), [True] * 31, neighbours,
+                                          search_nm=100, tolerance_nm=10)
+
+    assert found.skipped == {}
+    assert len(found.tile) == sum(len(d) for d in design) and (found.design_index >= 0).all()
+    np.testing.assert_allclose(found.error_nm, m * (found.design_nm - middle), atol=2)
+    assert np.abs(found.error_nm[:, 0]).max() > 100
+
+
+def test_merge_values_leave_out_observations_without_a_row_in_their_tile():
+    errors = paired_errors(TWO_TILES, TWO_TILES, np.zeros((2, 2)), np.zeros((2, 2)))
+    errors.design_index[(errors.tile == 1) & (errors.design_index == 0)] = -1  # x = 200 of tile 1: a neighbour's
+    merged = merge_observations(errors, np.zeros((2, 2)))
+    values = [np.array([[1.0], [2.0], [3.0]]), np.array([[5.0], [6.0]])]
+
+    sem, design = merge_values(merged, errors, values, values)
+
+    order = np.argsort(merged.design_nm[:, 0])
+    np.testing.assert_allclose(sem[order, 0], [1.0, 2.0, 4.0, 6.0])
+    np.testing.assert_allclose(design[order, 0], [1.0, 2.0, 3.0, 6.0])  # x = 200: tile 0's row only

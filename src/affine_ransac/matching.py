@@ -2,6 +2,7 @@
 
 - match_points(): mutual nearest neighbours within a gate. Correct only while the offset between
   the two sets is well below half the pitch: the gate rejects pairs, it never chooses them.
+  match_points_tree(): the same with KD-trees, for large sets.
 - scored_shifts(): for offsets of any size up to search_nm: candidate shifts b − a, each scored
   by its MISMATCHES, the points without a partner where both sets are complete (D50).
 - scored_shifts_together(): the same for several pairs of sets sharing one shift (an image against its neighbours).
@@ -38,6 +39,17 @@ def match_points(a: np.ndarray, b: np.ndarray, max_distance: float) -> tuple[np.
     close = distances[ia, nearest_b] < max_distance
     keep = mutual & close
     return ia[keep], nearest_b[keep]
+
+
+def match_points_tree(a: np.ndarray, b: np.ndarray, max_distance: float) -> tuple[np.ndarray, np.ndarray]:
+    """match_points with KD-trees instead of every distance, for sets of thousands of points: the same mutual nearest
+    pairs closer than max_distance (a point with two nearest at exactly the same distance may take the other)."""
+    if len(a) == 0 or len(b) == 0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=int)
+    distance, nearest_b = cKDTree(b).query(a)
+    nearest_a = cKDTree(a).query(b)[1]
+    keep = np.flatnonzero((nearest_a[nearest_b] == np.arange(len(a))) & (distance < max_distance))
+    return keep, nearest_b[keep]
 
 
 @dataclass

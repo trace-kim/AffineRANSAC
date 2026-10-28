@@ -40,7 +40,7 @@ from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.matching import candidate_shifts, match_with_shift
+from affine_ransac.matching import candidate_shifts, match_points_tree, match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
 from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
@@ -456,11 +456,8 @@ def seen_pairs(a: np.ndarray, b: np.ndarray, gate: float) -> tuple[int, np.ndarr
     in_b = points_in_box(b, (a[:, 0].min(), a[:, 0].max(), a[:, 1].min(), a[:, 1].max()), margin=gate)
     if len(in_a) == 0 or len(in_b) == 0:
         return 0, none, none
-    # mutual nearest neighbours within the gate, as matching.match_points, with trees (this is the placement's hot loop)
-    distance, nearest_b = cKDTree(b[in_b]).query(a[in_a])
-    nearest_a = cKDTree(a[in_a]).query(b[in_b])[1]
-    keep = np.flatnonzero((nearest_a[nearest_b] == np.arange(len(in_a))) & (distance < gate))
-    return min(len(in_a), len(in_b)), in_a[keep], in_b[nearest_b[keep]]
+    ia, ib = match_points_tree(a[in_a], b[in_b], gate)  # trees: this is the placement's hot loop
+    return min(len(in_a), len(in_b)), in_a[ia], in_b[ib]
 
 
 @dataclass
