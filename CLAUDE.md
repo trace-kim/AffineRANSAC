@@ -2,10 +2,11 @@
 
 Photomask registration-error measurement: OASIS design vs. stitched SEM images, with RANSAC-robust affine calibration.
 
-**Read `docs/SPEC.md` before any work.** It is the source of truth for architecture, coordinate conventions, algorithms, decisions (§12) and open questions (§13).
+**Before any work, read the parts of `docs/SPEC.md` the task touches**, not the whole file (it is long): find them with `grep -n '^#' docs/SPEC.md`, then read the Decision Log (§12) rows they cite and the open questions (§13). It is the source of truth for architecture, coordinate conventions, algorithms, decisions (§12) and open questions (§13).
 
 ## Development approach — never overengineer
-- Start small. Take one step at a time and implement bit by bit, testing each piece before moving on.
+- **One step per turn.** Build the smallest useful version of one feature or fix (an option, off by default, unless the user asked for it to replace the old behaviour). Commit, push, then stop: say what to check on the real data and wait for the user's result before the next step. A request with several fixes still gets them one at a time. Passing synthetic tests is not "tested" here; the user's run on the real data is.
+- Synthetic data: write the tests the step needs. No benchmarks, variant comparisons or tuning on synthetic data beyond them.
 - Build only what the current step needs. The spec describes the full target; don't build ahead of it (no speculative abstractions, options or layers "for later").
 - Write each piece so a human reviewer can quickly read it and understand what it does: short functions, plain names, straightforward logic, brief comments where the intent isn't obvious.
 - Keep changes small and reviewable. Prefer several small steps over one large one.
