@@ -67,8 +67,8 @@ class ShiftMatch:
 
 
 def candidate_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_nm: float,
-                     max_candidates: int = 9) -> np.ndarray:
-    """Up to max_candidates shifts b − a (K, 2) that line up many points, most votes first.
+                     max_candidates: int | None = 9) -> np.ndarray:
+    """Up to max_candidates shifts b − a (K, 2) that line up many points, most votes first (None: every one).
 
     Every pair closer than search_nm votes for its difference b[j] − a[i]; a shift's votes are the
     differences within tolerance_nm of it. Peaks are taken greedily, each suppressing the

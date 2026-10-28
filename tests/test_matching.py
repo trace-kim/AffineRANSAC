@@ -1,7 +1,7 @@
 import numpy as np
 
-from affine_ransac.matching import (ShiftMatch, choose_shift, consistent_choice, match_points, match_with_shift,
-                                    near_ties, scored_shifts, scored_shifts_together)
+from affine_ransac.matching import (ShiftMatch, candidate_shifts, choose_shift, consistent_choice, match_points,
+                                    match_with_shift, near_ties, scored_shifts, scored_shifts_together)
 
 
 def test_pairs_shifted_points_in_any_order():
@@ -145,6 +145,17 @@ def test_nothing_within_the_search_radius():
     match, tied = match_with_shift(np.array([[0.0, 0.0]]), np.array([[500.0, 0.0]]), search_nm=100, tolerance_nm=10)
     assert match.score == 0 and len(match.ia) == 0 and np.isnan(match.shift).all() and not tied
     assert match_with_shift(np.empty((0, 2)), np.array([[1.0, 1.0]]), 100, 10)[0].score == 0
+
+
+def test_candidate_shifts_keep_every_peak_on_request():
+    """D144: on a lattice every whole-pitch shift within the search radius is a peak; nine are kept by default, all of
+    them with max_candidates None (the fingerprint chooses among them by their residuals)."""
+    design = lattice()
+    sem, _ = sem_of(design, shift=(12.0, -7.0), same_area=True)
+    every = candidate_shifts(design, sem, search_nm=2.5 * PITCH, tolerance_nm=10, max_candidates=None)
+    assert len(candidate_shifts(design, sem, search_nm=2.5 * PITCH, tolerance_nm=10)) == 9 < len(every)
+    off = (every - (12.0, -7.0)) / PITCH
+    np.testing.assert_allclose(off, np.round(off), atol=0.05)  # each the true shift plus whole pitches
 
 
 def fake(shift, mismatches, compared=100):

@@ -134,6 +134,9 @@ class StitchingTab(QtWidgets.QWidget):
                                 "image by image: the images are placed one at a time, each where its contacts line "
                                 "up with all its placed neighbours' at once; every overlap is then paired there, so "
                                 "overlaps cannot disagree by a pitch.\n"
+                                "fingerprint: image by image, each image's whole-pitch shift chosen by the residual "
+                                "of its pairs (the true one pairs each contact with itself); needs mask placement "
+                                "errors larger than the noise, otherwise as image by image.\n"
                                 "Changing it computes the stitching and every result after it again.")
         reason = unavailable or ("" if on_restitch is not None else "Change stitch_method in the settings")
         if reason:

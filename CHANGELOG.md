@@ -164,5 +164,12 @@ they open, flagged as outdated.
   rainbow-like bands. An image the stitching put more than `design_tolerance_nm` off its neighbours is paired on its
   own as before, and the log names it (`!!`). Folders whose images sit where their own design pairs them give the same
   numbers (D143).
+- New stitching method *fingerprint* (`stitch_method`; the default is unchanged, so runs give the same numbers): image
+  by image, with each image's whole-pitch shift chosen by how well its contacts fit those of its neighbours. At the
+  true shift each pair is one contact seen twice, so they differ only by the SEM noise; a pitch off, each pair is two
+  neighbouring contacts, which differ also by the mask's own placement errors. For repeating arrays where image by
+  image places images or whole regions whole pitches off: it works where the mask's placement errors are clearly
+  larger than the noise; where they are not, it places as image by image. The log says how many images their fit
+  decided and how clearly; the check after the stitching judges the overlaps the same way (D144).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

@@ -45,7 +45,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.spatial import cKDTree
 
-from affine_ransac.analysis import ContactSizes
+from affine_ransac.analysis import BY_IMAGE, ContactSizes, better_text
 from affine_ransac.geometry.affine import apply_affine, recentre
 from affine_ransac.overlap import points_in_box
 from affine_ransac.pipeline import (PAIRING_GATE, PairResult, RejectedPair, StitchResult, contact_spacing,
@@ -191,7 +191,7 @@ def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
             lines.append(f"<br><b>{name}</b>: used, {len(e.ia)} pairs.")
         elif e is not None and e.failed:
             count_a, count_b = (len(points_in_box(points(r)[k], e.box)) for k in (i, j))
-            if name == "Measured" and r.settings.stitch_method == "image by image":  # stitch_image_by_image (D139)
+            if name == "Measured" and r.settings.stitch_method in BY_IMAGE:  # stitch_image_by_image (D139)
                 why = (f"Where the placement image by image put the two images, {e.matched} of the {e.in_box} "
                        f"contacts both should see pair up; at least half of them and {r.settings.min_matched} "
                        f"(min_matched) are needed. A pair is a contact in both {what}, the two within "
@@ -784,10 +784,10 @@ def stitching_verdict(r: ReleaseResult) -> list[str]:
     names, n, lines = r.tile_ids, len(r.tile_ids), []
     if r.slipped:
         shown = ", ".join(f"{names[i]} / {names[j]}" for i, j in r.slipped[:3]) + (", ..." if len(r.slipped) > 3 else "")
-    if r.slipped and r.settings.stitch_method == "image by image":
+    if r.slipped and r.settings.stitch_method in BY_IMAGE:
         lines.append(line(style.FAILURE, f"Error: {len(r.slipped)} overlap(s) do not line up.",
                           f"({shown}) Where the stitching placed their images, fewer than half of their contacts pair "
-                          f"up, another shift of one image pairs clearly more of them, or the two images lie more than "
+                          f"up, another shift of one image {better_text(r.settings)}, or the two images lie more than "
                           f"overlap_tolerance_nm apart, so the errors of the tiles around them can be wrong."))
     elif r.slipped:
         lines.append(line(style.FAILURE, f"Error: {len(r.slipped)} overlap(s) paired one contact row off?",

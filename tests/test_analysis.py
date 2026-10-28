@@ -252,6 +252,27 @@ def test_restitch_image_by_image_finds_the_same_stage_errors_where_they_are_smal
                                    first.stitchings[name].stitch.corrections, atol=0.05)
 
 
+def test_restitch_by_fingerprint_places_every_stitching_by_it_and_says_how(tmp_path):
+    """D144: every stitching over all overlaps is placed by fingerprint, each logging how it chose; offsets up to
+    max_match_nm (25 nm, below half the 136 nm pitch) leave every image one shift: the stage errors, as before."""
+    folder = tmp_path / "csv"
+    folder.mkdir()
+    write_contour_folder(folder)
+    first = analyse_contour_folder(folder, Settings(), log=lambda line: None)
+    lines = []
+
+    second = restitch(first, "fingerprint", log=lines.append)
+
+    assert second.settings.stitch_method == "fingerprint"
+    chose = [line for line in lines if line.startswith("Fingerprint, ")]
+    assert chose[0].startswith("Fingerprint, SEM: of 5 images placed against others, 0 chosen by the residual")
+    assert "5 with one option" in chose[0]
+    assert any(line.startswith("Fingerprint, Stripe drift corrected SEM, all overlaps: ") for line in chose)
+    for name in ("raw", "stripe drift corrected"):
+        np.testing.assert_allclose(second.stitchings[name].stitch.corrections,
+                                   first.stitchings[name].stitch.corrections, atol=0.05)
+
+
 def test_contact_sizes_are_measured_on_request(tmp_path):
     result = analyse_images(tmp_path, write_image_folder(tmp_path), IMAGE_SETTINGS, log=lambda line: None)
     steps = []

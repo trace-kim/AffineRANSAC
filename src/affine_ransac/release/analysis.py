@@ -32,9 +32,10 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
-from affine_ransac.analysis import (CONTOUR_SETTINGS, ContactSizes, Settings, check_settings, checked_overlaps,
-                                   contour_options, detect_layer, in_image_map, load_image_tiles,
-                                   merged_contact_sizes, placement_text, report_stitching, worker_count)
+from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Settings, check_settings,
+                                   checked_overlaps, contour_options, detect_layer, in_image_map, load_image_tiles,
+                                   merged_contact_sizes, placement_guide, placement_text, report_stitching,
+                                   worker_count)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -43,7 +44,7 @@ from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, measurement_pairs,
-                                    outlines_inside_frame, placed_image_by_image, process_tile,
+                                    outlines_inside_frame, process_tile,
                                     stitch_design, stitch_image_by_image, stitch_tiles, stripe_directions,
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, design_errors_after_stitching,
@@ -288,11 +289,11 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
                tile_ids) -> tuple[StitchResult, list[tuple[int, int]]]:
     """The SEM stitching over all overlaps, per s.stitch_method: paired at the nominal placement, guided by the
     stitching in measurement order (stripe: per tile, tile_stripes), or image by image after its placement
-    (stitch_image_by_image, D133, D139); and the overlaps it got wrong (checked_overlaps; logged): fitted away
-    from the shift the measurement order predicts by more than max_match_nm (one row off?), or, image by image, not
-    lining up where the stitching placed their images (D137)."""
-    if s.stitch_method == "image by image":
-        reference = placed_image_by_image(sem_points, centers, sizes, s.max_match_nm, s.min_matched)
+    (stitch_image_by_image, D133, D139; fingerprint: placed by the residuals, D144); and the overlaps it got wrong
+    (checked_overlaps; logged): fitted away from the shift the measurement order predicts by more than max_match_nm
+    (one row off?), or, image by image, not lining up where the stitching placed their images (D137)."""
+    if s.stitch_method in BY_IMAGE:
+        reference = placement_guide(sem_points, centers, sizes, s, log, "SEM")
         stitch = stitch_image_by_image(sem_points, centers, sizes, reference, s.outlier_factor, s.min_matched,
                                        label="SEM, all overlaps")
         method = f"{s.stitch_method} ({placement_text(reference)})"

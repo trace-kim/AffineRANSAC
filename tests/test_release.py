@@ -68,6 +68,29 @@ def test_the_release_stitches_image_by_image_on_request(tmp_path):
     np.testing.assert_allclose(by_image.moving.residuals, plain.moving.residuals, atol=0.05)
 
 
+def test_the_release_stitches_by_fingerprint_on_request(tmp_path):
+    """D144: the stitching method fingerprint places the images one at a time, each at the whole-pitch shift (offsets
+    up to max_match_nm, here beyond the pitch) whose pairs fit best: the contacts lie up to 1 nm off the design grid
+    (the same in every image, as a mask's placement errors), more than the 0.1 nm noise. The log says how it chose."""
+    placement_errors = np.random.default_rng(1).normal(0, 0.7, (64, 64, 2))  # per contact of the lattice, nm
+
+    def on_the_mask(k, local, mask):  # each contact's own error, whichever image sees it
+        column, row = np.round((mask + 1500) / PITCH).astype(int).T
+        return placement_errors[column, row]
+    write_contour_folder(tmp_path, sem_error=on_the_mask)
+    lines = []
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", replace(Settings(), stitch_method="fingerprint",
+                                                                 max_match_nm=300.0), log=lines.append)
+
+    np.testing.assert_allclose(result.stitch.corrections, STAGE - STAGE.mean(axis=0), atol=0.2)
+    assert "Stitching method: fingerprint (all 6 images placed image by image)" in lines
+    assert any(line.startswith("Fingerprint, SEM: of 5 images placed against others, 5 chosen by the residual of "
+                               "their pairs, 0 by the contacts paired, 0 tied") for line in lines)
+    assert result.slipped == [] and any(line.endswith("where another shift fits clearly better (or fits as well and "
+                                                      "pairs clearly more)") for line in lines)
+
+
 def test_the_error_is_measured_minus_design(tmp_path):
     """A contact measured +5 nm in x of where the design puts it has dx = +5 nm (no affine: raw error)."""
     def bump(k, local, mask):
@@ -521,6 +544,10 @@ def test_the_stitching_status_says_how_serious_it_is(tmp_path):
     result.settings = replace(result.settings, stitch_method="image by image")  # D133: checked on its own placement
     text = status(result)
     assert "Error: 1 overlap(s) do not line up." in text and "row off" not in text
+    assert "another shift of one image pairs clearly more," in text
+    result.settings = replace(result.settings, stitch_method="fingerprint")  # D144: checked by its residuals
+    text = status(result)
+    assert "Error: 1 overlap(s) do not line up." in text and "another shift of one image fits clearly better" in text
     result.settings = replace(result.settings, stitch_method="all overlaps")
 
     result.slipped = None  # a run saved before the check was kept

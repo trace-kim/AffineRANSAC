@@ -12,7 +12,8 @@
   tiles that cannot be stitched are reported (result fields, a warning), never dropped silently.
 - stitch_tiles_affine(): one affine per tile instead, from the same pairs and tie contacts.
 - tie_residuals(): how well the tie contacts agree after either stitching.
-- placed_image_by_image(), stitch_image_by_image(): the stitching image by image (D133, D138, D139).
+- placed_image_by_image(), stitch_image_by_image(): the stitching image by image (D133, D138, D139);
+  placed_by_fingerprint(): its placement with each image's shift chosen by the residual of its pairs (D144).
 - overlap_checks(): whether each overlap lines up at a placement, whatever paired its contacts (D137).
 
 - tile_boxes_from_points(): tile centres and sizes for data without a metadata CSV (e.g. the
@@ -465,6 +466,7 @@ class Placement:
     correction: np.ndarray  # (2,) added to the image's nominal position, nm
     pairs: int              # its contacts paired with those of its placed neighbours
     seen: int               # the contacts they should see of each other (per overlap, of the image with fewer)
+    rms_nm: float = np.nan  # residual of those pairs after their robust fit (capped_rms), nm
 
     @property
     def agreement(self) -> float:
@@ -487,11 +489,22 @@ def fitted_placement(points: list[np.ndarray], corrections: np.ndarray, placed: 
         mine, theirs = np.concatenate(mine), np.concatenate(theirs)
         if len(mine) == 0:
             return Placement(correction, 0, seen)
-        step = fit_overlap(mine, theirs).shift  # mine + step = theirs
-        if np.linalg.norm(step) < 0.01:
+        fit = fit_overlap(mine, theirs)  # mine + fit.shift = theirs
+        if np.linalg.norm(fit.shift) < 0.01:
             break
-        correction = correction + step
-    return Placement(correction, len(mine), seen)
+        correction = correction + fit.shift
+    return Placement(correction, len(mine), seen, capped_rms(fit))
+
+
+def capped_rms(fit: OverlapFit, outlier_factor: float = 3.0) -> float:
+    """The rms residual length of a fit's pairs (fit_overlap), nm, over every pair, each counted at most at the fit's
+    outlier limit (outlier_factor times the median length): an outlier counts but cannot dominate, and the fit leaving
+    out the largest residuals of a few pairs cannot make it small (OverlapFit.rms of the inliers can); per degree of
+    freedom (n / (n − 1): the fit takes one)."""
+    squared = (fit.residuals ** 2).sum(axis=1)
+    n = len(squared)
+    capped = np.minimum(squared, outlier_factor ** 2 * np.median(squared))
+    return float(np.sqrt(capped.mean() * n / max(n - 1, 1)))
 
 
 def ties(best: Placement, other: Placement) -> bool:
@@ -502,26 +515,71 @@ def ties(best: Placement, other: Placement) -> bool:
     return extra < MIN_EXTRA + 3 * np.sqrt(best.seen - best.pairs)
 
 
+def fits_as_well(best: Placement, other: Placement) -> bool:
+    """Whether `other` fits as well as `best` up to the noise of their residuals (capped_rms): the log of the ratio of
+    their mean squared residuals within three times its spread (2 / degrees of freedom of each: two per pair)."""
+    if not other.pairs:
+        return False
+    if best.rms_nm == 0:
+        return other.rms_nm == 0
+    return 2 * np.log(other.rms_nm / best.rms_nm) < 3 * np.sqrt(1 / best.pairs + 1 / other.pairs)
+
+
 def placement_options(points: list[np.ndarray], corrections: np.ndarray, placed: list[int], k: int, shared: dict,
-                      search_nm: float, gate: float, min_matched: int) -> list[Placement]:
+                      search_nm: float, gate: float, min_matched: int, by_fit: bool = False) -> list[Placement]:
     """The ways to place tile k against its placed neighbours `placed` that agree best, smallest correction first; []
     if none. Its candidate shifts (matching.candidate_shifts of its overlap contacts against theirs, any size up to
     search_nm from where tile k is: its correction, or its nominal position if it has none) are each refined until
     they settle (fitted_placement). Those pairing fewer than min_matched contacts,
     LINED_UP times as many as the one pairing the most (e.g. a sliver of an overlap whose few contacts happen to
     pair) or MIN_AGREEMENT of what they should are left out; of the others, the one agreeing best and those tied with
-    it (ties)."""
+    it (ties). by_fit (stitching method fingerprint, D144): every candidate, no LINED_UP, as the true shift can pair
+    far fewer contacts than one a pitch off (its overlap thinner), and no ties either, as a contact or two lost at the
+    image frame then outvote the residuals; the residuals choose among the options (fitted_options)."""
     start = np.nan_to_num(corrections[k])
     theirs = np.concatenate([points[o][shared[o, k]] + corrections[o] for o in placed])
     mine = np.concatenate([points[k][shared[k, o]] + start for o in placed])
+    shifts = candidate_shifts(theirs, mine, search_nm, gate, max_candidates=None if by_fit else 9)
     fits = [fitted_placement(points, corrections, placed, k, start - shift, gate)  # mine + correction = theirs
-            for shift in candidate_shifts(theirs, mine, search_nm, gate)]
-    most = max((f.pairs for f in fits), default=0)
+            for shift in shifts]
+    most = 0 if by_fit else max((f.pairs for f in fits), default=0)
     fits = [f for f in fits if f.pairs >= max(min_matched, LINED_UP * most) and f.agreement >= MIN_AGREEMENT]
     if not fits:
         return []
-    best = max(fits, key=lambda f: f.agreement)
-    return sorted([f for f in fits if ties(best, f)], key=lambda f: np.linalg.norm(f.correction))
+    if not by_fit:
+        fits = agreeing_best(fits)
+    return sorted(fits, key=lambda f: np.linalg.norm(f.correction))
+
+
+def agreeing_best(options: list[Placement]) -> list[Placement]:
+    """Of the options, the one agreeing best and those tied with it (ties)."""
+    best = max(options, key=lambda f: f.agreement)
+    return [f for f in options if ties(best, f)]
+
+
+def fitting_best(options: list[Placement]) -> list[Placement]:
+    """Of the options, the one with the smallest residual and those fitting as well (fits_as_well)."""
+    best = min(options, key=lambda f: np.nan_to_num(f.rms_nm, nan=np.inf))
+    return [f for f in options if fits_as_well(best, f)]
+
+
+def fitted_options(options: list[Placement]) -> list[Placement]:
+    """Of the options, those fitting best (fitting_best) and, of those, the ones agreeing best (agreeing_best), in the
+    order given: one, where the residuals tell the options apart; where they do not, those image by image would keep
+    (placement_options)."""
+    return agreeing_best(fitting_best(options)) if options else []
+
+
+def clearly_better(options: list[Placement], placement: Placement, by_fit: bool = False) -> bool:
+    """Whether one of the options is clearly better than `placement`: agrees clearly better (ties); by_fit
+    (fingerprint, D144) as that method chooses (fitted_options): fits clearly better, or fits as well as the best
+    fitting one and agrees clearly better."""
+    if by_fit and options:
+        options = fitting_best(options + [placement])
+        if not any(f is placement for f in options):
+            return True
+        options = [f for f in options if f is not placement]
+    return bool(options) and not ties(max(options, key=lambda f: f.agreement), placement)
 
 
 def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
@@ -544,6 +602,37 @@ def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: n
     image sharing the most contacts with the placed ones goes first. An image without options waits for more placed
     neighbours; one never placed gets NaN.
     """
+    return _placed_one_at_a_time(points, centers, fovs, search_nm, min_matched, by_fit=False)[0]
+
+
+@dataclass
+class FingerprintChoice:
+    options: int   # shifts of the image pairing min_matched and MIN_AGREEMENT of their contacts (placement_options)
+    fitting: int   # of those, the ones fitting best (fitting_best); 1: the residual chose
+    tied: int      # of those, the ones agreeing best (agreeing_best); > 1: the smallest correction taken
+    ratio: float   # residual of the second best fitting option / that of the best; NaN with one option
+    rms_nm: float  # residual of the option taken, nm
+
+
+def placed_by_fingerprint(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
+                          min_matched: int = 5) -> tuple[np.ndarray, list[FingerprintChoice]]:
+    """placed_image_by_image with each image's shift chosen first by the residual of its pairs: the guide of the
+    stitching method "fingerprint" (D144).
+
+    On a repeating pattern every whole-pitch shift of an image agrees as well (placement_options, by_fit: every
+    candidate up to search_nm). At the true one each pair is one contact seen twice, so the two differ only by the
+    measurement noise; a whole pitch off each pair is two neighbouring contacts, which differ also by their own
+    placement errors on the mask. So of the options, those fitting as well as the one with the smallest residual are
+    kept (fitting_best): one, where the mask's placement errors are larger than the noise; several where they are not
+    (or the pattern has none), and of those, as image by image, the ones agreeing best, the smallest correction
+    first (fitted_options). Returns the corrections and, per image placed against others (in that order), how its
+    shift was chosen."""
+    return _placed_one_at_a_time(points, centers, fovs, search_nm, min_matched, by_fit=True)
+
+
+def _placed_one_at_a_time(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
+                          min_matched: int, by_fit: bool) -> tuple[np.ndarray, list[FingerprintChoice]]:
+    """placed_image_by_image (by_fit: placed_by_fingerprint), and how each image's option was chosen."""
     n = len(points)
     gate = PAIRING_GATE * contact_spacing(points)
     shared = {}  # (k, other): indices of tile k's points in its overlap with tile other
@@ -553,11 +642,11 @@ def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: n
     neighbours = [[] for _ in range(n)]
     for i, j in shared:
         neighbours[i].append(j)
-    corrections = np.full((n, 2), np.nan)
+    corrections, choices = np.full((n, 2), np.nan), []
     if n == 0:
-        return corrections
+        return corrections, choices
     gain = np.zeros(n)  # contacts each tile shares with the placed tiles (the fewer of the two sides per overlap)
-    options = {}  # tile -> (its placed neighbours when its options were found, the options)
+    options = {}  # tile -> (its placed neighbours when its options were found, the options, those still tied)
 
     def place(k, correction):
         corrections[k] = correction
@@ -565,8 +654,11 @@ def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: n
             gain[o] += min(len(shared[k, o]), len(shared[o, k]))
 
     def clear(k):
-        found = options[k][1]
+        found = options[k][2]
         return all(np.linalg.norm(f.correction - found[0].correction) < gate for f in found)
+
+    def still_tied(found):
+        return fitted_options(found) if by_fit else found
 
     place(int(np.argmax([sum(len(shared[k, o]) for o in neighbours[k]) for k in range(n)])), 0.0)
     while True:
@@ -574,13 +666,21 @@ def placed_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: n
         for k in waiting:
             placed = [o for o in neighbours[k] if not np.isnan(corrections[o, 0])]
             if k not in options or options[k][0] != placed:  # found again only once more neighbours are placed
-                options[k] = placed, placement_options(points, corrections, placed, k, shared, search_nm, gate,
-                                                       min_matched)
-        found = [k for k in waiting if options[k][1]]
+                found = placement_options(points, corrections, placed, k, shared, search_nm, gate, min_matched, by_fit)
+                options[k] = placed, found, still_tied(found)
+        found = [k for k in waiting if options[k][2]]
         if not found:
-            return corrections
+            return corrections, choices
         k = max([k for k in found if clear(k)] or found, key=lambda t: gain[t])
-        place(k, options[k][1][0].correction)
+        choices.append(_choice(options[k][1], options[k][2]))
+        place(k, options[k][2][0].correction)
+
+
+def _choice(options: list[Placement], tied: list[Placement]) -> FingerprintChoice:
+    """How an image's option was chosen, from its options and those still tied (the first taken)."""
+    rms = sorted(f.rms_nm for f in options)
+    ratio = np.nan if len(rms) == 1 else (rms[1] / rms[0] if rms[0] > 0 else np.inf)
+    return FingerprintChoice(len(options), len(fitting_best(options)), len(tied), ratio, tied[0].rms_nm)
 
 
 def stitch_image_by_image(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, guide: np.ndarray,
@@ -610,13 +710,13 @@ class OverlapCheck:
     j: int
     agreement: float  # of the contacts both images should see, the share of the image with fewer that pair up
     offset_nm: float  # length of B − A of those pairs at the placement (robust fit, fit_overlap), nm; NaN: no pairs
-    better: bool      # another shift of tile j against tile i agrees clearly better (placement_options, ties)
+    better: bool      # another shift of tile j against tile i is clearly better (placement_options, clearly_better)
     lines_up: bool    # agreement >= MIN_AGREEMENT, no better shift, and offset_nm <= the tolerance
 
 
 def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarray, corrections: np.ndarray,
                    tolerance_nm: float, search_nm: float, outlier_factor: float = 3.0,
-                   min_matched: int = 5) -> list[OverlapCheck]:
+                   min_matched: int = 5, by_fit: bool = False) -> list[OverlapCheck]:
     """Whether the overlaps line up at the placement `corrections` ((n_tiles, 2), e.g. StitchResult.corrections),
     whatever paired them (D137). points: per tile, contact centres in mask nm at the nominal placement; centers, fovs:
     (n_tiles, 2), nm.
@@ -629,8 +729,10 @@ def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarr
     tile i (up to search_nm from where it is, placement_options): one clearly better (ties) means the overlap does
     not line up even if most of its contacts pair, e.g. an image placed a whole pitch off where the pattern does not
     fully repeat (D140). By a whole pitch on a pattern that repeats it lines up: every such shift ties (and that does
-    not matter, D105). Overlaps where either image has fewer than min_matched such contacts (e.g. corners) are not
-    checked.
+    not matter, D105). by_fit (stitching method fingerprint, D144): the other shifts are compared as that method
+    chooses, by their residual first (clearly_better), so a contact row cut by an image frame, which can leave a
+    contact or two of the true shift without a partner, does not outvote it. Overlaps where either image has fewer
+    than min_matched such contacts (e.g. corners) are not checked.
     """
     gate = PAIRING_GATE * contact_spacing(points)
     checks = []
@@ -645,9 +747,10 @@ def overlap_checks(points: list[np.ndarray], centers: np.ndarray, fovs: np.ndarr
         offset = (float(np.linalg.norm(fit_overlap(a[ia], b[ib], outlier_factor=outlier_factor).shift)) if len(ia)
                   else np.nan)
         shared = {(i, j): points_in_box(points[i], box, margin=gate), (j, i): points_in_box(points[j], box, margin=gate)}
-        options = placement_options(points, corrections, [i], j, shared, search_nm, gate, min_matched)
-        better = bool(options) and not ties(max(options, key=lambda f: f.agreement), Placement(corrections[j], len(ia),
-                                                                                              seen))
+        options = placement_options(points, corrections, [i], j, shared, search_nm, gate, min_matched, by_fit)
+        here = (fitted_placement(points, corrections, [i], j, corrections[j], gate) if by_fit  # with its residual
+                else Placement(corrections[j], len(ia), seen))
+        better = clearly_better(options, here, by_fit)
         lines_up = agreement >= MIN_AGREEMENT and not better and offset <= tolerance_nm
         checks.append(OverlapCheck(i, j, agreement, offset, better, lines_up))
     return checks

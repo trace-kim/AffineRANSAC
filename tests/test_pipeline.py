@@ -10,11 +10,13 @@ from affine_ransac.features.contact import (DetectedContacts, denoised_image, de
                                             in_image_pixels, upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.geometry.affine import apply_affine
-from affine_ransac.pipeline import (MIN_AGREEMENT, DesignContacts, TileResult, choose_design_contacts,
+from affine_ransac.overlap_fit import fit_overlap
+from affine_ransac.pipeline import (MIN_AGREEMENT, DesignContacts, TileResult, capped_rms, choose_design_contacts,
                                     contact_spacing, design_outlines, find_contacts, inside_frame, measurement_pairs,
-                                    overlap_checks, pair_kind, pair_residuals, placed_image_by_image, prepared_image,
-                                    process_tile, slipped_pairs, stitch_design, stitch_image_by_image, stitch_tiles,
-                                    stitch_tiles_affine, stitch_tiles_rigid, tie_residuals, tile_stripes)
+                                    overlap_checks, pair_kind, pair_residuals, placed_by_fingerprint,
+                                    placed_image_by_image, prepared_image, process_tile, slipped_pairs, stitch_design,
+                                    stitch_image_by_image, stitch_tiles, stitch_tiles_affine, stitch_tiles_rigid,
+                                    tie_residuals, tile_stripes)
 from sample_sem import render_tile
 from test_affine import known_affine
 from test_stitching import about, rotation
@@ -574,6 +576,70 @@ def test_the_overlap_check_sees_a_whole_pitch_slip_where_the_pattern_does_not_fu
     assert {(c.i, c.j) for c in bad} == {(1, 5), (4, 5), (5, 6), (5, 9)}  # its sides; a corner holds too few contacts
     assert all(c.better and c.agreement > MIN_AGREEMENT for c in bad)
     assert all(c.lines_up for c in overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0, search_nm=100))
+
+
+def test_the_fingerprint_places_every_image_exactly_where_the_mask_has_placement_errors():
+    """D144: contacts 1 nm (sigma) off a 50 nm grid, measured with 0.2 nm noise. At the true shift each pair is one
+    contact seen twice (they differ by the noise); a pitch off, two neighbours (they differ also by their placement
+    errors). Every image is placed exactly, by its residual, where image by image is whole pitches off (they tie)."""
+    errors = np.random.default_rng(1).normal(0, 20, (12, 2))  # neighbours up to ~60 nm apart: beyond half the pitch
+    contacts = GRID_50 + np.random.default_rng(2).normal(0, 1.0, GRID_50.shape)
+    points, centers, fovs, truth = mosaic(errors, contacts, noise=0.2)
+
+    guide, choices = placed_by_fingerprint(points, centers, fovs, search_nm=100)
+    stitch = stitch_image_by_image(points, centers, fovs, guide)
+    plain = stitch_image_by_image(points, centers, fovs, placed_image_by_image(points, centers, fovs, search_nm=100))
+
+    np.testing.assert_allclose(stitch.corrections, truth, atol=0.3)
+    assert len(choices) == 11 and all(c.options > 1 and c.fitting == 1 and c.tied == 1 for c in choices)
+    assert min(c.ratio for c in choices) > 3  # a pitch off: sqrt(2 (0.2² + 1²)) / (sqrt(2) 0.2), about 5 times more
+    assert whole_pitches(plain.corrections, truth, 50) and np.abs(plain.corrections - truth).max() > 40
+    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, stitch.corrections, tolerance_nm=1.0,
+                                                  search_nm=100, by_fit=True))
+
+
+def test_without_placement_errors_on_the_mask_the_fingerprint_places_as_image_by_image():
+    """D144: on a perfect grid every whole-pitch shift fits as well (the noise only): every image is tied, placed as
+    image by image, and its overlaps line up (whole pitches do not matter there, D105)."""
+    errors = np.random.default_rng(1).normal(0, 20, (12, 2))
+    points, centers, fovs, truth = mosaic(errors, GRID_50)
+
+    guide, choices = placed_by_fingerprint(points, centers, fovs, search_nm=100)
+    stitch = stitch_image_by_image(points, centers, fovs, guide)
+
+    assert len(choices) == 11 and all(c.fitting > 1 and c.tied > 1 for c in choices)
+    assert whole_pitches(stitch.corrections, truth, 50)
+    assert all(c.lines_up for c in overlap_checks(points, centers, fovs, stitch.corrections, tolerance_nm=1.0,
+                                                  search_nm=100, by_fit=True))
+
+
+def test_the_fingerprint_check_is_not_misled_by_a_contact_row_cut_by_an_image_frame():
+    """D144: with placement errors on the mask, a contact row can lie along an image's frame, seen in part: at the true
+    placement a contact or two of the other image have no partner, while a pitch off all pair. Counted, that shift
+    pairs clearly more (image by image would not place it there); by the residuals it fits far worse."""
+    errors = np.random.default_rng(3).normal(0, 20, (12, 2))
+    contacts = GRID_50 + np.random.default_rng(0).normal(0, 1.0, GRID_50.shape)
+    points, centers, fovs, truth = mosaic(errors, contacts, noise=0.2)
+
+    counted = overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0, search_nm=100)
+    fitted = overlap_checks(points, centers, fovs, truth, tolerance_nm=1.0, search_nm=100, by_fit=True)
+
+    assert [(c.i, c.j) for c in counted if not c.lines_up] == [(0, 1)] and all(c.better for c in counted
+                                                                             if not c.lines_up)
+    assert all(c.lines_up for c in fitted)
+
+
+def test_the_fingerprint_residual_counts_every_pair_an_outlier_at_most_at_the_outlier_limit():
+    """D144: the residual of a fit (capped_rms) keeps the pairs the robust fit left out, each at most at its outlier
+    limit (3 times the median residual), so it is not made small by leaving out the largest residuals of a few pairs,
+    and one gross outlier does not dominate it."""
+    a = np.zeros((40, 2))
+    b = np.random.default_rng(0).normal(0, 1.0, (40, 2))  # rms length sqrt(2)
+    b[0] = (500.0, 0.0)
+    fit = fit_overlap(a, b)
+
+    assert not fit.inliers[0]
+    assert fit.rms() < capped_rms(fit) < 1.7  # the outlier counted, but at its limit: not 500 nm / sqrt(40)
 
 
 def test_image_by_image_leaves_an_image_without_matching_contacts_unplaced():
