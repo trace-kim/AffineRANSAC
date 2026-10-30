@@ -133,14 +133,17 @@ def test_the_moving_window_can_be_fitted_per_stripe(tmp_path):
     view.close()
 
 
+def twist(k, local, mask):
+    """A distortion the same in every image and not affine: up to 2.4 nm at the image corners."""
+    t = 1.2e-6 * local[:, 0] * local[:, 1]
+    return np.column_stack([t, t])
+
+
 def test_the_in_image_correction_removes_a_distortion_shared_by_all_images(tmp_path):
-    """D141: a distortion the same in every image and not affine (a twist, up to 2.4 nm at the image corners) stays in
-    the moving-window error (no window affine follows it from tile to tile); with in_image_correction the map is
-    removed before the stitching, only the 0.1 nm noise is left, the run keeps the map and the Registration tab says
-    so. A parameter of both kinds of folder in the release only."""
-    def twist(k, local, mask):
-        t = 1.2e-6 * local[:, 0] * local[:, 1]
-        return np.column_stack([t, t])
+    """D141: a distortion the same in every image and not affine (twist) stays in the moving-window error (no window
+    affine follows it from tile to tile); with in_image_correction the map is removed before the stitching, only the
+    0.1 nm noise is left, the run keeps the map and the Registration tab says so. A parameter of both kinds of folder
+    in the release only."""
     write_contour_folder(tmp_path, sem_error=twist)
     lines = []
     with pytest.warns(UserWarning):
@@ -162,8 +165,22 @@ def test_the_in_image_correction_removes_a_distortion_shared_by_all_images(tmp_p
     assert "Error = measured (SEM, in-image distortion removed) − design" in view.summary.text()
     view.close()
     for kind in ("contour CSV", "images"):
-        assert {"in_image_correction", "intrafield_nodes"} <= set(PARAMETERS[kind])
+        assert {"in_image_correction", "intrafield_nodes", "in_image_model", "in_image_order"} <= set(PARAMETERS[kind])
         assert "in_image_correction" not in settings_for(kind)  # the research app always computes both
+
+
+def test_the_in_image_formula_removes_a_distortion_shared_by_all_images(tmp_path):
+    """D145: the same twist, removed by the formula of order 3 (it is one of its terms) instead of the node map."""
+    write_contour_folder(tmp_path, sem_error=twist)
+    lines = []
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV",
+                                replace(Settings(), in_image_correction=True, in_image_model="formula"),
+                                log=lines.append)
+
+    assert np.sqrt((result.moving.residuals ** 2).mean(axis=0)).max() < 0.11
+    assert result.intrafield.images == 6 and 2.0 < np.abs(result.intrafield.shift_nm).max() < 2.6
+    assert any(line.startswith("In-image correction: formula of order 3 from 6 of 6 images, up to ") for line in lines)
 
 
 def test_without_image_centres_the_in_image_correction_is_left_out(tmp_path):

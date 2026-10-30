@@ -36,7 +36,7 @@ from affine_ransac.features.contact import BAND_MIN_SOLIDITY, DENOISERS
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
-from affine_ransac.intrafield import IntrafieldMap, correct_points, estimate_map
+from affine_ransac.intrafield import IntrafieldMap, correct_points, estimate_formula, estimate_map
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
 from affine_ransac.pipeline import (REFINEMENTS, FingerprintChoice, OverlapCheck, StitchResult, TileResult,
@@ -84,9 +84,18 @@ class Settings:
     in_image_correction: bool = setting(False, "Remove the distortion shared by all SEM images (the same at the same "
                                                "place in every image, e.g. of the scan) from the measured centres "
                                                "before stitching: measured against the design in every image after "
-                                               "that image's own affine, on INTRAFIELD_NODES nodes per axis. Mask "
-                                               "errors that repeat at the image spacing would be removed with it")
+                                               "that image's own affine, as IN_IMAGE_MODEL says. Mask errors that "
+                                               "repeat at the image spacing would be removed with it")
     intrafield_nodes: int = setting(9, "In-image distortion map: nodes per axis over the image, edge to edge")
+    in_image_model: str = setting("nodes", "In-image distortion. nodes: a value on INTRAFIELD_NODES nodes per axis "
+                                           "over the image, each from the contacts nearest to it. formula: one smooth "
+                                           "formula over the whole image, every power of x and y from 2 to "
+                                           "IN_IMAGE_ORDER (3: the barrel, pincushion and spiral distortion of the "
+                                           "beam's deflection and lenses, and an S-shaped scan), fitted to all images "
+                                           "at once, each with its own affine; left out (the log says so) if the "
+                                           "contacts cannot determine it")
+    in_image_order: int = setting(3, "In-image formula: the highest power of x and y (>= 2; 3: 14 numbers, 4: 24, "
+                                     "5: 36). Higher follows finer patterns but swings more at the image edges")
     drift_window_um: float = setting(40.0, "Drift curve: height of the local straight-line fit along y")
     first_stripe_upward: bool = setting(True, "Serpentine scan: the first stripe (smallest x) was measured from its "
                                               "bottom up, then alternately")
@@ -187,8 +196,9 @@ CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight
                     "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
 BY_IMAGE = ("image by image", "fingerprint")  # stitched image by image after a placement (D133, D144)
+IN_IMAGE_MODELS = ("nodes", "formula")  # D53, D145
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
-           "stitch_method": STITCH_METHODS, "denoise": DENOISERS}
+           "stitch_method": STITCH_METHODS, "denoise": DENOISERS, "in_image_model": IN_IMAGE_MODELS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
 # with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
 BEFORE = {"refinement": "steepest gradient"}  # D122
@@ -230,6 +240,7 @@ def check_settings(s: Settings, kind: str):
                 if not getattr(s, name) > 0]
     limits = {"min_matched": (s.min_matched >= 1, "must be >= 1"),
               "intrafield_nodes": (s.intrafield_nodes >= 2, "must be >= 2"),
+              "in_image_order": (s.in_image_order >= 2, "must be >= 2"),
               "ransac_delay_ms": (s.ransac_delay_ms >= 0, "must be >= 0"),
               "tile_margin_nm": (s.tile_margin_nm >= 0, "must be >= 0"),
               "min_contrast": (s.min_contrast >= 0, "must be >= 0"),
@@ -667,8 +678,7 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     ic_points = None
     if np.isnan(image_centers).any():
         log("!! No image centres (contour CSVs without DesignX, DesignY): the in-image correction is left out")
-    else:
-        intrafield = in_image_map(observations["nominal"], image_centers, s.intrafield_nodes)
+    elif (intrafield := in_image_map(observations["nominal"], image_centers, s, log)) is not None:
         log(f"In-image map from {intrafield.images} of {len(sem_points)} images, "
             f"up to {np.abs(intrafield.shift_nm).max():.3f} nm")
         ic_points = [correct_points(p, c, intrafield) for p, c in zip(sem_points, image_centers)]
@@ -726,15 +736,24 @@ def _analyse(folder, kind, s: Settings, log, tile_ids, sem_points, design_points
     return result, observations, merged
 
 
-def in_image_map(observations: DesignErrors, image_centers: np.ndarray, nodes: int) -> IntrafieldMap:
-    """The in-image distortion map (intrafield.estimate_map, D53) from every tile's contacts paired with its design at
-    the nominal placement (observations), relative to its image centre (image_centers: (n_tiles, 2), mask nm). Also
-    used by the release (D141)."""
+def in_image_map(observations: DesignErrors, image_centers: np.ndarray, s: Settings, log) -> IntrafieldMap | None:
+    """The in-image distortion map from every tile's contacts paired with its design at the nominal placement
+    (observations), relative to its image centre (image_centers: (n_tiles, 2), mask nm): s.in_image_model "nodes",
+    intrafield.estimate_map on s.intrafield_nodes nodes per axis (D53); "formula", intrafield.estimate_formula of
+    order s.in_image_order (D145), None (logged with !!) if the contacts cannot determine it. Also used by the release
+    (D141)."""
     order = np.argsort(observations.tile, kind="stable")  # each tile's contacts together, in their order
     starts = np.searchsorted(observations.tile[order], np.arange(1, len(image_centers)))
     design_local = [d - c for d, c in zip(np.split(observations.design_nm[order], starts), image_centers)]
     sem_local = [p - c for p, c in zip(np.split(observations.sem_nm[order], starts), image_centers)]
-    return estimate_map(design_local, sem_local, nodes)
+    if s.in_image_model == "nodes":
+        return estimate_map(design_local, sem_local, s.intrafield_nodes)
+    m = estimate_formula(design_local, sem_local, s.in_image_order)
+    if m is None:
+        log(f"!! The paired contacts cannot determine the in-image formula of order {s.in_image_order} (too few "
+            f"contacts, or all in a few rows or columns; a lower IN_IMAGE_ORDER needs fewer): the in-image correction "
+            f"is left out")
+    return m
 
 
 def _fitted(sem_nm, design_nm, s: Settings, log, name: str, moving: bool = True) -> ContactSet:

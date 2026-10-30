@@ -345,6 +345,9 @@ def test_invalid_settings_fail_before_any_work(tmp_path):
                                          r"denoise must be one of"):
         check_settings(Settings(median_px=4, nlm_h=0.0, tv_weight=0.0, denoise="wavelet"), "images")
     check_settings(Settings(denoise="total variation", median_px=5), "images")  # D132
+    with pytest.raises(ValueError, match=r"in_image_order must be >= 2.*in_image_model must be one of"):
+        check_settings(Settings(in_image_order=1, in_image_model="spline"), "contour CSV")
+    check_settings(Settings(in_image_model="formula", in_image_order=2), "contour CSV")  # D145
 
 
 def test_the_contour_settings_are_the_options_of_find_contacts():

@@ -64,7 +64,7 @@ DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they di
 # it is detected from the file numbers, which follow the measurement order (user; scan_direction).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
           "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm",
-          "in_image_correction", "intrafield_nodes"]
+          "in_image_correction", "intrafield_nodes", "in_image_model", "in_image_order"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
                                                            "min_match_fraction", "realign"]}
@@ -200,8 +200,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     intrafield = None
     if s.in_image_correction:  # from the contacts paired at the nominal placement, before the stitching (D53)
         progress(LOAD_SHARE, "In-image distortion map")
-        sem_points, intrafield = in_image_corrected(sem_points, nominal_errors(sem_points), image_centers,
-                                                    s.intrafield_nodes, record)
+        sem_points, intrafield = in_image_corrected(sem_points, nominal_errors(sem_points), image_centers, s, record)
     progress(LOAD_SHARE, "Stitching")
     stitch, slipped = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
     report_stitching(record, "Design", design_stitch, tile_ids)
@@ -310,20 +309,25 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
     return stitch, checked_overlaps(sem_points, centers, sizes, stitch, reference, s, log, tile_ids)
 
 
-def in_image_corrected(sem_points: list[np.ndarray], observations: DesignErrors, image_centers: np.ndarray, nodes: int,
-                       log) -> tuple[list[np.ndarray], IntrafieldMap | None]:
-    """The SEM points (per tile, mask nm) with the distortion shared by all images removed (D53, D141), and its map,
-    measured on observations (every tile's contacts paired with its design at the nominal placement); image_centers:
-    (n_tiles, 2), mask nm. Without image centres (contour CSVs without DesignX, DesignY) or without an image of 3
-    paired contacts, the points as they are and None (logged with !!)."""
+def in_image_corrected(sem_points: list[np.ndarray], observations: DesignErrors, image_centers: np.ndarray,
+                       s: Settings, log) -> tuple[list[np.ndarray], IntrafieldMap | None]:
+    """The SEM points (per tile, mask nm) with the distortion shared by all images removed (D53, D141; the formula of
+    D145 with s.in_image_model "formula"), and its map, measured on observations (every tile's contacts paired with
+    its design at the nominal placement); image_centers: (n_tiles, 2), mask nm. Without image centres (contour CSVs
+    without DesignX, DesignY), without an image of 3 paired contacts or with a formula the contacts cannot determine,
+    the points as they are and None (logged with !!)."""
     if np.isnan(image_centers).any():
         log("!! No image centres (contour CSVs without DesignX, DesignY): the in-image correction is left out")
         return sem_points, None
     if np.bincount(observations.tile, minlength=len(sem_points)).max() < 3:
         log("!! No image has 3 contacts paired with its design: the in-image correction is left out")
         return sem_points, None
-    m = in_image_map(observations, image_centers, nodes)
-    log(f"In-image correction: map of {nodes} x {nodes} nodes from {m.images} of {len(sem_points)} images, "
+    m = in_image_map(observations, image_centers, s, log)
+    if m is None:
+        return sem_points, None
+    model = (f"formula of order {s.in_image_order}" if s.in_image_model == "formula" else
+             f"map of {s.intrafield_nodes} x {s.intrafield_nodes} nodes")
+    log(f"In-image correction: {model} from {m.images} of {len(sem_points)} images, "
         f"up to {np.abs(m.shift_nm).max():.3f} nm")
     return [correct_points(p, c, m) for p, c in zip(sem_points, image_centers)], m
 

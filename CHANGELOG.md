@@ -171,5 +171,13 @@ they open, flagged as outdated.
   image places images or whole regions whole pitches off: it works where the mask's placement errors are clearly
   larger than the noise; where they are not, it places as image by image. The log says how many images their fit
   decided and how clearly; the check after the stitching judges the overlaps the same way (D144).
+- New parameters `in_image_model` and `in_image_order` (the default is unchanged, so runs give the same numbers): with
+  `in_image_correction`, *formula* measures the distortion shared by all images as one smooth formula over the whole
+  image (every power of x and y from 2 to `in_image_order`, 3 by default: the barrel, pincushion and spiral
+  distortion of the SEM's deflection and lenses, and an S-shaped scan), fitted to all images at once, each with its
+  own affine, instead of a value per node (*nodes*). Unlike a node, it is not thrown off by the few contacts near one
+  corner (red tile corners with *nodes* on some datasets). When the paired contacts cannot determine it, the
+  correction is left out and the log says so (`!!`). The log
+  gives its order, the images used and its largest shift; run files are unchanged (D145).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
