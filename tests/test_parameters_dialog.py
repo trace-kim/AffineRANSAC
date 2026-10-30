@@ -11,8 +11,9 @@ from dataclasses import replace
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
+from affine_ransac.analysis import CONTOUR_SETTINGS
 from affine_ransac.release.analysis import DEFAULTS, PARAMETERS
-from affine_ransac.release.parameters_dialog import USER_PARAMETERS, ParametersDialog, read_sets
+from affine_ransac.release.parameters_dialog import SECTIONS, USER_PARAMETERS, ParametersDialog, read_sets
 from test_release import make_window
 
 
@@ -98,3 +99,23 @@ def test_a_set_loaded_in_maskreg_is_used_for_the_next_run(tmp_path, monkeypatch)
     window.edit_parameters()
     assert window.settings() == replace(DEFAULTS, max_match_nm=30.0)
     window.close()
+
+
+def test_the_parameters_are_shown_in_sections_the_rarely_changed_ones_folded(tmp_path):
+    """D147: every parameter in one section; Contour detection and Advanced folded when the dialog opens, unless one of
+    their parameters differs from its default; a heading unfolds its section."""
+    in_sections = [name for _, names, _ in SECTIONS for name in names]
+    assert sorted(in_sections) == sorted(set(in_sections)) == sorted(USER_PARAMETERS)
+
+    dialog = ParametersDialog(DEFAULTS, PARAMETERS["images"], preferences(tmp_path))
+    assert [heading.text() for heading in dialog.headings.values()] == [
+        "Stitching (2)", "In-image correction (1)", "Registration (3)", "Contour detection (18)", "Advanced (11)"]
+    advanced = set(SECTIONS[-1][1]) - {"tile_margin_nm"}  # contour CSV only
+    assert {name for name, widget in dialog.editors.items() if widget.isHidden()} == set(CONTOUR_SETTINGS) | advanced
+    dialog.headings["Advanced"].click()
+    assert not dialog.editors["max_match_nm"].isHidden() and dialog.editors["upscale"].isHidden()
+    assert dialog.values() == DEFAULTS  # folded parameters keep their values
+
+    changed = ParametersDialog(replace(DEFAULTS, row_gap_nm=7.0), PARAMETERS["contour CSV"], preferences(tmp_path))
+    assert list(changed.headings) == ["Stitching", "In-image correction", "Registration", "Advanced"]
+    assert not changed.editors["row_gap_nm"].isHidden()  # Advanced open: a changed value is never hidden

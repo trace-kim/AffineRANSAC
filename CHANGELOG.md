@@ -183,5 +183,8 @@ they open, flagged as outdated.
   `in_image_model` are removed. **Analysis 9:** a run made with `in_image_correction` on and the node map now gives
   the formula's numbers; runs without it give the same numbers. Saved runs and saved parameters that still name the
   removed parameters open as before (D146).
+- *Analysis → Parameters* shows the parameters in sections, in the order the analysis runs: *Stitching*,
+  *In-image correction* and *Registration* open; *Contour detection* and *Advanced* folded (click a heading to open
+  it), unless one of their parameters differs from its default. The parameters and the results are unchanged (D147).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

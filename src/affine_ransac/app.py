@@ -116,28 +116,47 @@ def set_editor_value(widget: QtWidgets.QWidget, value):
         widget.setValue(value)
 
 
+HELP = {f.name: f.metadata["help"] for f in fields(Settings)}  # what each setting does
+
+
 class SettingsDialog(QtWidgets.QDialog):
     """The settings a folder of this kind uses: name (as in the notebooks), value, what it does."""
 
-    def __init__(self, settings: Settings, kind: str, parent=None, names: list[str] | None = None):
-        """names: the settings shown (default: all that a folder of this kind uses)."""
+    def __init__(self, settings: Settings, kind: str, parent=None, names: list[str] | None = None,
+                 sections: list[tuple[str, list[str], bool]] | None = None):
+        """names: the settings shown (default: all that a folder of this kind uses). sections: (title, names, folded)
+        each, to show them in this order under headings that fold and unfold them (default: one list, in the order of
+        Settings); a section without a setting shown is left out."""
         super().__init__(parent)
         self.setWindowTitle(f"Settings for a {kind} folder")
-        self.settings, self.editors = settings, {}
+        self.settings, self.editors, self.headings = settings, {}, {}
         shown = settings_for(kind) if names is None else names
-        grid = QtWidgets.QGridLayout()
-        for row, f in enumerate(f for f in fields(Settings) if f.name in shown):
-            widget = editor(getattr(settings, f.name), CHOICES.get(f.name))
-            if f.name == "ransac_threshold_nm":
-                widget.setEnabled(False)  # fixed: the global affine is RANSAC with τ = 0.5 nm (user rule)
-            help_label = QtWidgets.QLabel(f.metadata["help"], wordWrap=True)
-            help_label.setStyleSheet("color: gray")
-            for col, item in enumerate((QtWidgets.QLabel(f.name.upper()), widget, help_label)):
-                grid.addWidget(item, row, col)
-            self.editors[f.name] = widget
-        grid.setColumnStretch(2, 1)  # the help texts take the free width
+        if sections is None:
+            sections = [(None, [f.name for f in fields(Settings)], False)]
         inner = QtWidgets.QWidget()
-        inner.setLayout(grid)
+        grid = QtWidgets.QGridLayout(inner)  # a parent first: a widget shown before it has one becomes a window
+        row = 0
+        for title, section, folded in sections:
+            section = [name for name in section if name in shown]
+            if not section:
+                continue
+            if title is not None:
+                heading = QtWidgets.QToolButton(text=f"{title} ({len(section)})", checkable=True, autoRaise=True)
+                heading.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+                heading.setStyleSheet("QToolButton { font-weight: bold; border: none }")  # a heading, not a button
+                grid.addWidget(heading, row, 0, 1, 3)
+                self.headings[title] = heading
+                row += 1
+            items = []
+            for name in section:
+                items += self._add_row(grid, row, name)
+                row += 1
+            if title is not None:
+                heading.setChecked(not folded)
+                self._unfold(heading, items, not folded)
+                heading.toggled.connect(lambda opened, h=heading, i=items: self._unfold(h, i, opened))
+        grid.setColumnStretch(2, 1)  # the help texts take the free width
+        grid.setRowStretch(row, 1)  # and the free height stays below the last row, not between the rows
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
@@ -149,6 +168,26 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addWidget(scroll)
         layout.addWidget(buttons)
         self.resize(1000, 700)
+
+    def _add_row(self, grid: QtWidgets.QGridLayout, row: int, name: str) -> list[QtWidgets.QWidget]:
+        """One setting's row: name, editor, what it does."""
+        widget = editor(getattr(self.settings, name), CHOICES.get(name))
+        if name == "ransac_threshold_nm":
+            widget.setEnabled(False)  # fixed: the global affine is RANSAC with τ = 0.5 nm (user rule)
+        help_label = QtWidgets.QLabel(HELP[name], wordWrap=True)
+        help_label.setStyleSheet("color: gray")
+        items = [QtWidgets.QLabel(name.upper()), widget, help_label]
+        for col, item in enumerate(items):
+            grid.addWidget(item, row, col)
+        self.editors[name] = widget
+        return items
+
+    @staticmethod
+    def _unfold(heading: QtWidgets.QToolButton, items: list[QtWidgets.QWidget], opened: bool):
+        """Show a section's rows (opened) or hide them; its heading's arrow says which."""
+        heading.setArrowType(QtCore.Qt.ArrowType.DownArrow if opened else QtCore.Qt.ArrowType.RightArrow)
+        for item in items:
+            item.setVisible(opened)
 
     def values(self) -> Settings:
         """The settings with the values in the dialog (the other kind's settings unchanged)."""
