@@ -1,18 +1,15 @@
-"""In-image (intrafield) distortion shared by all SEM images (docs/SPEC.md S5, D53).
+"""In-image (intrafield) distortion shared by all SEM images (docs/SPEC.md S5, D53, D145, D146).
 
 If every image is distorted the same way (e.g. a nonlinearity of the SEM scan), a contact at the
 position u inside an image (relative to the image centre) is measured at its true position + f(u).
 
-- estimate_map(): f from the design. In each image, SEM − design after that image's own affine
-  (shift, scale, rotation, skew: the affine part of f is the same in all images and is left to the
-  global affine), on a grid of nodes over the image: each node's value comes from the residuals of
-  all images nearest to it (a plane fitted to them, strongly deviating ones left out); in between,
-  bilinear. Mask errors sit at fixed places on the mask, so at a different u in every image, and
-  average out. Mask errors that repeat at the image spacing do NOT average out: they would be taken
-  for SEM distortion.
-- estimate_formula(): f as one smooth formula over the whole image (powers 2 to 3 of x and y by
-  default: the distortion of the beam's deflection and lenses is of 3rd order), fitted to all
-  images at once, each with its own affine (D145). Returned as a map like estimate_map's.
+- estimate_formula(): f from the design, as one smooth formula over the whole image (powers 2 to 3
+  of x and y by default: the distortion of the beam's deflection and lenses is of 3rd order),
+  fitted to all images at once, each with its own affine (shift, scale, rotation, skew: the affine
+  part of f is the same in all images and is left to the global affine). Kept as a map of nodes
+  over the image, bilinear in between. Mask errors sit at fixed places on the mask, so at a
+  different u in every image, and average out. Mask errors that repeat at the image spacing do NOT
+  average out: they would be taken for SEM distortion.
 - correct_points(): an image's SEM points with the map removed (before stitching).
 - overlap_slopes(): the check without the design. In an overlap the same contact is measured by two
   images, so mask errors cancel. A distortion common to all images makes B − A change across the
@@ -25,7 +22,6 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
-from affine_ransac.geometry.affine import apply_affine, fit_affine
 from affine_ransac.pipeline import StitchResult, pair_kind, stitch_ties
 
 FORMULA_NODES = 65  # the formula is kept as a map of this many nodes per axis: bilinear between them, a 3rd-order
@@ -39,39 +35,9 @@ class IntrafieldMap:
     x_nm: np.ndarray      # (nodes,) node positions along x, relative to the image centre, nm
     y_nm: np.ndarray      # (nodes,) node positions along y, nm
     shift_nm: np.ndarray  # (nodes, nodes, 2) [row = y, column = x]: (SEM after its image's affine) − design
-                          # at the node, nm (_value_at_node); 0 at a node without contacts
+                          # at the node, nm (the formula there)
     count: np.ndarray     # (nodes, nodes) contacts nearest to each node
-    images: int           # images used (images with too few contacts are left out)
-
-
-def estimate_map(design_local: list[np.ndarray], sem_local: list[np.ndarray], nodes: int = 9,
-                 full_fraction: float = 0.9) -> IntrafieldMap:
-    """The distortion shared by all images, measured against the design.
-
-    design_local, sem_local: per image, (N_k, 2) design and SEM positions of the same contacts (row k
-    of both is one contact), relative to the image centre, nm. Images with fewer contacts than
-    full_fraction × the median are left out: they cover only part of the image, so their own affine
-    would take up part of the distortion. nodes × nodes nodes (nodes >= 2) over the area the contacts
-    cover, from edge to edge.
-    """
-    counts = np.array([len(d) for d in design_local])
-    use = [k for k in range(len(counts)) if counts[k] >= max(3, full_fraction * np.median(counts))]
-    positions, residuals = [], []
-    for k in use:
-        model = fit_affine(sem_local[k], design_local[k])  # this image's own affine, SEM -> design
-        positions.append(design_local[k])
-        residuals.append(apply_affine(model, sem_local[k]) - design_local[k])
-    positions, residuals = np.concatenate(positions), np.concatenate(residuals)
-
-    x_nodes, y_nodes, row, column = _nodes(positions, nodes)
-    shift, count = np.zeros((nodes, nodes, 2)), np.zeros((nodes, nodes), int)
-    for r in range(nodes):
-        for c in range(nodes):
-            near = (row == r) & (column == c)
-            count[r, c] = near.sum()
-            if count[r, c]:
-                shift[r, c] = _value_at_node(positions[near] - (x_nodes[c], y_nodes[r]), residuals[near])
-    return IntrafieldMap(x_nodes, y_nodes, shift, count, len(use))
+    images: int           # images used (images with 3 contacts or fewer are left out)
 
 
 def _nodes(positions: np.ndarray, nodes: int):
@@ -92,17 +58,18 @@ def formula_terms(order: int) -> list[tuple[int, int]]:
 
 def estimate_formula(design_local: list[np.ndarray], sem_local: list[np.ndarray], order: int = 3,
                      nodes: int = FORMULA_NODES) -> IntrafieldMap | None:
-    """The distortion shared by all images as one smooth formula f (D145), kept as a map of nodes × nodes nodes, so
-    that map_shift and correct_points use it as they use estimate_map's.
+    """The distortion shared by all images, measured against the design as one smooth formula f (D145), kept as a map
+    of nodes × nodes nodes (map_shift, correct_points).
 
-    design_local, sem_local: as estimate_map. f(s) = the sum of c · u^p v^q over formula_terms(order), (u, v) the SEM
+    design_local, sem_local: per image, (N_k, 2) design and SEM positions of the same contacts (row k of both is one
+    contact), relative to the image centre, nm. f(s) = the sum of c · u^p v^q over formula_terms(order), (u, v) the SEM
     position s relative to the image centre, divided by the largest |coordinate| of the contacts (so each c is the
     term's nm at the image edge). Fitted to all images at once: in every image the SEM contacts with f removed are an
     affine image of its design, s − f(s) = B(d), B that image's own affine. Images with 3 contacts or fewer add nothing
     (their own affine fits them exactly); partial images take part like the others. Contacts more than 5 median
-    absolute deviations off are left out and f is fitted again (as estimate_map). The map is f without its affine
-    part, as estimate_map's (the affine part is left to the global affine). None if the contacts cannot determine
-    every term (e.g. all of them in a few rows).
+    absolute deviations off (per axis) are left out and f is fitted again. The map is f without its affine part (the
+    affine part is left to the global affine). None if the contacts cannot determine every term (e.g. all of them in
+    a few rows).
     """
     used = [k for k, d in enumerate(design_local) if len(d) > 3]
     if not used:
@@ -151,21 +118,6 @@ def _without_affine(positions: np.ndarray, values: np.ndarray) -> np.ndarray:
     """values (N, m) minus their least-squares fit by an affine function of positions (N, 2): what no affine explains."""
     q = np.column_stack([np.ones(len(positions)), positions])
     return values - q @ np.linalg.lstsq(q, values, rcond=None)[0]
-
-
-def _value_at_node(offsets: np.ndarray, values: np.ndarray) -> np.ndarray:
-    """(2,) value at offset 0 of a plane fitted to values (K, 2) at offsets (K, 2) from a node.
-
-    A plane, not the median: the contacts near a node can sit at a few positions away from it (e.g.
-    when the image step is a whole number of pitches, every image has them at the same place), and
-    at the image edge they all lie on one side. Values more than 5 median absolute deviations from
-    the median are left out first, so strongly shifted contacts do not pull the plane.
-    """
-    deviation = np.abs(values - np.median(values, axis=0))
-    keep = np.all(deviation <= 5 * np.median(deviation, axis=0) + 1e-9, axis=1)
-    design = np.column_stack([np.ones(keep.sum()), offsets[keep]])
-    coef, *_ = np.linalg.lstsq(design, values[keep], rcond=None)  # rows: value, d/dx, d/dy
-    return coef[0]
 
 
 def map_shift(m: IntrafieldMap, local_nm: np.ndarray) -> np.ndarray:

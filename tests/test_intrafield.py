@@ -2,8 +2,7 @@ import numpy as np
 import pytest
 
 from affine_ransac.geometry.affine import apply_affine, fit_affine
-from affine_ransac.intrafield import (IntrafieldMap, correct_points, estimate_formula, estimate_map, map_shift,
-                                      overlap_slopes)
+from affine_ransac.intrafield import IntrafieldMap, correct_points, estimate_formula, map_shift, overlap_slopes
 from affine_ransac.pipeline import stitch_tiles
 
 ORIGIN = np.array([5_000_000.0, -2_000_000.0])  # mask-scale coordinates
@@ -38,20 +37,6 @@ def images(scale_ppm=0.0, noise_nm=0.02, seed=0, distortion=bow):
 def not_affine_nm(design, sem):
     """RMS (nm) of what no affine of the design explains in one image's SEM points."""
     return np.sqrt(np.mean((apply_affine(fit_affine(sem, design), sem) - design) ** 2))
-
-
-def test_map_is_the_shared_distortion_whatever_each_image_affine():
-    centers, data = images(scale_ppm=300, noise_nm=0.02)
-    u, sem = data[0]
-    data[0] = (u[: len(u) // 2], sem[: len(u) // 2])  # a partial image: left out of the estimate
-
-    m = estimate_map([u for u, _ in data], [s for _, s in data], nodes=9)
-
-    assert m.images == 15 and m.count.sum() == sum(len(u) for u, _ in data[1:])
-    u = data[1][0]
-    model = fit_affine(u + bow(u), u)
-    expected = apply_affine(model, u + bow(u)) - u  # the part of the bow that no affine describes
-    np.testing.assert_allclose(map_shift(m, u), expected, atol=0.02)
 
 
 def test_formula_is_the_shared_distortion_whatever_each_image_affine():
@@ -92,7 +77,7 @@ def test_overlaps_show_the_distortion_and_agree_after_the_correction():
     fovs = np.full((len(centers), 2), FOV)
     before = overlap_slopes(points, stitch_tiles(points, centers, fovs), centers)
 
-    m = estimate_map([u for u, _ in data], [s for _, s in data])
+    m = estimate_formula([u for u, _ in data], [s for _, s in data])
     corrected = [correct_points(p, c, m) for p, c in zip(points, centers)]
     after = overlap_slopes(corrected, stitch_tiles(corrected, centers, fovs), centers)
 
@@ -101,6 +86,6 @@ def test_overlaps_show_the_distortion_and_agree_after_the_correction():
     assert len(before["vertical"]) == len(before["horizontal"]) == 12
     assert np.median(before["vertical"][:, 1, 1]) == pytest.approx(-2 * KY * STEP * 1e6, abs=30)
     assert np.median(before["horizontal"][:, 0, 0]) == pytest.approx(-2 * KX * STEP * 1e6, abs=30)
-    # Left after the correction: noise and the bilinear map between nodes.
+    # Left after the correction: the noise.
     assert abs(np.median(after["vertical"][:, 1, 1])) < 60
     assert abs(np.median(after["horizontal"][:, 0, 0])) < 60

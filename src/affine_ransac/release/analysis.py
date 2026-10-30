@@ -54,17 +54,18 @@ from affine_ransac.stitching import placement_corrections
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 8  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
+ANALYSIS = 9  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
               # design tone with the detected centres too (D124); 6: image by image places by agreement (D138); 7:
               # and pairs its overlaps within a quarter of the contact spacing, using those that line up (D139); 8:
-              # the design pairs chosen where the stitching put the images (D143)
+              # the design pairs chosen where the stitching put the images (D143); 9: the in-image correction is
+              # always the formula, the node map removed (D146)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
 # it is detected from the file numbers, which follow the measurement order (user; scan_direction).
 COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched", "group_radius_nm", "row_gap_nm",
           "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm",
-          "in_image_correction", "intrafield_nodes", "in_image_model", "in_image_order"]
+          "in_image_correction", "in_image_order"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
                                                            "min_match_fraction", "realign"]}
@@ -312,7 +313,7 @@ def stitch_sem(sem_points, centers, sizes, stripe, s: Settings, log,
 def in_image_corrected(sem_points: list[np.ndarray], observations: DesignErrors, image_centers: np.ndarray,
                        s: Settings, log) -> tuple[list[np.ndarray], IntrafieldMap | None]:
     """The SEM points (per tile, mask nm) with the distortion shared by all images removed (D53, D141; the formula of
-    D145 with s.in_image_model "formula"), and its map, measured on observations (every tile's contacts paired with
+    D145), and its map, measured on observations (every tile's contacts paired with
     its design at the nominal placement); image_centers: (n_tiles, 2), mask nm. Without image centres (contour CSVs
     without DesignX, DesignY), without an image of 3 paired contacts or with a formula the contacts cannot determine,
     the points as they are and None (logged with !!)."""
@@ -325,9 +326,7 @@ def in_image_corrected(sem_points: list[np.ndarray], observations: DesignErrors,
     m = in_image_map(observations, image_centers, s, log)
     if m is None:
         return sem_points, None
-    model = (f"formula of order {s.in_image_order}" if s.in_image_model == "formula" else
-             f"map of {s.intrafield_nodes} x {s.intrafield_nodes} nodes")
-    log(f"In-image correction: {model} from {m.images} of {len(sem_points)} images, "
+    log(f"In-image correction: formula of order {s.in_image_order} from {m.images} of {len(sem_points)} images, "
         f"up to {np.abs(m.shift_nm).max():.3f} nm")
     return [correct_points(p, c, m) for p, c in zip(sem_points, image_centers)], m
 

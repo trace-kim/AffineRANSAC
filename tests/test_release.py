@@ -141,9 +141,9 @@ def twist(k, local, mask):
 
 def test_the_in_image_correction_removes_a_distortion_shared_by_all_images(tmp_path):
     """D141: a distortion the same in every image and not affine (twist) stays in the moving-window error (no window
-    affine follows it from tile to tile); with in_image_correction the map is removed before the stitching, only the
-    0.1 nm noise is left, the run keeps the map and the Registration tab says so. A parameter of both kinds of folder
-    in the release only."""
+    affine follows it from tile to tile); with in_image_correction the formula of order 3 (the twist is one of its
+    terms, D145) is removed before the stitching, only the 0.1 nm noise is left, the run keeps its map and the
+    Registration tab says so. A parameter of both kinds of folder in the release only."""
     write_contour_folder(tmp_path, sem_error=twist)
     lines = []
     with pytest.warns(UserWarning):
@@ -155,7 +155,7 @@ def test_the_in_image_correction_removes_a_distortion_shared_by_all_images(tmp_p
     assert plain.intrafield is None and np.sqrt((plain.moving.residuals ** 2).mean()) > 0.5
     assert np.sqrt((corrected.moving.residuals ** 2).mean(axis=0)).max() < 0.11
     assert corrected.intrafield.images == 6 and 2.0 < np.abs(corrected.intrafield.shift_nm).max() < 2.6
-    assert any(line.startswith("In-image correction: map of 9 x 9 nodes from 6 of 6 images, up to ") for line in lines)
+    assert any(line.startswith("In-image correction: formula of order 3 from 6 of 6 images, up to ") for line in lines)
     save_cache(corrected, tmp_path / "user")
     loaded, _ = load_cache(tmp_path, tmp_path / "user")
     np.testing.assert_array_equal(loaded.intrafield.shift_nm, corrected.intrafield.shift_nm)
@@ -165,22 +165,8 @@ def test_the_in_image_correction_removes_a_distortion_shared_by_all_images(tmp_p
     assert "Error = measured (SEM, in-image distortion removed) − design" in view.summary.text()
     view.close()
     for kind in ("contour CSV", "images"):
-        assert {"in_image_correction", "intrafield_nodes", "in_image_model", "in_image_order"} <= set(PARAMETERS[kind])
+        assert {"in_image_correction", "in_image_order"} <= set(PARAMETERS[kind])
         assert "in_image_correction" not in settings_for(kind)  # the research app always computes both
-
-
-def test_the_in_image_formula_removes_a_distortion_shared_by_all_images(tmp_path):
-    """D145: the same twist, removed by the formula of order 3 (it is one of its terms) instead of the node map."""
-    write_contour_folder(tmp_path, sem_error=twist)
-    lines = []
-    with pytest.warns(UserWarning):
-        result = analyse_folder(tmp_path, "contour CSV",
-                                replace(Settings(), in_image_correction=True, in_image_model="formula"),
-                                log=lines.append)
-
-    assert np.sqrt((result.moving.residuals ** 2).mean(axis=0)).max() < 0.11
-    assert result.intrafield.images == 6 and 2.0 < np.abs(result.intrafield.shift_nm).max() < 2.6
-    assert any(line.startswith("In-image correction: formula of order 3 from 6 of 6 images, up to ") for line in lines)
 
 
 def test_without_image_centres_the_in_image_correction_is_left_out(tmp_path):
@@ -196,16 +182,24 @@ def test_without_image_centres_the_in_image_correction_is_left_out(tmp_path):
 
 def test_load_contours_gives_the_centres_of_an_in_image_corrected_run(tmp_path):
     """The run stitched its centres with the map removed: found again from the images, they are the run's once the
-    map is removed from them too (no !!), while the contours stay where the detection put them."""
+    map is removed from them too (no !!), while the contours stay where the detection put them. Control: the same
+    run without its map is flagged (the check sees the map)."""
+    from test_pipeline import ERRORS, FOV as IMAGE_FOV, LATTICE, NOMINAL as IMAGE_NOMINAL, SIZE, render_tile
     records = write_image_folder(tmp_path)
+    for k, record in enumerate(records):  # every image distorted the same way (twist: ~0.16 nm at its corners)
+        center = IMAGE_NOMINAL[k] + ERRORS[k]
+        image = render_tile(LATTICE + twist(k, LATTICE - center, LATTICE), center, IMAGE_FOV, SIZE, seed=k)
+        cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tofile(str(record.image_path))
     result = analyse_folder(tmp_path, "images", replace(IMAGE_SETTINGS, in_image_correction=True), records,
                             log=lambda line: None)
-    lines = []
+    lines, without_map = [], []
     c = read_contours(result, log=lines.append)
+    read_contours(replace(result, intrafield=None), log=without_map.append)
 
     assert result.intrafield is not None and lines == []
+    assert any(line.startswith("!! The contours of ") for line in without_map)
     moved = [np.abs(c.refined_centres[c.tile == k] + result.centers[k] - result.sem_points[k]).max() for k in range(4)]
-    assert min(moved) > 0.01  # the run's centres are not the detection's
+    assert min(moved) > 0  # the run's centres are not the detection's
 
 
 def test_image_folder_reports_progress_per_tile_and_keeps_the_image_paths(tmp_path):

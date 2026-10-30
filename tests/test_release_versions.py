@@ -95,6 +95,14 @@ RESULTS = {
                                      -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
         "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
                    6.441456148, 6.821792166, 0.0, 0.0]},
+    # 9 (D146): the in-image correction is always the formula (D145), the node map removed; these folders are run
+    # without it, so their numbers are those of 8.
+    9: {"contour CSV": [2360, 0.097645195, 0.097127712, 0.387878965, 0.376539609, 0.022559669, -0.052001588,
+                        8.149617877, 8.95389255, 12.5, 11.5],
+        "contour CSV, 3 um window": [2360, 0.09756319, 0.096903189, 0.38584456, 0.384917053, 0.024032299,
+                                     -0.05281951, 8.149617877, 8.95389255, 12.5, 11.5],
+        "images": [196, 0.018585826, 0.020004241, 0.046613292, 0.06696727, -0.015755086, -0.001440986,
+                   6.441456148, 6.821792166, 0.0, 0.0]},
 }
 
 # Per FORMAT: the arrays (without the optional contact_sizes/* and intrafield/*, D141) and the info keys of a run file.
@@ -217,6 +225,9 @@ def test_a_run_saved_before_a_setting_existed_says_what_it_did(tmp_path):
     assert load_cache(data, user)[0].settings.refinement == "none"
     rewrite_info(path, settings={**settings, "stitch_refined": True})
     assert load_cache(data, user)[0].settings.refinement == "mid-level"
+    # until D146 the in-image correction could be a node map: its settings are gone, a run that has them still opens
+    rewrite_info(path, settings={**settings, "intrafield_nodes": 9, "in_image_model": "nodes"})
+    assert load_cache(data, user)[0].settings.in_image_order == 3
 
 
 def test_a_run_file_without_an_optional_array_added_since_still_opens(tmp_path):

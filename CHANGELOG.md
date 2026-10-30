@@ -11,7 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
-First numbered version. Saved runs: format 3, analysis 8. Runs saved by earlier copies of MaskReg carry no version:
+First numbered version. Saved runs: format 3, analysis 9. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 
 - *File → Folders...*: choose the folder of `maskreg.ini` and the folder where FTP downloads are kept (D96).
@@ -179,5 +179,9 @@ they open, flagged as outdated.
   corner (red tile corners with *nodes* on some datasets). When the paired contacts cannot determine it, the
   correction is left out and the log says so (`!!`). The log
   gives its order, the images used and its largest shift; run files are unchanged (D145).
+- The in-image correction is always the formula: the node map and its parameters `intrafield_nodes` and
+  `in_image_model` are removed. **Analysis 9:** a run made with `in_image_correction` on and the node map now gives
+  the formula's numbers; runs without it give the same numbers. Saved runs and saved parameters that still name the
+  removed parameters open as before (D146).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
