@@ -17,9 +17,10 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   parameters can be saved under a name and loaded again (parameters_dialog.py).
 - Analysis > Contour diagnosis: load one SEM image and try the contour settings on it, the contours and centres shown
   as they change (contour_dialog.py); Apply to parameters keeps them for the next run, as Parameters does.
-- View: the log, GPU drawing (OpenGL; checked at start whether it works here, else drawn on the CPU), and the
-  Contact size tab (hidden unless turned on; remembered): area, xCD and yCD of every contact, measured on request
-  on the tiles of the run, which an image run keeps in memory only while the tab is on.
+- View: the log (steps on a grey band, problems in red, numbers bold: log_view.py), GPU drawing (OpenGL; checked at
+  start whether it works here, else drawn on the CPU), and the Contact size tab (hidden unless turned on;
+  remembered): area, xCD and yCD of every contact, measured on request on the tiles of the run, which an image run
+  keeps in memory only while the tab is on.
 - Status bar: the step being done, a progress bar with its percentage, and the time so far.
 - Updates (installed MaskReg only, update.py): at start a newer version is looked for in the background; if one is
   found the user is asked, and Yes installs it and restarts MaskReg. Help > Check for updates does the same on request.
@@ -54,6 +55,7 @@ from affine_ransac.release.config import config_path, download_root, read_ftp_co
 from affine_ransac.release.contour_dialog import ContourDialog
 from affine_ransac.release.folders_dialog import FoldersDialog
 from affine_ransac.release.ftp_dialog import FtpDialog
+from affine_ransac.release.log_view import LogView
 from affine_ransac.release.parameters_dialog import USER_PARAMETERS, ParametersDialog
 from affine_ransac.release.update import UPDATE_INI, download_setup, find_update, installed_source, run_setup
 from affine_ransac.release.views import ContactSizeTab, RegistrationView, StitchingView
@@ -189,7 +191,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.setWindowTitle(TITLE)
         self.welcome()
 
-        self.log_view = QtWidgets.QPlainTextEdit(readOnly=True)
+        self.log_view = LogView()
         self.log_dock = QtWidgets.QDockWidget("Log")
         self.log_dock.setObjectName("log")
         self.log_dock.setWidget(self.log_view)
@@ -634,7 +636,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
                 not self.busy and self.contours is None and bool(self.result.image_paths))
 
     def log(self, text: str):
-        self.log_view.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")
+        self.log_view.add(text)
 
     def settings(self) -> Settings:
         """The parameters chosen last (the release's defaults for any not saved)."""

@@ -1583,3 +1583,41 @@ def test_noisy_images_keep_their_contacts_by_default(tmp_path):
                         detection="otsu", min_contrast=5.0)
     assert tile.low_contrast > 40 and len(tile.refined.centers) == 0
     assert contrast_summary([tile], ["T0"], 5.0).startswith("!! Contrast check")
+
+
+def test_the_log_shows_steps_problems_and_numbers_at_a_glance(tmp_path):
+    """D148: a step's heading bold on a grey band, problems and tracebacks red on a pale red band, warnings amber,
+    numbers bold (not those in names), the time grey; the text is as logged."""
+    window = make_window(tmp_path)
+    messages = ["=== Opening E:/data/Chip1-1-3", "Result saved: E:/Chip1-1-3/run_12.npz, 247 overlaps, 1.5 nm",
+                "!! 2 tile(s) not stitched: [17, 18]", "Warning: Mean of empty slice",
+                "Traceback (most recent call last):\n  File x\nValueError: no tile matched\n"]
+    for text in messages:
+        window.log(text)
+    document = window.log_view.document()
+    lines = [document.findBlockByNumber(i) for i in range(document.blockCount())]
+    # The time (grey) before a message's first line only; no empty line after the traceback's last newline.
+    assert [line.text()[11:] if line.text().startswith("[") else line.text() for line in lines] == \
+        messages[:4] + ["Traceback (most recent call last):", "  File x", "ValueError: no tile matched"]
+
+    def band(line):
+        brush = line.blockFormat().background()
+        return None if brush.style() == QtCore.Qt.BrushStyle.NoBrush else brush.color().name()
+
+    def look(line, word, after_time=True):
+        """Colour and boldness of the word's first character (searched after the time: it holds numbers too)."""
+        start = 11 if after_time and line.text().startswith("[") else 0
+        cursor = QtGui.QTextCursor(line)
+        cursor.setPosition(line.position() + line.text().index(word, start) + 1)
+        return cursor.charFormat().foreground().color().name(), cursor.charFormat().font().bold()
+
+    red = style.PROBLEM_BAND
+    assert [band(line) for line in lines] == [style.HEADING_BAND, None, red, None, red, red, red]
+    assert look(lines[0], "Opening") == (style.TEXT, True)
+    assert look(lines[1], "[", after_time=False) == (style.MUTED, False)
+    assert look(lines[1], "247") == look(lines[1], "1.5 nm") == (style.TEXT, True)
+    assert look(lines[1], "overlaps") == look(lines[1], "1-1-3") == look(lines[1], "12.npz") == (style.TEXT, False)
+    assert look(lines[2], "17") == (style.PROBLEM, True) and look(lines[2], "tile") == (style.PROBLEM, False)
+    assert look(lines[3], "Mean") == (style.CAUTION, False)
+    assert look(lines[6], "ValueError") == (style.PROBLEM, False)
+    window.close()

@@ -186,5 +186,7 @@ they open, flagged as outdated.
 - *Analysis → Parameters* shows the parameters in sections, in the order the analysis runs: *Stitching*,
   *In-image correction* and *Registration* open; *Contour detection* and *Advanced* folded (click a heading to open
   it), unless one of their parameters differs from its default. The parameters and the results are unchanged (D147).
+- *View → Log* is easier to read: each step's heading is bold on a grey band, problems (`!!`) and errors are red on a
+  pale red band, warnings amber, and the numbers are bold. The text and the results are unchanged (D148).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.
