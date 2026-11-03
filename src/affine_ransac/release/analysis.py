@@ -130,9 +130,10 @@ class AnalysisFailed(RuntimeError):
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,
                    log: Callable[[str], None] = print,
                    progress: Callable[[float, str], None] = lambda fraction, stage: None,
-                   keep_tiles: bool = False) -> ReleaseResult:
+                   keep_tiles: bool = False, detailed_log: bool = False) -> ReleaseResult:
     """Analyse a folder of this kind. records: the image folder's tiles (io/metadata.read_tile_index).
-    keep_tiles: an image folder's result keeps its tiles in memory (result.tiles), to measure the contact sizes."""
+    keep_tiles: an image folder's result keeps its tiles in memory (result.tiles), to measure the contact sizes.
+    detailed_log: an image folder's tile loading logs every tile, worker and wait (load_image_tiles detailed, D149)."""
     s = settings
     lines = []
 
@@ -148,7 +149,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         s = replace(s, layer=layer, datatype=datatype)
         record(f"Contact layer {layer}/{datatype} (the only layer with shapes in the .oas files)")
         tile_ids, tiles = load_image_tiles(
-            records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"))
+            records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"),
+            detailed=detailed_log)
         centers = image_centers = np.array([t.center_nm for t in tiles])
         sizes = np.array([t.fov_nm for t in tiles])
         stripe = tile_stripes(centers)

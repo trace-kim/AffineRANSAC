@@ -20,7 +20,8 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
 - View: the log (steps on a grey band, problems in red, numbers bold: log_view.py), GPU drawing (OpenGL; checked at
   start whether it works here, else drawn on the CPU), and the Contact size tab (hidden unless turned on;
   remembered): area, xCD and yCD of every contact, measured on request on the tiles of the run, which an image run
-  keeps in memory only while the tab is on.
+  keeps in memory only while the tab is on. Detailed tile-loading log (off by default; remembered): an image run logs
+  every tile, worker and wait of its tile loading, with the machine's CPU and memory, to find why it is slow (D149).
 - Status bar: the step being done, a progress bar with its percentage, and the time so far.
 - Updates (installed MaskReg only, update.py): at start a newer version is looked for in the background; if one is
   found the user is asked, and Yes installs it and restarts MaskReg. Help > Check for updates does the same on request.
@@ -226,6 +227,11 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.size_action.setCheckable(True)
         self.size_action.setChecked(self.preferences.value("contact_size_tab", "") == "true")  # hidden by default
         self.size_action.toggled.connect(self.set_size_tab)
+        self.detail_action = view_menu.addAction("&Detailed tile-loading log")  # every tile, worker and wait (D149)
+        self.detail_action.setCheckable(True)
+        self.detail_action.setChecked(self.preferences.value("detailed_loading_log", "") == "true")  # off by default
+        self.detail_action.toggled.connect(
+            lambda on: self.preferences.setValue("detailed_loading_log", "true" if on else "false"))
         help_menu = self.menuBar().addMenu("&Help")
         self.update_action = help_menu.addAction("Check for &updates...", lambda: self.check_for_update(quiet=False))
         self.update_action.setEnabled(update_source is not None)
@@ -333,6 +339,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         """Show the folder's saved analysis, or analyse it (and save) if there is none."""
         self.log(f"=== Opening {folder}")
         settings, cache_dir, keep_tiles = self.settings(), self.cache_dir, self.size_action.isChecked()
+        detailed = self.detail_action.isChecked()
         self._release_tiles()
 
         def work(log, progress):
@@ -344,7 +351,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
                     f"analysis runs it again)")
                 return result
             log("No saved analysis to show: analysing the folder")
-            return self._analyse_and_save(folder, settings, keep_tiles, log, progress)
+            return self._analyse_and_save(folder, settings, keep_tiles, log, progress, detailed)
         self.folder = folder
         self.run(f"Opening {Path(folder).name}", work, self.show_opened)
 
@@ -360,10 +367,11 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     def restart(self):
         folder, settings, keep_tiles = self.folder, self.settings(), self.size_action.isChecked()
+        detailed = self.detail_action.isChecked()
         self.log(f"=== Restarting the analysis of {folder}")
         self._release_tiles()
         self.run(f"Analysing {Path(folder).name}",
-                 lambda log, progress: self._analyse_and_save(folder, settings, keep_tiles, log, progress),
+                 lambda log, progress: self._analyse_and_save(folder, settings, keep_tiles, log, progress, detailed),
                  self.show_new_result)
 
     def _release_tiles(self):
@@ -372,13 +380,14 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         if self.result is not None:
             self.result.tiles = None
 
-    def _analyse_and_save(self, folder, settings, keep_tiles, log, progress):
+    def _analyse_and_save(self, folder, settings, keep_tiles, log, progress, detailed=False):
         """Analyse the folder (in the background thread) and save the result; a failed save is only logged.
-        keep_tiles: an image folder's result keeps its tiles, to measure the contact sizes on."""
+        keep_tiles: an image folder's result keeps its tiles, to measure the contact sizes on; detailed: the tile
+        loading logs every tile, worker and wait (View > Detailed tile-loading log)."""
         kind = folder_kind(Path(folder))
         log(f"Analysing a {kind} folder with MaskReg {__version__} (analysis {ANALYSIS})")
         records = image_records(folder) if kind == "images" else None
-        result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles)
+        result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles, detailed)
         progress(1.0, "Saving the result")
         try:
             log(f"Result saved: {save_cache(result, self.cache_dir, log=log)}")

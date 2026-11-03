@@ -23,12 +23,12 @@ The AnalysisResult holds what the analysis window shows (view_analysis.analysis_
 
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, wait
 from dataclasses import dataclass, field, fields, replace
-from itertools import repeat
 from pathlib import Path
 from typing import Callable
 
+import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -39,6 +39,7 @@ from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import IntrafieldMap, correct_points, estimate_formula
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
+from affine_ransac.machine import MachineLoad, process_created
 from affine_ransac.pipeline import (REFINEMENTS, FingerprintChoice, OverlapCheck, StitchResult, TileResult,
                                     measurement_pairs, overlap_checks, placed_by_fingerprint, placed_image_by_image,
                                     process_tile, slipped_pairs, stitch_design, stitch_image_by_image, stitch_tiles,
@@ -419,17 +420,40 @@ def worker_count() -> int:
     return max(1, (os.cpu_count() or 2) // 2)
 
 
-def _process_tile(arguments: tuple, options: dict) -> TileResult:
-    """process_tile(*arguments, **options); at module level so that worker processes can run it."""
-    return process_tile(*arguments, **options)
+HEARTBEAT_S = 10.0  # detailed loading log: a status line after every this long without the next tile
+_worker_ready_at = None  # in a worker process: when it was ready for its first tile (time.time())
+
+
+def _worker_ready():
+    """Run by each tile-loading worker once it has started, before its first tile: when it was ready."""
+    global _worker_ready_at
+    _worker_ready_at = time.time()
+
+
+def _process_tile(arguments: tuple, options: dict) -> tuple[TileResult, tuple]:
+    """process_tile(*arguments, **options), and when and where it ran: (worker process id, when the worker was created
+    and ready, when this tile started and finished), all as time.time(); at module level so that worker processes can
+    run it."""
+    started = time.time()
+    tile = process_tile(*arguments, **options)
+    return tile, (os.getpid(), process_created(), _worker_ready_at, started, time.time())
+
+
+def _step_times(tile: TileResult) -> str:
+    """The seconds of each step of process_tile, e.g. "read 0.04, detect 1.20, ..."."""
+    return ", ".join(f"{step} {seconds:.2f}" for step, seconds in tile.seconds.items())
 
 
 def load_image_tiles(records: list, settings: Settings, log: Callable[[str], None] = print,
-                     progress: Callable[[int, int], None] | None = None) -> tuple[list[str], list[TileResult]]:
+                     progress: Callable[[int, int], None] | None = None,
+                     detailed: bool = False) -> tuple[list[str], list[TileResult]]:
     """The tile ids and loaded tiles (process_tile) of an image folder's records, after the checks (settings,
     records, sample tiles matched to their design). progress(done, total) after every tile.
     settings.realign: the design is read without matching, then the tiles are realigned
-    (realign.realign_tiles) before the flagged tiles are counted."""
+    (realign.realign_tiles) before the flagged tiles are counted.
+    detailed: also log when each tile was loaded and how long each step took, when each worker started, and while
+    waiting a status line every HEARTBEAT_S with the machine's CPU and memory (D149). The time in these lines,
+    "+12.3 s", is since the loading began, measured where the line was made."""
     s = settings
     layer = (s.layer, s.datatype)
     check_settings(s, "images")
@@ -451,9 +475,17 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     with_oas = [k for k, r in enumerate(records) if r.oas_path is not None]
     sample = sorted({with_oas[i] for i in np.linspace(0, len(with_oas) - 1, SAMPLE_TILES).round().astype(int)})
     start = time.perf_counter()
+    began = time.time()  # the detailed log's times are since then; time.time() reads the same in every process
+    machine = MachineLoad()  # the CPU in use since then, then since each status line
+
+    def since(t: float) -> str:
+        return f"+{t - began:.1f} s"
+
     loaded = {}
     for k in sample:
         loaded[k] = process_tile(*arguments(records[k]), **options)
+        if detailed:
+            log(f"{since(time.time())}: sample tile {tile_ids[k]} loaded in this process ({_step_times(loaded[k])})")
         if progress is not None:
             progress(len(loaded), len(records))
     if not realign and not any(t.design.ok for t in loaded.values()):
@@ -464,19 +496,50 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     if not realign:
         log(f"Sample tiles matched to their design: {sum(t.design.ok for t in loaded.values())} of {len(loaded)}")
 
-    # The other tiles in parallel, about one per physical core (each tile is independent); map keeps their order.
+    # The other tiles in parallel, about one per physical core (each tile is independent), taken in their order.
     rest = [k for k in range(len(records)) if k not in loaded]
     done = len(loaded)
     workers = worker_count()
     log(f"Loading the other {len(rest)} tiles in {workers} worker processes")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        for k, tile in zip(rest, pool.map(_process_tile, [arguments(records[k]) for k in rest], repeat(options))):
-            loaded[k] = tile
-            done += 1
-            if progress is not None:
-                progress(done, len(records))
-            if done % max(1, len(records) // 10) == 0 or done == len(records):
-                log(f"{done} of {len(records)} tiles loaded and detected")
+    if detailed:
+        log(f"{since(time.time())}: {os.cpu_count()} logical CPUs; in each process {cv2.getNumThreads()} OpenCV "
+            f"threads, OPENBLAS_NUM_THREADS {os.environ.get('OPENBLAS_NUM_THREADS', 'not set')}; {machine.text()}")
+    back = {}  # tile -> when its result reached this process
+    seen = set()  # the workers whose start was logged
+    pool_started = time.time()
+    with ProcessPoolExecutor(max_workers=workers, initializer=_worker_ready) as pool:
+        futures = [pool.submit(_process_tile, arguments(records[k]), options) for k in rest]
+        for k, future in zip(rest, futures):
+            future.add_done_callback(lambda _, k=k: back.setdefault(k, time.time()))
+        try:
+            for k, future in zip(rest, futures):
+                while not wait([future], timeout=HEARTBEAT_S).done:
+                    if detailed:
+                        log(f"{since(time.time())}: waiting for tile {tile_ids[k]}; {done} of {len(records)} shown, "
+                            f"{len(back)} back from the workers; {machine.text()}")
+                loaded[k], (pid, created, ready, started, finished) = future.result()
+                back.setdefault(k, time.time())  # wait() can return before the callback above has run
+                done += 1
+                if detailed:
+                    if pid not in seen:
+                        seen.add(pid)
+                        log(f"{since(time.time())}: worker {pid} created "
+                            f"{'?' if created is None else since(created)}, ready {since(ready)}")
+                    log(f"{since(time.time())}: tile {tile_ids[k]} (worker {pid}): started {since(started)}, finished "
+                        f"{since(finished)} ({finished - started:.1f} s: {_step_times(loaded[k])}), back "
+                        f"{since(back[k])}")
+                if progress is not None:
+                    progress(done, len(records))
+                if done % max(1, len(records) // 10) == 0 or done == len(records):
+                    log(f"{done} of {len(records)} tiles loaded and detected")
+        finally:
+            for future in futures:
+                future.cancel()  # after an error, the tiles not started are not loaded
+    if detailed and rest:
+        times = sorted([pool_started] + list(back.values()))
+        gap = int(np.argmax(np.diff(times)))
+        log(f"Loading in detail: the longest wait with no tile coming back from the workers was "
+            f"{times[gap + 1] - times[gap]:.1f} s, from {since(times[gap])} to {since(times[gap + 1])}")
     tiles = [loaded[k] for k in range(len(records))]
     log(timing_summary(tiles, time.perf_counter() - start, sample, workers))
     log(contrast_summary(tiles, tile_ids, s.min_contrast))

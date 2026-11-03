@@ -1,6 +1,7 @@
 """End-to-end analysis of synthetic folders (analysis.py) and the window of its result, without a display."""
 
 import os
+import re
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
@@ -419,6 +420,38 @@ def test_tile_loading_logs_its_timing(tmp_path):
     assert set(tiles[0].seconds) == {"read", "detect", "refine", "oas", "contacts", "shift", "reversed"}
     timing = [line for line in lines if line.startswith("Timing:")]
     assert len(timing) == 1 and "shift" in timing[0] and "reversed tone was tried" in timing[0]
+
+
+def test_detailed_tile_loading_log_times_every_tile_and_worker(tmp_path, monkeypatch):
+    """D149: with detailed on, every sample tile, every worker's start and every tile's times are logged, status lines
+    while waiting, and the longest wait; the tiles are those loaded without it."""
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(analysis, "HEARTBEAT_S", 0.01)  # a status line at every wait for the next tile
+    lines = []
+    _, tiles = analysis.load_image_tiles(records, IMAGE_SETTINGS, log=lines.append, detailed=True)
+    _, plain_tiles = analysis.load_image_tiles(records, IMAGE_SETTINGS, log=lambda line: None)
+
+    assert [line for line in lines if "sample tile" in line][0].startswith("+")
+    assert len([line for line in lines if "sample tile" in line]) == analysis.SAMPLE_TILES
+    sample = {line.split("sample tile ")[1].split()[0] for line in lines if "sample tile" in line}
+    for r in records:
+        if r.tile_id not in sample:
+            line = next(line for line in lines if f"tile {r.tile_id} (worker " in line)
+            assert all(word in line for word in ("started +", "finished +", "back +", "read ", "refine "))
+    workers = [line for line in lines if re.search(r"worker \d+ created \+[\d.]+ s, ready \+", line)]
+    assert 1 <= len(workers) <= analysis.worker_count()
+    assert any("waiting for tile" in line and "back from the workers" in line for line in lines)
+    assert "logical CPUs" in next(line for line in lines if "OpenCV threads" in line)
+    assert len([line for line in lines if line.startswith("Loading in detail: the longest wait")]) == 1
+    for tile, plain in zip(tiles, plain_tiles):
+        np.testing.assert_array_equal(tile.sem_points_nm(), plain.sem_points_nm())
+        np.testing.assert_array_equal(tile.design_points_nm(), plain.design_points_nm())
+
+
+def test_tile_loading_logs_no_detail_unless_asked(tmp_path):
+    lines = []
+    analysis.load_image_tiles(write_image_folder(tmp_path), IMAGE_SETTINGS, log=lines.append)
+    assert not any(line.startswith("+") or "in detail" in line for line in lines)
 
 
 def test_overlaps_not_matched_alone_are_not_called_incomplete():

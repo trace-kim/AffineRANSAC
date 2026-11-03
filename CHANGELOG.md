@@ -188,5 +188,9 @@ they open, flagged as outdated.
   it), unless one of their parameters differs from its default. The parameters and the results are unchanged (D147).
 - *View → Log* is easier to read: each step's heading is bold on a grey band, problems (`!!`) and errors are red on a
   pale red band, warnings amber, and the numbers are bold. The text and the results are unchanged (D148).
+- *View → Detailed tile-loading log* (off by default): an image run logs how its tiles were loaded, to find out why
+  loading is slow on a PC: when each worker process started and was ready, when each tile started, finished and came
+  back, with the time of each step, and every 10 s of waiting the PC's CPU and memory in use. The results are
+  unchanged (D149).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

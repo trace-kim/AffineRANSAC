@@ -1450,6 +1450,25 @@ def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
     assert tab.note.text() == NOT_IMAGES and not tab.run_button.isEnabled()
 
 
+def test_the_detailed_tile_loading_log_is_off_until_turned_on_and_remembered(tmp_path, monkeypatch):
+    """D149: View > Detailed tile-loading log, off by default; on, an image run logs its tile loading in detail."""
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    assert not window.detail_action.isChecked()
+    window.open_folder(str(tmp_path))
+    wait(window)
+    assert "Loading in detail" not in window.log_view.toPlainText()
+
+    window.detail_action.setChecked(True)
+    assert MaskRegWindow(window.preferences, cache_dir=str(tmp_path / "user cache")).detail_action.isChecked()  # kept
+    window.restart()
+    wait(window)
+    text = window.log_view.toPlainText()
+    assert "Loading in detail: the longest wait" in text and "sample tile" in text and "(worker " in text
+
+
 def test_the_contact_size_tab_is_hidden_until_turned_on_and_measures_on_the_tiles_of_a_run(tmp_path, monkeypatch):
     records = write_image_folder(tmp_path)
     monkeypatch.setattr(release_app, "image_records", lambda folder: records)
