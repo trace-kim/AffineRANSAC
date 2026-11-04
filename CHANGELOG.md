@@ -192,5 +192,7 @@ they open, flagged as outdated.
   loading is slow on a PC: when each worker process started and was ready, when each tile started, finished and came
   back, with the time of each step, and every 10 s of waiting the PC's CPU and memory in use. The results are
   unchanged (D149).
+- The detailed tile-loading log also splits each worker's start into stages: Windows starting it, loading the
+  libraries, and taking over the work. The results are unchanged (D150).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

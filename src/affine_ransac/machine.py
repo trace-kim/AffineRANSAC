@@ -1,9 +1,10 @@
-"""What the machine is doing, for the detailed tile-loading log (docs/SPEC.md D149): when this process was created,
-how much of the machine's CPU is in use, and its memory. Windows only (MaskReg's platform), read from the Windows API
+"""What the machine is doing, for the detailed tile-loading log (docs/SPEC.md D149, D150): when this process was
+created and reached each stage of its start-up, how much of the machine's CPU is in use, and its memory. Windows only (MaskReg's platform), read from the Windows API
 without a new dependency; elsewhere these report nothing (None, "")."""
 
 import ctypes
 import os
+import time
 
 WINDOWS = os.name == "nt"
 EPOCH_S = 11644473600  # Windows counts time from 1601-01-01, time.time() from 1970-01-01
@@ -35,6 +36,14 @@ def process_created() -> float | None:
     if not _kernel32.GetProcessTimes(_kernel32.GetCurrentProcess(), created, exited, kernel, user):
         return None
     return _seconds(created) - EPOCH_S
+
+
+startup = {}  # stage of this process's start-up -> when it was reached (time.time()), marked by packaging/maskreg.py
+
+
+def mark_startup(stage: str):
+    """Note that this process has reached `stage` of its start-up now (D150)."""
+    startup[stage] = time.time()
 
 
 def _cpu_times() -> tuple[float, float] | None:

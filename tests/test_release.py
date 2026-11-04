@@ -4,8 +4,12 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
 
+import re
+import subprocess
+import sys
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -1467,6 +1471,33 @@ def test_the_detailed_tile_loading_log_is_off_until_turned_on_and_remembered(tmp
     wait(window)
     text = window.log_view.toPlainText()
     assert "Loading in detail: the longest wait" in text and "sample tile" in text and "(worker " in text
+
+
+def test_each_worker_logs_the_start_up_stages_the_entry_script_marks(tmp_path):
+    """D150: each tile-loading worker runs packaging/maskreg.py as far as freeze_support() (here: as the main script of
+    a spawned worker, which re-runs its top), marking when Python ran and when the libraries were loaded; the detailed
+    loading log shows both for each worker, in order between its creation and readiness."""
+    tests = Path(__file__).parent
+    script = tmp_path / "entry.py"
+    script.write_text(f"""import runpy, sys
+runpy.run_path({str(tests.parent / "packaging" / "maskreg.py")!r}, run_name="maskreg")
+if __name__ == "__main__":
+    sys.path.insert(0, {str(tests)!r})
+    from pathlib import Path
+    from test_analysis import IMAGE_SETTINGS, write_image_folder
+    from affine_ransac.analysis import load_image_tiles
+    load_image_tiles(write_image_folder(Path(sys.argv[1])), IMAGE_SETTINGS, detailed=True)
+""")
+    (tmp_path / "images").mkdir()
+    run = subprocess.run([sys.executable, str(script), str(tmp_path / "images")], capture_output=True, text=True,
+                         timeout=600)
+    assert run.returncode == 0, run.stderr
+    workers = re.findall(r"worker \d+ created \+([\d.]+) s, Python running \+([\d.]+) s, libraries loaded "
+                         r"\+([\d.]+) s, ready \+([\d.]+) s", run.stdout)
+    assert workers, run.stdout
+    for times in workers:
+        assert [float(t) for t in times] == sorted(float(t) for t in times)
+    assert "worker processes launched" in run.stdout
 
 
 def test_the_contact_size_tab_is_hidden_until_turned_on_and_measures_on_the_tiles_of_a_run(tmp_path, monkeypatch):
