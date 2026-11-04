@@ -39,7 +39,7 @@ from affine_ransac.fitting.ransac import RansacResult, ransac_affine
 from affine_ransac.intrafield import IntrafieldMap, correct_points, estimate_formula
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.design import layers_with_shapes, list_layers, load_layout, read_polygons
-from affine_ransac.machine import MachineLoad, process_created, startup
+from affine_ransac.machine import MachineLoad, process_created
 from affine_ransac.pipeline import (REFINEMENTS, FingerprintChoice, OverlapCheck, StitchResult, TileResult,
                                     measurement_pairs, overlap_checks, placed_by_fingerprint, placed_image_by_image,
                                     process_tile, slipped_pairs, stitch_design, stitch_image_by_image, stitch_tiles,
@@ -431,12 +431,12 @@ def _worker_ready():
 
 
 def _process_tile(arguments: tuple, options: dict) -> tuple[TileResult, tuple]:
-    """process_tile(*arguments, **options), and when and where it ran: (worker process id, when the worker was created,
-    the stages of its start-up it marked (D150), when it was ready, when this tile started and finished), all as
-    time.time(); at module level so that worker processes can run it."""
+    """process_tile(*arguments, **options), and when and where it ran: (worker process id, when the worker was created
+    and ready, when this tile started and finished), all as time.time(); at module level so that worker processes can
+    run it."""
     started = time.time()
     tile = process_tile(*arguments, **options)
-    return tile, (os.getpid(), process_created(), startup, _worker_ready_at, started, time.time())
+    return tile, (os.getpid(), process_created(), _worker_ready_at, started, time.time())
 
 
 def _step_times(tile: TileResult) -> str:
@@ -508,9 +508,7 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     seen = set()  # the workers whose start was logged
     pool_started = time.time()
     with ProcessPoolExecutor(max_workers=workers, initializer=_worker_ready) as pool:
-        futures = [pool.submit(_process_tile, arguments(records[k]), options) for k in rest]  # launches the workers
-        if detailed:
-            log(f"{since(time.time())}: worker processes launched, {len(rest)} tiles handed to them")
+        futures = [pool.submit(_process_tile, arguments(records[k]), options) for k in rest]
         for k, future in zip(rest, futures):
             future.add_done_callback(lambda _, k=k: back.setdefault(k, time.time()))
         try:
@@ -519,15 +517,14 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
                     if detailed:
                         log(f"{since(time.time())}: waiting for tile {tile_ids[k]}; {done} of {len(records)} shown, "
                             f"{len(back)} back from the workers; {machine.text()}")
-                loaded[k], (pid, created, stages, ready, started, finished) = future.result()
+                loaded[k], (pid, created, ready, started, finished) = future.result()
                 back.setdefault(k, time.time())  # wait() can return before the callback above has run
                 done += 1
                 if detailed:
                     if pid not in seen:
                         seen.add(pid)
-                        reached = "".join(f", {stage} {since(t)}" for stage, t in stages.items())
                         log(f"{since(time.time())}: worker {pid} created "
-                            f"{'?' if created is None else since(created)}{reached}, ready {since(ready)}")
+                            f"{'?' if created is None else since(created)}, ready {since(ready)}")
                     log(f"{since(time.time())}: tile {tile_ids[k]} (worker {pid}): started {since(started)}, finished "
                         f"{since(finished)} ({finished - started:.1f} s: {_step_times(loaded[k])}), back "
                         f"{since(back[k])}")
