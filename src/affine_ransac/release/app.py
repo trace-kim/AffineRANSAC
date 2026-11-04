@@ -70,14 +70,8 @@ APP = "MaskReg"
 TITLE = "MaskReg - Mask Registration Analyzer"
 RECENT = 10  # folders in File > Open recent
 HIGH_PERFORMANCE_WARNING = (  # shown when Analysis > High-performance mode is turned on (D151)
-    "High-performance mode keeps the {workers} worker processes that load the tiles running after a run, until MaskReg "
-    "closes. The next runs (and Load contours) then start loading at once, instead of starting new workers, which "
-    "takes over a minute on some PCs. The first run after turning it on still starts them.\n\n"
-    "While MaskReg is open, the workers stay in memory: each holds a few hundred MB of RAM and sets aside about 1 GB "
-    "more that other programs cannot use (more on PCs with many cores). On a PC short of memory, a large analysis may "
-    "then run out of memory sooner.\n\n"
-    "If MaskReg crashes or is ended in Task Manager, the workers end themselves a moment later.\n\n"
-    "Turn the mode off to end them and free the memory.")
+    "Keeps {workers} worker processes running between runs, so later runs start faster.\n"
+    "They use memory until you turn this off or close MaskReg.")
 
 
 def opengl_works() -> bool:
