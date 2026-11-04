@@ -1,6 +1,8 @@
 """The released analyzer (affine_ransac.release), on synthetic folders, without a display."""
 
 import os
+import re
+import signal
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
 
@@ -1467,6 +1469,73 @@ def test_the_detailed_tile_loading_log_is_off_until_turned_on_and_remembered(tmp
     wait(window)
     text = window.log_view.toPlainText()
     assert "Loading in detail: the longest wait" in text and "sample tile" in text and "(worker " in text
+
+
+def test_high_performance_mode_is_off_until_turned_on_warns_and_keeps_the_workers_for_the_next_runs(tmp_path,
+                                                                                                    monkeypatch):
+    """D151: Analysis > High-performance mode, off by default; turned on, a warning, and remembered; on, the second run
+    loads its tiles in the worker the first run started (created and ready before that loading began); turned off,
+    the kept workers are ended."""
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    warned = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda parent, title, text: warned.append(text))
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    assert not window.speed_action.isChecked() and window.kept_helpers() is None
+
+    window.speed_action.setChecked(True)
+    assert len(warned) == 1 and "worker processes" in warned[0] and "memory" in warned[0]
+    assert MaskRegWindow(window.preferences, cache_dir=str(tmp_path / "user cache")).speed_action.isChecked()
+    assert len(warned) == 1  # remembered, without a new warning
+    window.detail_action.setChecked(True)
+    window.open_folder(str(tmp_path))
+    wait(window)
+    kept = window.helpers
+    window.restart()
+    wait(window)
+    assert kept is not None and window.helpers is kept
+    text = window.log_view.toPlainText()
+    assert "kept running for later runs" in text
+    assert re.search(r"worker \d+ created -[\d.]+ s, ready -[\d.]+ s", text)  # the second run: started before it
+
+    window.speed_action.setChecked(False)
+    assert window.helpers is None and len(warned) == 1
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        kept.submit(int)
+
+
+def test_high_performance_mode_replaces_kept_workers_that_stopped_working_and_ends_them_on_closing(tmp_path,
+                                                                                                   monkeypatch):
+    """D151: a kept worker that ended breaks the kept set: that run fails and says so, the next one starts new
+    workers; closing MaskReg ends the kept ones."""
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *args: None)
+    failed = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda *args: failed.append(args[2]))
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    window.speed_action.setChecked(True)
+    window.detail_action.setChecked(True)
+    window.open_folder(str(tmp_path))
+    wait(window)
+    worker = int(re.search(r"worker (\d+) created", window.log_view.toPlainText()).group(1))
+    os.kill(worker, signal.SIGTERM)  # that worker process ended at once, as by Task Manager's End task
+
+    window.restart()
+    wait(window)
+    assert len(failed) == 1 and window.helpers is None
+    assert "!! The kept worker processes stopped working: the next run starts new ones" in \
+        window.log_view.toPlainText()
+    window.restart()
+    wait(window)
+    assert len(failed) == 1 and window.helpers is not None
+    kept = window.helpers
+    window.close()
+    assert window.helpers is None
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        kept.submit(int)
 
 
 def test_the_contact_size_tab_is_hidden_until_turned_on_and_measures_on_the_tiles_of_a_run(tmp_path, monkeypatch):

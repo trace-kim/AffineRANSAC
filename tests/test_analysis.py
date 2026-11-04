@@ -1,7 +1,10 @@
 """End-to-end analysis of synthetic folders (analysis.py) and the window of its result, without a display."""
 
+import ctypes
 import os
 import re
+import subprocess
+import sys
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
@@ -446,6 +449,58 @@ def test_detailed_tile_loading_log_times_every_tile_and_worker(tmp_path, monkeyp
     for tile, plain in zip(tiles, plain_tiles):
         np.testing.assert_array_equal(tile.sem_points_nm(), plain.sem_points_nm())
         np.testing.assert_array_equal(tile.design_points_nm(), plain.design_points_nm())
+
+
+def _running(pid: int) -> bool:
+    """Whether the process with this id is still running (Windows API)."""
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32")  # its own function objects: the types set here change no one else's
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE: enough to wait for it
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT: it has not ended
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checks the processes with the Windows API")
+def test_workers_end_themselves_when_the_process_that_started_them_is_killed(tmp_path):
+    """D151: the workers of helper_pool end themselves once the process that started them has ended, however it
+    ended (here killed: no clean-up of its own runs), so the workers MaskReg keeps never outlive it."""
+    script = tmp_path / "parent.py"
+    script.write_text("""import os, time
+from affine_ransac.analysis import helper_pool, worker_count
+
+def pid_after(seconds):
+    time.sleep(seconds)
+    return os.getpid()
+
+if __name__ == "__main__":
+    pool = helper_pool()
+    print(" ".join(str(pid) for pid in {f.result() for f in [pool.submit(pid_after, 1.0) for _ in range(3)]}),
+          flush=True)
+    time.sleep(600)
+""")
+    parent = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
+    workers = []
+    try:
+        workers = [int(pid) for pid in parent.stdout.readline().split()]
+        assert workers and all(_running(pid) for pid in workers)
+        parent.kill()
+        parent.wait()
+        end = time.time() + 30
+        while any(_running(pid) for pid in workers) and time.time() < end:
+            time.sleep(0.1)
+        assert not any(_running(pid) for pid in workers)
+    finally:
+        parent.kill()
+        for pid in workers:
+            if _running(pid):
+                os.kill(pid, 15)  # left by a failure: ended so as not to outlive the test
 
 
 def test_tile_loading_logs_no_detail_unless_asked(tmp_path):

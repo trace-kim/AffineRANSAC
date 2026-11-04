@@ -22,6 +22,7 @@ A run that stitched the tiles but measured too few contacts raises AnalysisFaile
 
 import re
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from itertools import repeat
 from pathlib import Path
@@ -33,9 +34,9 @@ from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
 from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Settings, check_settings,
-                                   checked_overlaps, contour_options, detect_layer, in_image_map, load_image_tiles,
-                                   merged_contact_sizes, placement_guide, placement_text, report_stitching,
-                                   worker_count)
+                                   checked_overlaps, contour_options, detect_layer, helper_pool, in_image_map,
+                                   load_image_tiles, merged_contact_sizes, placement_guide, placement_text,
+                                   report_stitching)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -130,10 +131,12 @@ class AnalysisFailed(RuntimeError):
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,
                    log: Callable[[str], None] = print,
                    progress: Callable[[float, str], None] = lambda fraction, stage: None,
-                   keep_tiles: bool = False, detailed_log: bool = False) -> ReleaseResult:
+                   keep_tiles: bool = False, detailed_log: bool = False,
+                   pool: ProcessPoolExecutor | None = None) -> ReleaseResult:
     """Analyse a folder of this kind. records: the image folder's tiles (io/metadata.read_tile_index).
     keep_tiles: an image folder's result keeps its tiles in memory (result.tiles), to measure the contact sizes.
-    detailed_log: an image folder's tile loading logs every tile, worker and wait (load_image_tiles detailed, D149)."""
+    detailed_log: an image folder's tile loading logs every tile, worker and wait (load_image_tiles detailed, D149).
+    pool: the worker processes to load the tiles in, left running (high-performance mode, D151); None: new ones."""
     s = settings
     lines = []
 
@@ -150,7 +153,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         record(f"Contact layer {layer}/{datatype} (the only layer with shapes in the .oas files)")
         tile_ids, tiles = load_image_tiles(
             records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"),
-            detailed=detailed_log)
+            detailed=detailed_log, pool=pool)
         centers = image_centers = np.array([t.center_nm for t in tiles])
         sizes = np.array([t.fov_nm for t in tiles])
         stripe = tile_stripes(centers)
@@ -437,17 +440,19 @@ def _tile_contours(arguments: tuple, options: dict) -> tuple[list[np.ndarray], l
 
 
 def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] = lambda fraction, stage: None,
-                  log: Callable[[str], None] = lambda text: None) -> TileContours:
+                  log: Callable[[str], None] = lambda text: None,
+                  pool: ProcessPoolExecutor | None = None) -> TileContours:
     """The contours of an image run (TileContours), found again as the run found them: each SEM image detected and
     refined with the run's settings (process_tile without its design), in worker processes like the tiles. The
     centres it used (the refined ones; the detected ones with refinement none; with the run's in-image map removed,
     if it had one) must be the run's; tiles where they are not (an image changed since the run?) are logged with !!.
-    The contours and centres returned are the detection's, without the map: they lie on the image."""
+    The contours and centres returned are the detection's, without the map: they lie on the image.
+    pool: the worker processes to use, left running (high-performance mode, D151); None: new ones."""
     s = result.settings
     arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
-    with ProcessPoolExecutor(max_workers=worker_count()) as pool:
+    with helper_pool() if pool is None else nullcontext(pool) as pool:  # a pool given is left running
         found_all = pool.map(_tile_contours, arguments, repeat(contour_options(s)))
         for k, (found, moved, found_centres, moved_centres) in enumerate(found_all):
             used = moved_centres + result.centers[k]

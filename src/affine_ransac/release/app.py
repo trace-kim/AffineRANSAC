@@ -17,6 +17,10 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   parameters can be saved under a name and loaded again (parameters_dialog.py).
 - Analysis > Contour diagnosis: load one SEM image and try the contour settings on it, the contours and centres shown
   as they change (contour_dialog.py); Apply to parameters keeps them for the next run, as Parameters does.
+- Analysis > High-performance mode (off by default; remembered; a warning when turned on): the worker processes that
+  load the tiles are started at the first run and kept for the next runs and Load contours, until MaskReg closes or
+  the mode is turned off, instead of started for every run (D151). Kept workers that stopped working are replaced at
+  the next run.
 - View: the log (steps on a grey band, problems in red, numbers bold: log_view.py), GPU drawing (OpenGL; checked at
   start whether it works here, else drawn on the CPU), and the Contact size tab (hidden unless turned on;
   remembered): area, xCD and yCD of every contact, measured on request on the tiles of the run, which an image run
@@ -37,6 +41,7 @@ import threading
 import time
 import traceback
 import warnings
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, fields, replace
 from pathlib import Path
 
@@ -44,7 +49,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from affine_ransac import __version__
-from affine_ransac.analysis import Settings, current_names
+from affine_ransac.analysis import Settings, current_names, helper_pool, worker_count
 from affine_ransac.app import folder_kind, image_records
 from affine_ransac.release import ftp as remote
 from affine_ransac.release import style
@@ -64,6 +69,15 @@ from affine_ransac.release.views import ContactSizeTab, RegistrationView, Stitch
 APP = "MaskReg"
 TITLE = "MaskReg - Mask Registration Analyzer"
 RECENT = 10  # folders in File > Open recent
+HIGH_PERFORMANCE_WARNING = (  # shown when Analysis > High-performance mode is turned on (D151)
+    "High-performance mode keeps the {workers} worker processes that load the tiles running after a run, until MaskReg "
+    "closes. The next runs (and Load contours) then start loading at once, instead of starting new workers, which "
+    "takes over a minute on some PCs. The first run after turning it on still starts them.\n\n"
+    "While MaskReg is open, the workers stay in memory: each holds a few hundred MB of RAM and sets aside about 1 GB "
+    "more that other programs cannot use (more on PCs with many cores). On a PC short of memory, a large analysis may "
+    "then run out of memory sooner.\n\n"
+    "If MaskReg crashes or is ended in Task Manager, the workers end themselves a moment later.\n\n"
+    "Turn the mode off to end them and free the memory.")
 
 
 def opengl_works() -> bool:
@@ -188,6 +202,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.design = None   # its design pattern masks, once loaded (the same)
         self.contours = None  # its contours from the detection and refined (TileContours), once loaded (the same)
         self.size_tab = None  # the Contact size tab, when shown
+        self.helpers = None  # the worker processes kept for every run in high-performance mode, once made
         self.busy = False
         self.setWindowTitle(TITLE)
         self.welcome()
@@ -216,6 +231,11 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         analysis_menu.addSeparator()
         self._action(analysis_menu, "parameters", "&Parameters...", "Ctrl+P", self.edit_parameters)
         self._action(analysis_menu, "contours", "&Contour diagnosis...", "Ctrl+D", self.diagnose_contours)
+        analysis_menu.addSeparator()
+        self.speed_action = analysis_menu.addAction("&High-performance mode")  # keep the worker processes (D151)
+        self.speed_action.setCheckable(True)
+        self.speed_action.setChecked(self.preferences.value("high_performance", "") == "true")  # off by default
+        self.speed_action.toggled.connect(self.set_high_performance)
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.log_dock.toggleViewAction())
         self.gpu_action = view_menu.addAction("Draw with the &GPU (OpenGL)")
@@ -339,7 +359,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         """Show the folder's saved analysis, or analyse it (and save) if there is none."""
         self.log(f"=== Opening {folder}")
         settings, cache_dir, keep_tiles = self.settings(), self.cache_dir, self.size_action.isChecked()
-        detailed = self.detail_action.isChecked()
+        detailed, pool = self.detail_action.isChecked(), self.kept_helpers()
         self._release_tiles()
 
         def work(log, progress):
@@ -351,7 +371,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
                     f"analysis runs it again)")
                 return result
             log("No saved analysis to show: analysing the folder")
-            return self._analyse_and_save(folder, settings, keep_tiles, log, progress, detailed)
+            return self._analyse_and_save(folder, settings, keep_tiles, log, progress, detailed, pool)
         self.folder = folder
         self.run(f"Opening {Path(folder).name}", work, self.show_opened)
 
@@ -367,11 +387,12 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     def restart(self):
         folder, settings, keep_tiles = self.folder, self.settings(), self.size_action.isChecked()
-        detailed = self.detail_action.isChecked()
+        detailed, pool = self.detail_action.isChecked(), self.kept_helpers()
         self.log(f"=== Restarting the analysis of {folder}")
         self._release_tiles()
         self.run(f"Analysing {Path(folder).name}",
-                 lambda log, progress: self._analyse_and_save(folder, settings, keep_tiles, log, progress, detailed),
+                 lambda log, progress: self._analyse_and_save(folder, settings, keep_tiles, log, progress, detailed,
+                                                              pool),
                  self.show_new_result)
 
     def _release_tiles(self):
@@ -380,14 +401,15 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         if self.result is not None:
             self.result.tiles = None
 
-    def _analyse_and_save(self, folder, settings, keep_tiles, log, progress, detailed=False):
+    def _analyse_and_save(self, folder, settings, keep_tiles, log, progress, detailed=False, pool=None):
         """Analyse the folder (in the background thread) and save the result; a failed save is only logged.
         keep_tiles: an image folder's result keeps its tiles, to measure the contact sizes on; detailed: the tile
-        loading logs every tile, worker and wait (View > Detailed tile-loading log)."""
+        loading logs every tile, worker and wait (View > Detailed tile-loading log); pool: the kept worker processes
+        (high-performance mode), None: the run starts its own."""
         kind = folder_kind(Path(folder))
         log(f"Analysing a {kind} folder with MaskReg {__version__} (analysis {ANALYSIS})")
         records = image_records(folder) if kind == "images" else None
-        result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles, detailed)
+        result = analyse_folder(folder, kind, settings, records, log, progress, keep_tiles, detailed, pool)
         progress(1.0, "Saving the result")
         try:
             log(f"Result saved: {save_cache(result, self.cache_dir, log=log)}")
@@ -431,7 +453,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def load_contours(self):
         result = self.result
         self.log(f"=== Loading the contours of {len(result.image_paths)} SEM images")
-        self.run("Loading contours", lambda log, progress: read_contours(result, progress, log), self.show_contours)
+        pool = self.kept_helpers()
+        self.run("Loading contours", lambda log, progress: read_contours(result, progress, log, pool),
+                 self.show_contours)
 
     def show_contours(self, contours):
         self.contours = contours
@@ -492,6 +516,30 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.preferences.setValue("use_opengl", "true" if on else "false")
         if self.result is not None:
             self.show_result(self.result, self.failure)  # draw again with the new choice
+
+    def set_high_performance(self, on: bool):
+        """Analysis > High-performance mode (remembered, D151): on, the worker processes are kept after a run for the
+        next ones, with a warning of what that costs; off, the kept ones are ended."""
+        self.preferences.setValue("high_performance", "true" if on else "false")
+        if on:
+            QtWidgets.QMessageBox.warning(self, TITLE, HIGH_PERFORMANCE_WARNING.format(workers=worker_count()))
+        else:
+            self.stop_helpers()
+
+    def kept_helpers(self):
+        """The worker processes for a run: in high-performance mode the kept ones (made at the first run that needs
+        them; they start as the first tiles are handed to them); else None, and the run starts its own."""
+        if not self.speed_action.isChecked():
+            return None
+        if self.helpers is None:
+            self.helpers = helper_pool()
+        return self.helpers
+
+    def stop_helpers(self):
+        """End the kept worker processes: each finishes the tile in hand, the tiles not started are dropped."""
+        if self.helpers is not None:
+            self.helpers.shutdown(wait=False, cancel_futures=True)
+            self.helpers = None
 
     # --- updates (update.py) -----------------------------------------------------------------------
     def check_for_update(self, quiet: bool = True):
@@ -616,6 +664,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def _job_failed(self, text: str, error: Exception):
         self.busy = False
         self.log(text)
+        if isinstance(error, BrokenProcessPool) and self.helpers is not None:  # a kept worker ended (D151)
+            self.stop_helpers()
+            self.log("!! The kept worker processes stopped working: the next run starts new ones")
         if isinstance(error, AnalysisFailed):  # stopped after the stitching: show what it found
             self.images = self.design = self.contours = None  # those of the result shown before
             self.show_result(error.result, error)
@@ -634,6 +685,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.actions["parameters"].setEnabled(not self.busy)
         self.actions["contours"].setEnabled(not self.busy)
         self.size_action.setEnabled(not self.busy)
+        self.speed_action.setEnabled(not self.busy)  # the kept workers are made or ended only between runs
         if self.size_tab is not None:
             self.size_tab.update_state(self.busy)
         if self.result is not None:
@@ -661,6 +713,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.StandardButton.Yes:
             event.ignore()
             return
+        self.stop_helpers()
         event.accept()
 
 

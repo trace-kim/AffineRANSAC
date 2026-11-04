@@ -192,5 +192,9 @@ they open, flagged as outdated.
   loading is slow on a PC: when each worker process started and was ready, when each tile started, finished and came
   back, with the time of each step, and every 10 s of waiting the PC's CPU and memory in use. The results are
   unchanged (D149).
+- *Analysis → High-performance mode* (off by default, with a warning when turned on): the worker processes that load
+  the tiles are kept after the first run, so the next runs and *Load contours* start at once, instead of starting
+  new workers, which takes over a minute on some PCs. They stay in memory until MaskReg closes or the mode is turned
+  off, and end themselves if MaskReg crashes. The results are unchanged (D151).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

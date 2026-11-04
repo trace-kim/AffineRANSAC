@@ -21,9 +21,12 @@ The AnalysisResult holds what the analysis window shows (view_analysis.analysis_
 `log` receives what the notebooks print (counts, failures).
 """
 
+import multiprocessing
 import os
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, wait
+from contextlib import nullcontext
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Callable
@@ -424,10 +427,26 @@ HEARTBEAT_S = 10.0  # detailed loading log: a status line after every this long 
 _worker_ready_at = None  # in a worker process: when it was ready for its first tile (time.time())
 
 
+def helper_pool() -> ProcessPoolExecutor:
+    """The worker processes for the tile work (load_image_tiles, release.analysis.read_contours): worker_count() of
+    them, started as the first tiles are handed to them; each ends itself if the process that started it ends (D151)."""
+    return ProcessPoolExecutor(max_workers=worker_count(), initializer=_worker_ready)
+
+
 def _worker_ready():
-    """Run by each tile-loading worker once it has started, before its first tile: when it was ready."""
+    """Run by each tile-loading worker once it has started, before its first tile: when it was ready; and a thread
+    that ends the worker once the process that started it has ended (D151: a worker MaskReg keeps for later runs
+    would otherwise outlive a MaskReg that crashed or was ended in Task Manager)."""
     global _worker_ready_at
     _worker_ready_at = time.time()
+    threading.Thread(target=_end_with_parent, daemon=True).start()
+
+
+def _end_with_parent():
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        parent.join()  # returns once the parent process has ended, however it ended
+        os._exit(0)
 
 
 def _process_tile(arguments: tuple, options: dict) -> tuple[TileResult, tuple]:
@@ -445,15 +464,17 @@ def _step_times(tile: TileResult) -> str:
 
 
 def load_image_tiles(records: list, settings: Settings, log: Callable[[str], None] = print,
-                     progress: Callable[[int, int], None] | None = None,
-                     detailed: bool = False) -> tuple[list[str], list[TileResult]]:
+                     progress: Callable[[int, int], None] | None = None, detailed: bool = False,
+                     pool: ProcessPoolExecutor | None = None) -> tuple[list[str], list[TileResult]]:
     """The tile ids and loaded tiles (process_tile) of an image folder's records, after the checks (settings,
     records, sample tiles matched to their design). progress(done, total) after every tile.
     settings.realign: the design is read without matching, then the tiles are realigned
     (realign.realign_tiles) before the flagged tiles are counted.
     detailed: also log when each tile was loaded and how long each step took, when each worker started, and while
     waiting a status line every HEARTBEAT_S with the machine's CPU and memory (D149). The time in these lines,
-    "+12.3 s", is since the loading began, measured where the line was made."""
+    "+12.3 s", is since the loading began, measured where the line was made ("-80.0 s": before it began).
+    pool: worker processes to use and leave running (helper_pool; MaskReg's high-performance mode keeps them for later
+    runs, D151); None: new ones, ended after the loading."""
     s = settings
     layer = (s.layer, s.datatype)
     check_settings(s, "images")
@@ -479,7 +500,7 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     machine = MachineLoad()  # the CPU in use since then, then since each status line
 
     def since(t: float) -> str:
-        return f"+{t - began:.1f} s"
+        return f"{t - began:+.1f} s"
 
     loaded = {}
     for k in sample:
@@ -500,14 +521,15 @@ def load_image_tiles(records: list, settings: Settings, log: Callable[[str], Non
     rest = [k for k in range(len(records)) if k not in loaded]
     done = len(loaded)
     workers = worker_count()
-    log(f"Loading the other {len(rest)} tiles in {workers} worker processes")
+    log(f"Loading the other {len(rest)} tiles in {workers} worker processes"
+        + ("" if pool is None else ", kept running for later runs"))
     if detailed:
         log(f"{since(time.time())}: {os.cpu_count()} logical CPUs; in each process {cv2.getNumThreads()} OpenCV "
             f"threads, OPENBLAS_NUM_THREADS {os.environ.get('OPENBLAS_NUM_THREADS', 'not set')}; {machine.text()}")
     back = {}  # tile -> when its result reached this process
     seen = set()  # the workers whose start was logged
     pool_started = time.time()
-    with ProcessPoolExecutor(max_workers=workers, initializer=_worker_ready) as pool:
+    with helper_pool() if pool is None else nullcontext(pool) as pool:  # a pool given is left running
         futures = [pool.submit(_process_tile, arguments(records[k]), options) for k in rest]
         for k, future in zip(rest, futures):
             future.add_done_callback(lambda _, k=k: back.setdefault(k, time.time()))
