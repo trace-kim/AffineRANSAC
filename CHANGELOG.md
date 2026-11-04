@@ -196,5 +196,7 @@ they open, flagged as outdated.
   the tiles are kept after the first run, so the next runs and *Load contours* start at once, instead of starting
   new workers, which takes over a minute on some PCs. They stay in memory until MaskReg closes or the mode is turned
   off, and end themselves if MaskReg crashes. The results are unchanged (D151).
+- A *Cancel* button beside the progress bar stops the analysis, download or loading in progress, once the tiles or
+  file in hand are done. Nothing of it is shown or saved; what was shown stays. The results are unchanged (D152).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

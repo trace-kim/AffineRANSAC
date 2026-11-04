@@ -26,7 +26,8 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   remembered): area, xCD and yCD of every contact, measured on request on the tiles of the run, which an image run
   keeps in memory only while the tab is on. Detailed tile-loading log (off by default; remembered): an image run logs
   every tile, worker and wait of its tile loading, with the machine's CPU and memory, to find why it is slow (D149).
-- Status bar: the step being done, a progress bar with its percentage, and the time so far.
+- Status bar: the step being done, a progress bar with its percentage, the time so far, and Cancel (D152): the job
+  stops once the tiles or file in hand are done; nothing of it is shown or saved.
 - Updates (installed MaskReg only, update.py): at start a newer version is looked for in the background; if one is
   found the user is asked, and Yes installs it and restarts MaskReg. Help > Check for updates does the same on request.
 """
@@ -89,24 +90,46 @@ def opengl_works() -> bool:
         return False
 
 
+class Cancelled(BaseException):
+    """Raised in a job's thread at its next progress report once Cancel was pressed (D152). A BaseException, like
+    KeyboardInterrupt, so that no `except Exception` on its way out catches it."""
+
+
 class Job(QtCore.QObject):
     """Runs work(log, progress) in a background thread. Log lines (and the library's warnings) arrive as
     `message`, progress(fraction, stage) as `progress`, the return value as `done`, an error as `failed` (its
-    traceback and the exception), all in the GUI thread."""
+    traceback and the exception), all in the GUI thread. cancel(): the work's next progress report raises
+    Cancelled (the tile or file in hand is finished first), and `cancelled` arrives instead."""
     message = QtCore.Signal(str)
     progress = QtCore.Signal(float, str)
     done = QtCore.Signal(object)
     failed = QtCore.Signal(str, object)
+    cancelled = QtCore.Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.stop = threading.Event()
 
     def start(self, work):
+        self.stop.clear()
         threading.Thread(target=self._run, args=(work,), daemon=True).start()
+
+    def cancel(self):
+        self.stop.set()
+
+    def _progress(self, fraction: float, stage: str):
+        if self.stop.is_set():
+            raise Cancelled
+        self.progress.emit(fraction, stage)
 
     def _run(self, work):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("always")
                 warnings.showwarning = lambda message, *_: self.message.emit(f"Warning: {message}")
-                result = work(self.message.emit, self.progress.emit)
+                result = work(self.message.emit, self._progress)
+        except Cancelled:
+            self.cancelled.emit()
         except Exception as error:
             self.failed.emit(traceback.format_exc(), error)
         else:
@@ -132,7 +155,8 @@ class UpdateCheck(QtCore.QObject):
 
 
 class StatusBar(QtWidgets.QStatusBar):
-    """What is being done (step, progress bar with percentage, time so far), or when idle what is shown."""
+    """What is being done (step, progress bar with percentage, time so far, a Cancel button), or when idle what is
+    shown."""
 
     def __init__(self):
         super().__init__()
@@ -141,11 +165,13 @@ class StatusBar(QtWidgets.QStatusBar):
         self.bar.setRange(0, 1000)
         self.bar.setFormat("%p%")
         self.clock = QtWidgets.QLabel()
+        self.cancel_button = QtWidgets.QPushButton("Cancel", toolTip="Stop it. The tiles or file in hand finish first.")
         self.idle = QtWidgets.QLabel()
         self.addWidget(self.idle, 1)
         self.addWidget(self.stage, 1)
         self.addPermanentWidget(self.bar)
         self.addPermanentWidget(self.clock)
+        self.addPermanentWidget(self.cancel_button)
         self.started = 0.0
         self.timer = QtCore.QTimer(self, interval=500)
         self.timer.timeout.connect(self._tick)
@@ -155,10 +181,17 @@ class StatusBar(QtWidgets.QStatusBar):
         self.started = time.time()
         self.title = title
         self.idle.hide()
-        for widget in (self.stage, self.bar, self.clock):
+        for widget in (self.stage, self.bar, self.clock, self.cancel_button):
             widget.show()
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setText("Cancel")
         self.update_progress(0.0, "Starting")
         self.timer.start()
+
+    def cancelling(self):
+        """Cancel pressed: shown until the job has stopped (the clock keeps running)."""
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancelling...")
 
     def update_progress(self, fraction: float, stage: str):
         self.bar.setValue(round(1000 * min(max(fraction, 0.0), 1.0)))
@@ -171,7 +204,7 @@ class StatusBar(QtWidgets.QStatusBar):
 
     def set_idle(self, text: str):
         self.timer.stop()
-        for widget in (self.stage, self.bar, self.clock):
+        for widget in (self.stage, self.bar, self.clock, self.cancel_button):
             widget.hide()
         self.idle.setText(text)
         self.idle.show()
@@ -256,6 +289,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.job.progress.connect(self.status.update_progress)
         self.job.done.connect(self._job_done)
         self.job.failed.connect(self._job_failed)
+        self.job.cancelled.connect(self._job_cancelled)
+        self.status.cancel_button.clicked.connect(self.cancel_job)
         self.update_check = UpdateCheck()
         self.update_check.done.connect(self._update_checked)
         self.update_check.failed.connect(self._update_check_failed)
@@ -669,6 +704,23 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         self.update_actions()
         last = text.strip().splitlines()[-1]  # "SomeError: message"; the log has the whole traceback
         QtWidgets.QMessageBox.critical(self, TITLE, last.partition(": ")[2] or last)
+        self.offer_update()
+
+    def cancel_job(self):
+        """The status bar's Cancel (D152): the job stops at its next progress report, once the tiles or file in hand
+        are done; until then the button says so."""
+        if self.busy:
+            self.job.cancel()
+            self.status.cancelling()
+
+    def _job_cancelled(self):
+        """The job stopped on Cancel: nothing of it is shown or saved; what was shown before stays."""
+        self.busy = False
+        self.folder = None if self.result is None else self.result.folder  # Restart analysis: the folder shown
+        text = f"{self.status.title}: cancelled"
+        self.log(text)
+        self.status.set_idle(text)
+        self.update_actions()
         self.offer_update()
 
     def update_actions(self):

@@ -1538,6 +1538,55 @@ def test_high_performance_mode_replaces_kept_workers_that_stopped_working_and_en
         kept.submit(int)
 
 
+def test_cancel_stops_a_run_saves_nothing_and_the_next_run_works(tmp_path, monkeypatch):
+    """D152: Cancel in the status bar during the tile loading: the run stops (no error box), nothing is shown or
+    saved, the status bar and log say it was cancelled; opening the folder again analyses it."""
+    records = write_image_folder(tmp_path)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: records)
+    failed = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda *args: failed.append(args[2]))
+    window = make_window(tmp_path)
+    window.preferences.setValue("settings", '{"layer": 1, "datatype": 0, "detection": "otsu"}')
+    assert window.status.cancel_button.isHidden()
+
+    window.open_folder(str(tmp_path))
+    assert not window.status.cancel_button.isHidden()
+    end = time.time() + 60
+    while "Loading tile" not in window.status.stage.text() and time.time() < end:
+        pg.mkQApp().processEvents()
+        time.sleep(0.01)
+    window.cancel_job()
+    assert window.status.cancel_button.text() == "Cancelling..." and not window.status.cancel_button.isEnabled()
+    wait(window)
+    assert failed == [] and window.result is None and not (tmp_path / CACHE_NAME).exists()
+    assert window.status.idle.text() == f"Opening {tmp_path.name}: cancelled" and window.status.cancel_button.isHidden()
+    assert f"Opening {tmp_path.name}: cancelled" in window.log_view.toPlainText()
+    assert not window.actions["restart"].isEnabled()  # nothing shown, so nothing to restart
+
+    window.open_folder(str(tmp_path))
+    wait(window)
+    assert failed == [] and window.result is not None and (tmp_path / CACHE_NAME).is_file()
+    window.close()
+
+
+def test_load_contours_stopped_by_its_progress_reads_no_more_tiles(tmp_path, monkeypatch):
+    """D152: when progress raises (MaskReg's Cancel), the tiles not started are dropped at once (one worker: the tile
+    done and at most the one in hand of the 4 are read). Not left to the garbage collector: with pool.map they were
+    dropped only once nothing held the traceback, so a pool shut down on the way out (normal mode) read them all."""
+    from concurrent.futures import ThreadPoolExecutor
+    from affine_ransac.release import analysis as release_analysis
+    records = write_image_folder(tmp_path)
+    result = analyse_folder(tmp_path, "images", IMAGE_SETTINGS, records, log=lambda line: None)
+    read, original = [], release_analysis._tile_contours
+    monkeypatch.setattr(release_analysis, "_tile_contours", lambda *args: read.append(1) or original(*args))
+
+    def stop(fraction, stage):
+        raise release_app.Cancelled
+    with ThreadPoolExecutor(1) as pool, pytest.raises(release_app.Cancelled) as stopped:  # traceback kept
+        read_contours(result, stop, pool=pool)
+    assert stopped.traceback and len(read) <= 2
+
+
 def test_the_contact_size_tab_is_hidden_until_turned_on_and_measures_on_the_tiles_of_a_run(tmp_path, monkeypatch):
     records = write_image_folder(tmp_path)
     monkeypatch.setattr(release_app, "image_records", lambda folder: records)

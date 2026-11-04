@@ -24,7 +24,6 @@ import re
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
-from itertools import repeat
 from pathlib import Path
 from typing import Callable
 
@@ -447,25 +446,31 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     centres it used (the refined ones; the detected ones with refinement none; with the run's in-image map removed,
     if it had one) must be the run's; tiles where they are not (an image changed since the run?) are logged with !!.
     The contours and centres returned are the detection's, without the map: they lie on the image.
-    pool: the worker processes to use, left running (high-performance mode, D151); None: new ones."""
+    pool: the worker processes to use, left running (high-performance mode, D151); None: new ones. If progress raises
+    (MaskReg's Cancel, D152), the tiles not started are dropped."""
     s = result.settings
     arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
     with helper_pool() if pool is None else nullcontext(pool) as pool:  # a pool given is left running
-        found_all = pool.map(_tile_contours, arguments, repeat(contour_options(s)))
-        for k, (found, moved, found_centres, moved_centres) in enumerate(found_all):
-            used = moved_centres + result.centers[k]
-            if result.intrafield is not None:  # the run stitched its centres with the map removed (D141)
-                used = correct_points(used, result.centers[k], result.intrafield)
-            if used.shape != result.sem_points[k].shape or not np.allclose(used, result.sem_points[k], atol=0.01):
-                differ.append(result.tile_ids[k])
-            tiles.append(np.full(len(found), k))
-            detected += found
-            refined += moved
-            detected_centres.append(found_centres)
-            refined_centres.append(moved_centres)
-            progress((k + 1) / len(arguments), f"Contours of tile {k + 1} of {len(arguments)}")
+        futures = [pool.submit(_tile_contours, a, contour_options(s)) for a in arguments]
+        try:
+            for k, future in enumerate(futures):
+                found, moved, found_centres, moved_centres = future.result()
+                used = moved_centres + result.centers[k]
+                if result.intrafield is not None:  # the run stitched its centres with the map removed (D141)
+                    used = correct_points(used, result.centers[k], result.intrafield)
+                if used.shape != result.sem_points[k].shape or not np.allclose(used, result.sem_points[k], atol=0.01):
+                    differ.append(result.tile_ids[k])
+                tiles.append(np.full(len(found), k))
+                detected += found
+                refined += moved
+                detected_centres.append(found_centres)
+                refined_centres.append(moved_centres)
+                progress((k + 1) / len(arguments), f"Contours of tile {k + 1} of {len(arguments)}")
+        finally:
+            for future in futures:
+                future.cancel()  # after an error or a cancel (MaskReg, D152), the tiles not started are not read
     if differ:
         log(f"!! The contours of {len(differ)} tile(s) do not give the centres of the run (an image changed since the "
             f"run?): {differ}")
