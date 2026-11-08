@@ -1774,3 +1774,12 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
     - *Questions for the vendor:* how is each clip's origin chosen (planned site, stage
       reading, or alignment to the image)? Is the clip aligned to the image (pattern matching)?
       Is it rotated/scaled with the image (scan rotation, pixel-size calibration)?
+14. **Line & space datasets (next, 2026-11-08): the facts the method needs.** Proposal and principles in
+    `docs/notes/2026-11-08-line-space-method.html` (edges with the direction they face; across the lines
+    measured and placed image by image, along the lines from the stage; whole pitches harmless as in D105;
+    edge roughness as an optional fingerprint). Not built. To ask before building: pitch, line and space
+    widths (equal?), line tone (dark/bright); pixel size, image size, overlap widths within and between
+    stripes; whether anything in the measured area breaks the repetition (line ends, width changes, marks,
+    missing lines); whether the `.oas` clips hold rectangles cut at the FOV; the largest stage error and
+    whether consecutive images drift by more than half a pitch; the wanted output per line (one across
+    error per image, or a profile along the line).
