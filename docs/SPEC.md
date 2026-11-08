@@ -1774,10 +1774,14 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
     - *Questions for the vendor:* how is each clip's origin chosen (planned site, stage
       reading, or alignment to the image)? Is the clip aligned to the image (pattern matching)?
       Is it rotated/scaled with the image (scan rotation, pixel-size calibration)?
-14. **Line & space datasets (next, 2026-11-08): the facts the method needs.** Proposal and principles in
+14. **Line & space datasets (next, 2026-11-08): the facts the method needs.** Implementation plan for a fresh session in
+    `docs/notes/2026-11-08-line-space-plan.md`; proposal and principles in
     `docs/notes/2026-11-08-line-space-method.html` (edges with the direction they face; across the lines
-    placed image by image, the row between neighbours decided from the overlap: the residuals of the lines seen
-    twice, then the edge roughness, tied → smallest correction, logged; a row offset of the whole mosaic against
+    placed image by image, the row between neighbours decided from the overlap: the roughness correlation of
+    the paired edges over the along-line lag, which also gives the position along the lines; with no clear
+    peak, the residuals of the lines seen twice as in D144, the along position then from the stage; tied
+    → smallest correction, logged (order corrected by the user, 2026-11-08; the page still shows the old
+    order, the plan wins); a row offset of the whole mosaic against
     the design is harmless as in D105, a slip between neighbours is not, it averages different lines' errors in
     the overlap (user's review, 2026-11-08); along the lines from the stage, for lack of anything else). Not built. To ask before building: pitch, line and space
     widths (equal?), line tone (dark/bright); pixel size, image size, overlap widths within and between
