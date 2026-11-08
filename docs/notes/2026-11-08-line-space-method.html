@@ -95,7 +95,7 @@ ul.q li { margin: .5rem 0; }
 </head>
 <body>
 <main>
-<div class="eyebrow">Proposal · 8 November 2026 · for the release app</div>
+<div class="eyebrow">Proposal · 8 November 2026 · revised the same day after review · for the release app</div>
 <h1>Stitching Lines and Spaces</h1>
 <p class="sub">How to stitch and measure patterns whose features do not close inside the image, with one rule that covers lines at any angle and contact holes alike.</p>
 
@@ -103,9 +103,9 @@ ul.q li { margin: .5rem 0; }
 <h2>In short</h2>
 <ol>
 <li><strong>An edge only tells you where it is across itself.</strong> A hole's edges face every way, so a hole gives a position in both directions. A line's edges face one way, so a line gives one. The general feature is an edge piece together with the direction it faces.</li>
-<li><strong>What the edges cannot give, the stage gives.</strong> On horizontal lines the program measures y from the edges and takes x from the stage. The stage error only moves the label "where along the line", never the value.</li>
-<li><strong>Across the lines a whole pitch off is harmless.</strong> The pairing with the design follows the placement, and the design is ideal, so an image one row off reports the same errors. Fractions of a pitch are the only danger, and placing one image at a time rules them out.</li>
-<li><strong>The fingerprint is the edge roughness, not defects.</strong> Two pictures of the same edge show the same wiggles. Where they are above the noise they lock the position along the line and the row. Optional: without them nothing in the values is lost.</li>
+<li><strong>What the edges cannot give, the stage gives, because nothing else can.</strong> On horizontal lines the program measures y from the edges and takes x from the stage. The stage error becomes the uncertainty of where along each line an error is reported, not of the error itself.</li>
+<li><strong>One row off is harmless for the whole mosaic against the design, and harmful between two neighbouring images.</strong> Between neighbours it averages the errors of different lines in their overlap and biases the slipped image. So the row between neighbours is decided from the overlap itself: the lines seen twice agree at the right row and disagree one row off; where that does not decide, the edge roughness does; where neither does, the smallest correction is taken and logged as tied. Fractions of a pitch are ruled out by placing one image at a time.</li>
+<li><strong>The fingerprint is the edge roughness, not defects.</strong> Two pictures of the same edge show the same wiggles, and the next line has its own. Where the wiggles are above the noise they settle the row and the position along the line. It is part of the row decision, not an extra.</li>
 <li><strong>Holes are the special case</strong> where the edges face every way, so today's method stays as it is.</li>
 </ol>
 </section>
@@ -139,7 +139,7 @@ ul.q li { margin: .5rem 0; }
 <figcaption>Two images of one stripe over horizontal lines. In the overlap the edges of a few lines are seen twice. They say how far image 2 sits from image 1 across the lines, but every row looks like the next, so only up to whole pitches. Sliding an image along the lines changes nothing in the picture, so nothing can be measured there.</figcaption>
 </figure>
 <p>Your three concerns are these two facts, plus the question of what to do about them. The lines running out of the image make the position along them unmeasurable. The rows looking alike make the position across them ambiguous by whole pitches. And the edges, if the lines are well formed, carry no obvious landmarks.</p>
-<p>The proposal below does not fight the two facts. It measures exactly what the edges allow, states openly what it takes from the stage, and shows that neither the missing direction nor the whole pitches change a single error value.</p>
+<p>The proposal below does not fight the two facts. It measures exactly what the edges allow, states openly what it takes from the stage, and separates the row question that is harmless, the whole mosaic against the design, from the one that is not, two neighbours against each other, which it decides from the overlap itself.</p>
 
 <h2>2. Rule 1: an edge only tells you where it is across itself</h2>
 <figure>
@@ -191,7 +191,7 @@ ul.q li { margin: .5rem 0; }
 <p>So the general feature is <span class="key">an edge piece with the direction it faces</span>. A contact hole's outline closes, its edges face every way, and its centre is determined in both directions. That is today's method. A line's two edges face one axis, so the line's position is determined across it only. A line end, a jog or a corner adds the other direction wherever it appears, with no special treatment.</p>
 <p>One more thing the picture shows: a handful of lines is not little information. One line edge across a 3 µm wide overlap is sampled at every pixel column, which is thousands of measurements of its position across. That is more than a whole row of contacts gives, in one direction.</p>
 
-<h2>3. Rule 2: what the edges cannot give, the stage gives, and it costs nothing</h2>
+<h2>3. Rule 2: what the edges cannot give, the stage gives, because nothing else can</h2>
 <figure>
 <svg viewBox="0 0 680 250" role="img" aria-label="The same image drawn where the stage put it and slid along the line by the stage error. The error across the line is the same number in both.">
 <defs>
@@ -216,8 +216,8 @@ ul.q li { margin: .5rem 0; }
 </svg>
 <figcaption>The measured line (solid) against the design line (dashed). Whether the image sits where the stage says or further along, the error across the line is the same number. Only the label "where along the line it was measured" moves, by the stage error.</figcaption>
 </figure>
-<p>Since sliding the image along a perfect line changes nothing, the program takes the position along the lines <span class="stg">from the stage</span>, says so in the log, and measures everything across the lines from the edges. The stage error, tens of nanometres, only moves the place on the map where a line's error is reported, on a map that spans millimetres.</p>
-<p>The same holds at the level of the global fit. On horizontal lines the fit can measure the shift in y, the magnification in y and the tilt of the lines, because the lines' positions are known across many images in both directions of the mosaic. The shift in x, the magnification in x and the tilt of the x axis are not measurable, and the report should say "not measured" rather than show a zero. By my estimate, not measured, a stage error of tens of nanometres in the position of an image changes the measurable terms by far less than their own uncertainty, since the lever arm it alters is millimetres long.</p>
+<p>Nothing in the picture can give the position of an image along a perfect line, so the program takes it <span class="stg">from the stage</span>, for lack of anything else, and says so in the log. What this costs is stated, not waved away: the stage error, tens of nanometres by your figures, is then the uncertainty of where along each line an error is reported, on maps that span tens to hundreds of micrometres. The error values themselves do not change, because sliding along a straight line changes no measurement. Where the edge roughness is clear (Rule 4), the position along the line comes from the pictures instead, and the stage is only the starting guess.</p>
+<p>The same holds at the level of the global fit. On horizontal lines the fit can measure the shift in y, the magnification in y and the tilt of the lines, because the lines' positions across are known throughout the mosaic. The shift in x, the magnification in x and the tilt of the x axis are not measurable, and the report should say "not measured" rather than show a zero. A stage error along the lines enters the measurable terms only multiplied by the tilt, the product of two small numbers, which by my estimate, not measured, is far below their own uncertainty.</p>
 <div class="tablewrap">
 <table>
 <thead><tr><th>Pattern</th><th>Measured per image, from the edges</th><th>Of the six affine numbers</th><th>Taken from the stage</th></tr></thead>
@@ -232,42 +232,38 @@ ul.q li { margin: .5rem 0; }
 </div>
 <p class="note">With lines in one direction only, the tilt the fit measures is the tilt of those lines. Whether it is a rotation of the whole pattern or a loss of orthogonality cannot be told from one direction of lines; that needs the other direction too.</p>
 
-<h2>4. Rule 3: across the lines, a whole pitch off is harmless</h2>
+<h2>4. Rule 3: across the lines, which row question is harmless and which is not</h2>
 <figure>
-<svg viewBox="0 0 680 270" role="img" aria-label="Left: an image placed at the right row, each line's error against its design line. Right: the same image placed one row too high; the pairing follows, and every error is the same number.">
-<defs>
-<marker id="a4s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-sem"/></marker>
-</defs>
-<text x="140" y="10" text-anchor="middle" class="lbl">placed at the right row</text>
-<g class="des-band">
-<rect x="30" y="32" width="220" height="16" class="faded"/><rect x="30" y="82" width="220" height="16"/><rect x="30" y="132" width="220" height="16"/><rect x="30" y="182" width="220" height="16"/><rect x="30" y="232" width="220" height="16"/>
-</g>
-<rect x="24" y="68" width="232" height="190" class="frame"/>
-<g class="sem-band">
-<rect x="30" y="76" width="220" height="16"/><rect x="30" y="136" width="220" height="16"/><rect x="30" y="180" width="220" height="16"/><rect x="30" y="232" width="220" height="16"/>
-</g>
-<line x1="270" y1="90" x2="270" y2="84" class="sem-stroke" marker-end="url(#a4s)"/><text x="280" y="92" class="lbl-sem mono">+6</text>
-<line x1="270" y1="140" x2="270" y2="144" class="sem-stroke" marker-end="url(#a4s)"/><text x="280" y="146" class="lbl-sem mono">−4</text>
-<line x1="270" y1="190" x2="270" y2="188" class="sem-stroke" marker-end="url(#a4s)"/><text x="280" y="193" class="lbl-sem mono">+2</text>
-<line x1="266" y1="240" x2="274" y2="240" class="sem-stroke"/><text x="280" y="244" class="lbl-sem mono">0</text>
-<text x="480" y="10" text-anchor="middle" class="lbl">placed one row too high</text>
-<g class="des-band">
-<rect x="370" y="32" width="220" height="16"/><rect x="370" y="82" width="220" height="16"/><rect x="370" y="132" width="220" height="16"/><rect x="370" y="182" width="220" height="16"/><rect x="370" y="232" width="220" height="16" class="faded"/>
-</g>
-<rect x="364" y="20" width="232" height="188" class="frame"/>
-<g class="sem-band">
-<rect x="370" y="26" width="220" height="16"/><rect x="370" y="86" width="220" height="16"/><rect x="370" y="130" width="220" height="16"/><rect x="370" y="182" width="220" height="16"/>
-</g>
-<line x1="610" y1="40" x2="610" y2="34" class="sem-stroke" marker-end="url(#a4s)"/><text x="620" y="42" class="lbl-sem mono">+6</text>
-<line x1="610" y1="90" x2="610" y2="94" class="sem-stroke" marker-end="url(#a4s)"/><text x="620" y="96" class="lbl-sem mono">−4</text>
-<line x1="610" y1="140" x2="610" y2="138" class="sem-stroke" marker-end="url(#a4s)"/><text x="620" y="143" class="lbl-sem mono">+2</text>
-<line x1="606" y1="190" x2="614" y2="190" class="sem-stroke"/><text x="620" y="194" class="lbl-sem mono">0</text>
+<svg viewBox="0 0 680 310" role="img" aria-label="Two neighbouring images over the same lines. Stitched at the right row, the lines seen twice agree and the merged errors are the true ones. Stitched one row off, the pairs join different lines, which disagree, and the merged errors in the overlap are averages that look nothing like the truth.">
+<text x="170" y="24" text-anchor="middle" class="lbl">neighbours at the right row</text>
+<text x="94" y="44" text-anchor="middle" class="lbl-s">image 1</text><text x="204" y="44" text-anchor="middle" class="lbl-s">image 2</text><text x="306" y="44" text-anchor="middle" class="lbl-s">merged</text>
+<g class="des-line"><line x1="44" y1="70" x2="290" y2="70"/><line x1="44" y1="110" x2="290" y2="110"/><line x1="44" y1="150" x2="290" y2="150"/><line x1="44" y1="190" x2="290" y2="190"/><line x1="44" y1="230" x2="290" y2="230"/></g>
+<rect x="44" y="50" width="100" height="160" class="frame"/>
+<g class="sem-band"><rect x="48" y="56" width="92" height="10"/><rect x="48" y="111" width="92" height="10"/><rect x="48" y="142" width="92" height="10"/><rect x="48" y="185" width="92" height="10"/></g>
+<g class="lbl-sem mono" text-anchor="end"><text x="40" y="65">+6</text><text x="40" y="120">−4</text><text x="40" y="151">+2</text><text x="40" y="194">0</text></g>
+<rect x="154" y="90" width="100" height="160" class="frame"/>
+<g class="sem-band"><rect x="158" y="111" width="92" height="10"/><rect x="158" y="142" width="92" height="10"/><rect x="158" y="185" width="92" height="10"/><rect x="158" y="228" width="92" height="10"/></g>
+<g class="lbl-sem mono"><text x="258" y="120">−4</text><text x="258" y="151">+2</text><text x="258" y="194">0</text><text x="258" y="237">−2</text></g>
+<g class="lbl-sem mono"><text x="300" y="74">+6</text><text x="300" y="114">−4</text><text x="300" y="154">+2</text><text x="300" y="194">0</text><text x="300" y="234">−2</text></g>
+<text x="170" y="288" text-anchor="middle" class="lbl-sem">the lines seen twice agree</text>
+<text x="510" y="24" text-anchor="middle" class="lbl">image 2 stitched one row up</text>
+<text x="434" y="44" text-anchor="middle" class="lbl-s">image 1</text><text x="544" y="44" text-anchor="middle" class="lbl-s">image 2</text><text x="646" y="44" text-anchor="middle" class="lbl-s">merged</text>
+<g class="des-line"><line x1="384" y1="70" x2="630" y2="70"/><line x1="384" y1="110" x2="630" y2="110"/><line x1="384" y1="150" x2="630" y2="150"/><line x1="384" y1="190" x2="630" y2="190"/><line x1="384" y1="230" x2="630" y2="230"/></g>
+<rect x="384" y="50" width="100" height="160" class="frame"/>
+<g class="sem-band"><rect x="388" y="56" width="92" height="10"/><rect x="388" y="111" width="92" height="10"/><rect x="388" y="142" width="92" height="10"/><rect x="388" y="185" width="92" height="10"/></g>
+<g class="lbl-sem mono" text-anchor="end"><text x="380" y="65">+6</text><text x="380" y="120">−4</text><text x="380" y="151">+2</text><text x="380" y="194">0</text></g>
+<rect x="494" y="50" width="100" height="160" class="frame-stage"/>
+<g class="sem-band"><rect x="498" y="71" width="92" height="10"/><rect x="498" y="102" width="92" height="10"/><rect x="498" y="145" width="92" height="10"/><rect x="498" y="188" width="92" height="10"/></g>
+<g class="lbl-sem mono"><text x="598" y="80">−4</text><text x="598" y="111">+2</text><text x="598" y="154">0</text><text x="598" y="197">−2</text></g>
+<g class="lbl-stg mono"><text x="640" y="74">+1</text><text x="640" y="114">−1</text><text x="640" y="154">+1</text><text x="640" y="194">−1</text><text x="640" y="234">–</text></g>
+<text x="510" y="288" text-anchor="middle" class="lbl-stg">the lines paired disagree by 10, 6, 2, 2</text>
 </svg>
-<figcaption>Dashed: the design lines, one pitch apart. Solid: the measured lines of one image, each with its own error (made-up values). Left, the image placed at the right row. Right, the same image placed one row too high: each measured line is now paired with the design line above, and every error comes out the same. One line at the edge of the image changes partner; none changes value.</figcaption>
+<figcaption>Dashed: five design lines. Image 1 measures the first four with the errors +6, −4, +2, 0; image 2 measures the last four with −4, +2, 0, −2 (your example, in nm). Left: stitched at the right row, the three lines seen twice sit at the same positions and the merged errors are the true ones. Right: image 2 stitched one row up. The pairs now join different lines, which disagree by 10, 6, 2 and 2; the merged errors come out as +1, −1, +1, −1, nothing like the truth. The disagreement is also the evidence: at the right row it is the noise, one row off it is the difference between neighbouring lines' errors.</figcaption>
 </figure>
-<p>This is the rule you set for the realignment: the design is ideal by definition, so on a repeating pattern every whole-pitch offset gives the same errors, and only where on the mask they lie is unknown. For lines it holds exactly the same way, with two conditions. The pairing with the design must follow where the stitching put the image, which the release app has done since the pairing was moved after the stitching. And the design must actually repeat there.</p>
-<p>Where the design does not repeat, the content decides, as it does for contacts today: at the wrong row an image that sees a width change, a missing line, a mark or a line end has edges without a partner, and its best row is clear. Images that see nothing special are tied and take the smallest correction, nearest the stage position. So "skipping rows" is not something to prevent at any price. It is something to log, with the pitch and the number of images that were tied.</p>
-<h3>The one thing to prevent: fractions of a pitch</h3>
+<p>Two row questions look alike and are not. <strong>The whole mosaic against the design, one row off, is harmless.</strong> That is the rule you set for the realignment: the design is ideal, every image is paired one row off together, every error keeps its value, and only where on the mask it lies is unknown. <strong>Two neighbouring images against each other, one row off, is harmful</strong>, as your example shows and the first version of this page got wrong. In the overlap the merge averages the errors of different lines. The fitted offset between the two images absorbs the mean of the paired lines' disagreement, which shifts the slipped image, and every image chained to it, by that much. And the slipped image's errors are reported one row from where they belong. Pairing after the stitching repairs none of this.</p>
+<p>So the row between neighbours has to be decided, from the overlap itself, and it can be, because the quantity that does the harm is also the evidence. At the right row the lines seen twice agree to the floor the stitching residuals show anyway, the distortion and drift between two pictures of the same place. One row off they disagree by the difference between neighbouring lines' errors. The placement therefore ranks the candidate rows by the residual of their pairs, as the fingerprint method for contacts does, and here each "point" is a whole line averaged over its length, so the comparison is far sharper than with holes. Where the residuals do not decide, the roughness of the shared edges does (Rule 4): the next line has other wiggles. Where the overlap holds something that does not repeat, a width change, a missing line, a mark, a line end, the wrong rows also leave edges without a partner, as for contacts today.</p>
+<p>Where none of this decides, the smallest correction is taken, nearest the stage position, and the image is logged as tied. That is not harmless; it is the most that can be done, and its cost is bounded: a slip that the residuals cannot see averages errors that differ by less than the stitching can resolve. Whether your masks leave many images tied depends on how much neighbouring lines' errors differ and how clear the roughness is; the log will show both, as the contact fingerprint's log does now.</p>
+<h3>The second thing to prevent: fractions of a pitch</h3>
 <figure>
 <svg viewBox="0 0 680 270" role="img" aria-label="Left: four images in a square, each overlap choosing its whole-pitch term on its own; around the loop the choices add up to one pitch, which a joint solve spreads as fractions. Right: the images placed one at a time, the fourth against both placed neighbours at once, so the loop cannot contradict itself.">
 <defs>
@@ -296,7 +292,7 @@ ul.q li { margin: .5rem 0; }
 </svg>
 <figcaption>Left: when every overlap picks its whole-pitch term on its own and all overlaps are solved together, the picks can contradict each other around a loop, and the solve spreads the contradiction as fractions of a pitch over the images. That is what happened on the 50 nm contact data before the image-by-image placement. Right: placed one at a time against all placed neighbours at once, an image can only be whole pitches off, never a fraction.</figcaption>
 </figure>
-<p>So the across-the-lines stitching is the image-by-image placement that exists for contacts, in one dimension: candidates one pitch apart, the one that agrees best with the already placed neighbours' edges, ties to the smallest correction, and every overlap used only where it lines up at the placement, the rest left out and flagged.</p>
+<p>So the across-the-lines stitching is the image-by-image placement that exists for contacts, in one dimension: candidates one pitch apart; judged first by what the overlap does not repeat, then by the residual of the lines seen twice, then by the roughness of the shared edges; ties to the smallest correction, logged; and every overlap used only where it lines up at the placement, the rest left out and flagged.</p>
 
 <h2>5. Rule 4: the fingerprint is the roughness, not defects</h2>
 <figure>
@@ -321,14 +317,14 @@ ul.q li { margin: .5rem 0; }
 <figcaption>Every real edge wiggles. The wiggles are a property of the mask, so two pictures of the same edge show the same ones, while the noise differs. Slide B along A: where the wiggles coincide, the match peaks, and that is the offset along the line. The next line has its own wiggles, so no slide matches it: the row is told apart too.</figcaption>
 </figure>
 <p>Your contour idea works, with one change in what to look for. It does not need extrusions or intrusions. It needs the line-edge roughness that every mask edge has, typically a few nanometres (3σ) with wiggles tens of nanometres long. Those are typical figures, to be measured on your images; the program should print them. The same roughness is what the fingerprint stitching for contacts uses, except that there it is the placement scatter of the holes, and here each edge offers thousands of samples of it.</p>
-<p>By my estimate, not measured: the peak stands out when the roughness is at least comparable to the measurement noise per column and the common piece of edge is many wiggles long. Inside a stripe the overlap runs the whole width of the image, so each shared edge is long and the peak should be clear. Between stripes each line crosses the strip in a short piece, but many lines cross it, and the pieces add up; it may still work. Either way the program decides per overlap: only a peak clearly above every other slide counts. Where there is none, Rules 2 and 3 apply, and no value is harmed, because the fingerprint only improves the labels "where along the line" and "which row", which the values never depended on.</p>
+<p>By my estimate, not measured: the peak stands out when the roughness is at least comparable to the measurement noise per column and the common piece of edge is many wiggles long. Inside a stripe the overlap runs the whole width of the image, so each shared edge is long and the peak should be clear. Between stripes each line crosses the strip in a short piece, but many lines cross it, and the pieces add up; it may still work. Either way the program decides per overlap: only a peak clearly above every other slide counts. Where there is none, the row rests on the residuals of Rule 3 or, failing those, on the smallest correction, logged as tied, and the position along the line rests on the stage.</p>
 <p class="note">Correlating the raw pixels of the overlap instead would show the same thing: a ridge along the lines and repeats across them. Comparing the edge profiles puts the computation where the information is and leaves the brightness of the image out of it.</p>
 
 <h2>6. The method, step by step</h2>
 <ol class="steps">
-<li><strong>Find the edges.</strong> Threshold as today. A region that runs out of the frame along the lines is a line, not a reject. Each of its long edges becomes a feature: the direction it faces, its position across, found sub-pixel by the mid-level rule already in use, the stretch along the image it covers, and which side of it is the line. An edge closer to the frame, across, than the refinement reaches is left out, as a cut contact is today.</li>
+<li><strong>Find the edges.</strong> Threshold as today. A region that runs out of the frame along the lines is a line, not a reject. Each of its long edges becomes a feature: the direction it faces, its position across, found sub-pixel by the mid-level rule already in use, the stretch along the image it covers, which side of it is the line, and its profile along the image, kept for the row decision. An edge closer to the frame, across, than the refinement reaches is left out, as a cut contact is today.</li>
 <li><strong>Take the directions from the design.</strong> The rectangles in the design clip say which way the lines run, and image and design share their orientation. Horizontal, vertical or diagonal makes no difference to anything that follows: "across" means across that direction.</li>
-<li><strong>Place the images one at a time, across the lines.</strong> As in the image-by-image placement for contacts, in one dimension: the candidates are one pitch apart, the one agreeing best with the placed neighbours' edges wins, ties go to the smallest correction, or to the fingerprint when it is clear. Along the lines each image keeps its stage position, or takes the fingerprint's when clear. Every overlap is then paired at the placement; one that does not line up there is left out and flagged. The log says: placement along the lines from the stage, rows up to whole pitches, how many images were tied.</li>
+<li><strong>Place the images one at a time, across the lines.</strong> As in the image-by-image placement for contacts, in one dimension: the candidates are one pitch apart. A candidate must line up with the placed neighbours' edges; of those that do, the one whose pairs agree clearly best wins (the lines seen twice), then the one whose shared edges' roughness matches, then, tied, the smallest correction. Along the lines each image keeps its stage position, or takes the roughness match's when it is clear. Every overlap is then paired at the placement; one that does not line up there is left out and flagged. The log says per image how its row was decided, by the residuals, by the roughness, by content that does not repeat, or tied, and that the position along the lines came from the stage.</li>
 <li><strong>Pair with the design where the images were placed</strong>, as the release app does now: each measured edge with the nearest design edge facing the same way within the tolerance. Per line, where both edges are in view, the across error of its centre line and its width error; where one edge is in view, that edge's error, marked as such.</li>
 <li><strong>Fit what is measurable.</strong> The same robust fit as today, three random observations at a time and the 0.5 nm threshold, but each observation counts only across its edge. The fit solves the directions the edges face and leaves the others at their nominal values, named "not measured" in the report. Where lines of both directions or holes are present, that is all six numbers, as now.</li>
 <li><strong>Report across the lines.</strong> One across error per line per image on the map, arrows across the lines only, and width errors beside them. The moving window and the in-image formula take the same one-direction observations.</li>
@@ -338,14 +334,14 @@ ul.q li { margin: .5rem 0; }
 <p><strong>Contact holes.</strong> Yes, as the special case: the edges of a hole face every way, so the same rule gives both coordinates, and today's centre method stays untouched. Running holes through the edge path too would be possible later, but nothing needs it.</p>
 <p><strong>Diagonal lines.</strong> Yes. Nothing in the method names an axis. "Across" is the direction the edges face, and "from the stage" is the direction along them, at whatever angle.</p>
 <p><strong>Lines with ends, jogs, bends, or horizontal and vertical lines in one mosaic.</strong> Yes. Every edge piece contributes in the direction it faces, and the fit knows per image and for the mosaic which directions it has. Wherever both are present, nothing is taken from the stage.</p>
-<p><strong>Limits, stated plainly.</strong> On lines and spaces of equal width the picture cannot tell line from space; the tone setting must. On a perfectly repeating pattern the row, and so the place on the mask where an error lies, stays unknown up to whole pitches; that is a property of the pattern, not of the method. A drift across the lines of more than half a pitch between consecutive images makes the drift curves step by whole pitches; the values stay.</p>
+<p><strong>Limits, stated plainly.</strong> On lines and spaces of equal width the picture cannot tell line from space; the tone setting must. On a perfectly repeating pattern the row of the mosaic as a whole against the design, and so the place on the mask where an error lies, stays unknown up to whole pitches; that is a property of the pattern, not of the method. Between neighbours the row is decided from the overlap, and an image left tied is logged. A drift across the lines of more than half a pitch between consecutive images makes the drift curves step by whole pitches; the values stay.</p>
 
 <h2>8. What I would build first, and what I need to know</h2>
 <p>One small step at a time, each checked on your real images before the next, behind a setting that keeps today's contact method as the default:</p>
 <ol class="steps">
-<li>Line edges per image, shown in the contour diagnosis window, with the roughness and noise figures printed.</li>
-<li>The across-only placement of the images, with its log lines, shown on the Stitching tab.</li>
-<li>Pairing with the design, the one-direction fit and the report; the fingerprint only after step 1 has shown the roughness is above the noise.</li>
+<li>Line edges per image, shown in the contour diagnosis window, with the roughness and noise figures printed, so we know before step 2 how clearly the roughness can decide rows.</li>
+<li>The across-only placement of the images, with the row between neighbours decided by the residuals of the lines seen twice and by the roughness, and its log lines, shown on the Stitching tab.</li>
+<li>Pairing with the design, the one-direction fit and the report.</li>
 </ol>
 <p>What I need from you about the next dataset:</p>
 <ul class="q">

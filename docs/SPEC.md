@@ -1776,8 +1776,10 @@ LSQ refit, decomposition signs, degenerate-sample rejection, and one-to-one matc
       Is it rotated/scaled with the image (scan rotation, pixel-size calibration)?
 14. **Line & space datasets (next, 2026-11-08): the facts the method needs.** Proposal and principles in
     `docs/notes/2026-11-08-line-space-method.html` (edges with the direction they face; across the lines
-    measured and placed image by image, along the lines from the stage; whole pitches harmless as in D105;
-    edge roughness as an optional fingerprint). Not built. To ask before building: pitch, line and space
+    placed image by image, the row between neighbours decided from the overlap: the residuals of the lines seen
+    twice, then the edge roughness, tied → smallest correction, logged; a row offset of the whole mosaic against
+    the design is harmless as in D105, a slip between neighbours is not, it averages different lines' errors in
+    the overlap (user's review, 2026-11-08); along the lines from the stage, for lack of anything else). Not built. To ask before building: pitch, line and space
     widths (equal?), line tone (dark/bright); pixel size, image size, overlap widths within and between
     stripes; whether anything in the measured area breaks the repetition (line ends, width changes, marks,
     missing lines); whether the `.oas` clips hold rectangles cut at the FOV; the largest stage error and
