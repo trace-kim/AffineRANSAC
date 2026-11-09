@@ -5,6 +5,8 @@
   neither tone matches are flagged (DesignContacts.ok).
 - find_contacts(): the SEM contacts of one image (detection, contrast check, edge refinement), as process_tile and
   the release's contour diagnosis find them.
+- find_lines(): the edges of the horizontal lines of one image, the same way (D153; so far only the contour diagnosis
+  uses it).
 - stitch_design(): the same for the per-tile design files, which can be offset against each
   other (the same contact drawn at different positions in neighbouring .oas files).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
@@ -37,6 +39,7 @@ from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts,
                                             detect_contacts, flatten_background, in_image_pixels, keep_contacts,
                                             upscaled_image)
 from affine_ransac.features.edges import RULES, refine_edges
+from affine_ransac.features.lines import LineEdges, detect_lines, in_image_lines, refine_line_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
 from affine_ransac.geometry.polygon import contact_sizes, polygon_centroid
 from affine_ransac.io.design import contact_outlines, load_layout, read_contacts, read_contacts_tone_reversed
@@ -254,6 +257,37 @@ def find_contacts(
     if seconds is not None:
         seconds.update(detect=t_detect - t_start, refine=time.perf_counter() - t_detect)
     return in_image_pixels(detected, f), in_image_pixels(refined, f), found - len(detected.centers)
+
+
+def find_lines(
+    image: np.ndarray,
+    *,  # by name only
+    background_px: float = 0.0,
+    denoise: str = "none",
+    median_px: int = 3,
+    nlm_h: float = 10.0,
+    tv_weight: float = 0.1,
+    upscale: int = 1,
+    detection: str = "otsu",
+    dark_contacts: bool = True,
+    detection_blur_px: float = 1.5,
+    refinement: str = "mid-level",
+    search_px: float = 5.0,
+    edge_step_px: float = 0.25,
+    edge_blur_px: float = 1.0,
+) -> tuple[LineEdges, LineEdges]:
+    """The horizontal lines of one SEM image (uint8), as find_contacts finds contacts (D153): (detected, refined),
+    each edge at every column of the image, in its own pixels (features.lines). The options are the contour settings
+    of the same names (analysis.LINE_SETTINGS); dark_contacts: the lines are darker than the spaces. On
+    prepared_image, upscaled `upscale` times, the options in pixels multiplied by it, as for contacts; refinement
+    "none": the detected edges."""
+    image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
+    f = upscale
+    big = upscaled_image(image, f)
+    detected = detect_lines(big, dark_contacts, detection_blur_px * f, detection)
+    refined = detected if refinement == "none" else refine_line_edges(
+        big, detected, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement)
+    return in_image_lines(detected, f), in_image_lines(refined, f)
 
 
 def process_tile(

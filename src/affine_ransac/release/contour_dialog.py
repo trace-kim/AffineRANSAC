@@ -8,6 +8,8 @@ D132, and upscaled, D131, if asked), with the contacts the settings find in it, 
 contact). One line says in words how many contacts were found and why the other regions were left out. Every change of
 a setting finds them again, in a background thread, for the newest settings only. Apply to parameters: values() gives
 the settings with those shown, which the app keeps for the next run; Cancel leaves the parameters as they were.
+With PATTERN lines (D153) it finds horizontal lines instead (pipeline.find_lines): the contour layers draw their
+detected and refined edges, and the line says how many lines were found, their edge roughness and the noise per column.
 
 Coordinates are the pixel frame: (x, y) px, y down, pixel centres at whole numbers (docs/SPEC.md §3).
 """
@@ -21,16 +23,18 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import CHOICES, Settings, check_settings, contour_options
+from affine_ransac.analysis import CHOICES, LINE_SETTINGS, Settings, check_settings, contour_options, line_options
 from affine_ransac.app import editor, editor_value
 from affine_ransac.features.contact import DetectedContacts, contact_mask, upscaled_image
+from affine_ransac.features.lines import LineEdges, column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import find_contacts, prepared_image
+from affine_ransac.pipeline import find_contacts, find_lines, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
 
-GROUPS = (("Pre-processing", ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale")),
+GROUPS = (("Pattern", ("pattern",)),
+          ("Pre-processing", ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale")),
           ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
                                         "max_area_px", "min_solidity", "min_contrast")),
           ("Edge refinement", ("refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")))
@@ -48,8 +52,8 @@ NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these s
 class Diagnosis:
     """What the window shows of one image with one set of settings."""
     image: np.ndarray           # the image the contacts are found in (pipeline.prepared_image; upscaled: more pixels)
-    detected: DetectedContacts  # after the contrast check
-    refined: DetectedContacts   # what the run measures (refinement none: the detected ones)
+    detected: DetectedContacts | LineEdges  # after the contrast check (lines: none)
+    refined: DetectedContacts | LineEdges   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
     mask: np.ndarray            # uint8, the pixels of `image`: 1 = taken as contact by the threshold
 
@@ -59,8 +63,11 @@ def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
     mask."""
     flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight)
     # find_contacts would flatten and denoise the image first: given it so (up to a few s), it need not do it again
-    detected, refined, low_contrast = find_contacts(flat, **contour_options(replace(s, background_px=0.0,
-                                                                                    denoise="none")))
+    given = replace(s, background_px=0.0, denoise="none")
+    if s.pattern == "lines":
+        (detected, refined), low_contrast = find_lines(flat, **line_options(given)), 0
+    else:
+        detected, refined, low_contrast = find_contacts(flat, **contour_options(given))
     shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
     mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
     return Diagnosis(shown, detected, refined, low_contrast, mask)
@@ -68,30 +75,67 @@ def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
 
 def summary(d: Diagnosis, s: Settings) -> str:
     """How many contacts were found and why the other regions were left out, in words (HTML)."""
+    if s.pattern == "lines":
+        return lines_summary(d, s)
     reasons = {"border": "touching the image border", "small": f"smaller than {s.min_area_px} px",
                "large": f"larger than {s.max_area_px} px", "not solid": f"less solid than {s.min_solidity:g}"}
     left_out = [f"{count} {reasons[why]}" for why, count in d.detected.left_out.items() if count]
     if d.low_contrast:
         left_out.append(f"{d.low_contrast} below the contrast of {s.min_contrast:g} noise σ")
+    text = (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
+            f"{d.detected.threshold:.0f}{of_the_image(s)}). ")
+    return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
+
+
+def lines_summary(d: Diagnosis, s: Settings) -> str:
+    """How many lines and edges were found, their roughness and noise per column, and how many regions were left out,
+    in words (HTML)."""
+    lines = d.refined
+    upper, lower = (int(np.isfinite(edges).any(axis=1).sum()) for edges in (lines.upper, lines.lower))
+    text = (f"<b>{len(lines.upper)} lines found</b> ({upper} upper and {lower} lower edges; {s.detection}, threshold "
+            f"at grey level {d.detected.threshold:.0f}{of_the_image(s)}). ")
+    if upper + lower:
+        shared = " (reads low: neighbouring columns share noise in a denoised or upscaled image)" \
+            if s.denoise != "none" or s.upscale > 1 else ""
+        text += (f"Edge roughness {roughness_px(lines):.2f} px rms, noise per column "
+                 f"{column_noise_px(lines):.2f} px{shared}. ")
+    return text + (f"Regions left out: {lines.left_out} not crossing the image." if lines.left_out else "")
+
+
+def of_the_image(s: Settings) -> str:
+    """What was done to the image before the search, in words ("" if nothing)."""
     steps = [step for step, done in (("flattened", s.background_px > 0),
                                      (f"denoised ({s.denoise})", s.denoise != "none"),
                                      (f"upscaled {s.upscale}×", s.upscale > 1)) if done]
     if len(steps) > 1:
         steps = [", ".join(steps[:-1]) + " and " + steps[-1]]
-    of = f" of the image {steps[0]}" if steps else ""
-    text = (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
-            f"{d.detected.threshold:.0f}{of}). ")
-    return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
+    return f" of the image {steps[0]}" if steps else ""
+
+
+def layer_name(name: str, s: Settings) -> str:
+    """A layer's name as shown: lines have edges, not contours."""
+    return name.replace("contours", "edges") if s.pattern == "lines" else name
 
 
 def applies(name: str, s: Settings) -> bool:
     """Whether a contour setting changes anything, given the others: min_solidity for band only, each denoising
-    method's option for that method only, the refinement's options unless refinement is none."""
+    method's option for that method only, the refinement's options unless refinement is none; for lines, only the
+    settings that find lines (LINE_SETTINGS)."""
+    if s.pattern == "lines" and name != "pattern" and name not in LINE_SETTINGS:
+        return False
     if name == "min_solidity":
         return s.detection == "band"
     if name in DENOISE_OPTIONS:
         return s.denoise == DENOISE_OPTIONS[name]
     return name not in REFINEMENT_OPTIONS or s.refinement != "none"
+
+
+def drawable_edges(lines: LineEdges) -> np.ndarray:
+    """Every edge of the lines as one (rows, 2) float32 line (x = column, y) to draw with connect="finite": NaN where
+    an edge is missing and after each edge."""
+    edges = np.column_stack([lines.edges, np.full(len(lines.edges), np.nan)])
+    x = np.tile(np.append(np.arange(edges.shape[1] - 1, dtype=float), np.nan), len(edges))
+    return np.column_stack([x, edges.ravel()]).astype(np.float32)
 
 
 def changed_signal(widget: QtWidgets.QWidget):
@@ -245,8 +289,11 @@ class ContourDialog(QtWidgets.QDialog):
         s = self.values()
         for name, widget in self.editors.items():
             widget.setEnabled(applies(name, s))
-        for name in ("Refined contours", "Refined centres"):  # with refinement none they are the detected ones (D124)
-            self.boxes[name].setEnabled(s.refinement != "none")
+        for name, box in self.boxes.items():
+            box.setText(layer_name(name, s))
+            no_centres = s.pattern == "lines" and name.endswith("centres")
+            detected = s.refinement == "none" and name.startswith("Refined")  # with none, the detected ones (D124)
+            box.setEnabled(not (no_centres or detected))
         self.update_visibility()
         self.timer.start()
 
@@ -287,7 +334,7 @@ class ContourDialog(QtWidgets.QDialog):
 
     def _start(self):
         self.running = True
-        self.busy_label.setText("Finding the contacts...")
+        self.busy_label.setText(f"Finding the {self.values().pattern}...")
         number, image, s = self.request, self.image, self.values()
 
         def work():
@@ -308,8 +355,8 @@ class ContourDialog(QtWidgets.QDialog):
             return
         self.busy_label.setText("")
         if isinstance(found, Exception):
-            self.summary.setText(f"<span style='color:{style.FAILURE}'>The contacts could not be found: "
-                                 f"{html.escape(str(found))}</span>")
+            self.summary.setText(f"<span style='color:{style.FAILURE}'>The {self.values().pattern} could not be "
+                                 f"found: {html.escape(str(found))}</span>")
             return
         self.show_diagnosis(found)
 
@@ -319,10 +366,12 @@ class ContourDialog(QtWidgets.QDialog):
         place(self.image_item, self.image.shape)
         self.layers["Threshold mask"].setImage(d.mask, levels=(0, 1))
         place(self.layers["Threshold mask"], self.image.shape)
-        for name, contacts in (("Detected", d.detected), ("Refined", d.refined)):
-            xy = drawable_outlines(contacts.contours)
+        for name, found in (("Detected", d.detected), ("Refined", d.refined)):
+            lines = isinstance(found, LineEdges)
+            xy = drawable_edges(found) if lines else drawable_outlines(found.contours)
+            centres = np.empty((0, 2)) if lines else found.centers
             self.layers[f"{name} contours"].setData(xy[:, 0], xy[:, 1], connect="finite")
-            self.layers[f"{name} centres"].setData(contacts.centers[:, 0], contacts.centers[:, 1])
+            self.layers[f"{name} centres"].setData(centres[:, 0], centres[:, 1])
         self.summary.setText(summary(d, self.values()))
         self.update_visibility()
 
@@ -335,8 +384,8 @@ class ContourDialog(QtWidgets.QDialog):
         self.plot.legend.clear()
         for name in LAYERS[1:]:
             if self.layers[name].isVisible():
-                self.plot.legend.addItem(self.layers[name],
-                                         f"{name} ({s.detection if name.startswith('Detected') else s.refinement})")
+                self.plot.legend.addItem(self.layers[name], f"{layer_name(name, s)} "
+                                         f"({s.detection if name.startswith('Detected') else s.refinement})")
 
     def _show_cursor(self, scene_pos):
         """The cursor's position and the grey level of the pixel under it in the image shown (to compare with the

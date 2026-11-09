@@ -115,6 +115,10 @@ class Settings:
     # Contour CSVs only
     tile_margin_nm: float = setting(25.0, "Tile box = bounding box of its design centres grown by this")
     # Images only
+    pattern: str = setting("contacts", "What the images show. contacts: contact holes, each measured at its centre, "
+                                       "in x and y. lines: horizontal lines running across the image, each edge "
+                                       "measured across the lines (its height) in every column; so far only in the "
+                                       "contour diagnosis window, runs measure contacts")
     layer: int = setting(100, "Layer of the contacts in the .oas")
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
     background_px: float = setting(0.0, "Flatten the background first, so that one threshold fits the whole image "
@@ -143,7 +147,8 @@ class Settings:
                                       "regions darker than the background; finds contacts whose band noise breaks "
                                       "up, but more false regions")
     dark_contacts: bool = setting(True, "Contacts darker than the background (holes, with a bright band); off: "
-                                        "brighter. Detection and edge refinement")
+                                        "brighter. Lines: darker than the spaces; off: brighter. Detection and edge "
+                                        "refinement")
     detection_blur_px: float = setting(1.5, "Detection: Gaussian blur (sigma, px) of the image before thresholding; "
                                             "0 = none")
     min_area_px: int = setting(20, "Detection: regions of fewer pixels are left out (noise)")
@@ -161,7 +166,8 @@ class Settings:
     edge_step_px: float = setting(0.25, "Edge refinement: the image is sampled along each normal every this many "
                                         "pixels (<= search_px)")
     edge_blur_px: float = setting(1.0, "Edge refinement: Gaussian blur (sigma, px) of the image the edges are found "
-                                       "on; 0 = none")
+                                       "on; 0 = none. Lines: across the lines only, so each column's edge comes from "
+                                       "its own pixels")
     normal_span: int = setting(3, "Edge refinement: each contour point's normal runs across the contour points this "
                                   "many before and after it (smooths the pixel staircase)")
     design_search_nm: float = setting(100.0, "Design-SEM matching: largest offset of one image's SEM contacts "
@@ -184,8 +190,8 @@ class Settings:
 
 
 CSV_ONLY = {"tile_margin_nm"}
-RELEASE_ONLY = {"moving_window_per_stripe", "in_image_correction"}  # used by the release's analysis only
-                                                                     # (release/analysis.py)
+RELEASE_ONLY = {"moving_window_per_stripe", "in_image_correction",  # used by the release's analysis only
+                "pattern"}                                          # (release/analysis.py, its contour diagnosis)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
@@ -194,10 +200,15 @@ IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "des
 CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale", "detection",
                     "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
                     "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
+# The contour settings that find lines (pipeline.find_lines, D153): not the region limits, the contrast check and the
+# contour normals of the contacts
+LINE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS
+                      if name not in ("min_area_px", "max_area_px", "min_solidity", "min_contrast", "normal_span"))
+PATTERNS = ("contacts", "lines")  # settings.pattern (D153)
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
 BY_IMAGE = ("image by image", "fingerprint")  # stitched image by image after a placement (D133, D144)
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
-           "stitch_method": STITCH_METHODS, "denoise": DENOISERS}
+           "stitch_method": STITCH_METHODS, "denoise": DENOISERS, "pattern": PATTERNS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
 # with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
 BEFORE = {"refinement": "steepest gradient"}  # D122
@@ -266,6 +277,11 @@ def check_settings(s: Settings, kind: str):
 def contour_options(s: Settings) -> dict:
     """The settings that find the contacts in an SEM image, by name (pipeline.find_contacts, process_tile)."""
     return {name: getattr(s, name) for name in CONTOUR_SETTINGS}
+
+
+def line_options(s: Settings) -> dict:
+    """The settings that find the lines in an SEM image, by name (pipeline.find_lines)."""
+    return {name: getattr(s, name) for name in LINE_SETTINGS}
 
 
 def check_image_records(records: list, layer: tuple[int, int]):

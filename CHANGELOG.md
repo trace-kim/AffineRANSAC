@@ -198,5 +198,7 @@ they open, flagged as outdated.
   off, and end themselves if MaskReg crashes. The results are unchanged (D151).
 - A *Cancel* button beside the progress bar stops the analysis, download or loading in progress, once the tiles or
   file in hand are done. Nothing of it is shown or saved; what was shown stays. The results are unchanged (D152).
+- Contour diagnosis: *Pattern* lines finds the horizontal lines of a line & space image and draws their edges, with
+  the edge roughness and the noise per column; runs still measure contacts only. The results are unchanged (D153).
 - Everything before (SPEC D77–D95): Stitching and Registration tabs, FTP browser and download, autosave, contact
   size tab.

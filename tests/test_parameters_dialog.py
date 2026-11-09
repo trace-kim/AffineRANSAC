@@ -109,9 +109,10 @@ def test_the_parameters_are_shown_in_sections_the_rarely_changed_ones_folded(tmp
 
     dialog = ParametersDialog(DEFAULTS, PARAMETERS["images"], preferences(tmp_path))
     assert [heading.text() for heading in dialog.headings.values()] == [
-        "Stitching (2)", "In-image correction (1)", "Registration (3)", "Contour detection (18)", "Advanced (11)"]
+        "Stitching (2)", "In-image correction (1)", "Registration (3)", "Contour detection (19)", "Advanced (11)"]
     advanced = set(SECTIONS[-1][1]) - {"tile_margin_nm"}  # contour CSV only
-    assert {name for name, widget in dialog.editors.items() if widget.isHidden()} == set(CONTOUR_SETTINGS) | advanced
+    hidden = {name for name, widget in dialog.editors.items() if widget.isHidden()}
+    assert hidden == {"pattern"} | set(CONTOUR_SETTINGS) | advanced
     dialog.headings["Advanced"].click()
     assert not dialog.editors["max_match_nm"].isHidden() and dialog.editors["upscale"].isHidden()
     assert dialog.values() == DEFAULTS  # folded parameters keep their values

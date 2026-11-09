@@ -37,6 +37,8 @@ it averages different lines' errors, which is why the row decision above exists.
 
 ## Steps, one per turn, each off by default until the user has checked it on real images
 
+Status: step 1 built 2026-11-09 (spec D153), awaiting the user's check on real images.
+
 1. **Line edges as a feature.** A pattern-type setting (contacts, the default | lines). For lines, keep
    the border-touching bands; per edge: polarity, height across (the existing mid-level refinement),
    extent along, profile along. Show them in the contour diagnosis window and print per image the

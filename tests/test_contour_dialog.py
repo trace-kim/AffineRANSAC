@@ -12,25 +12,28 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtTest
 
-from affine_ransac.analysis import CONTOUR_SETTINGS, contour_options
+from affine_ransac.analysis import CONTOUR_SETTINGS, contour_options, line_options
 from affine_ransac.features.contact import contact_mask
+from affine_ransac.features.lines import column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import find_contacts, prepared_image
+from affine_ransac.pipeline import find_contacts, find_lines, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS
-from affine_ransac.release.contour_dialog import GROUPS, ContourDialog
+from affine_ransac.release.contour_dialog import GROUPS, ContourDialog, drawable_edges
+from test_lines import line_image
 from test_pipeline import FOV, LATTICE, SIZE, render_tile
 from test_release import make_window
 
 SETTINGS = replace(DEFAULTS, detection="otsu")  # the synthetic tiles are found with otsu (test_release_versions)
 
 
-def open_dialog(tmp_path, settings=SETTINGS):
-    """The window with a synthetic tile loaded and its contacts found; and the tile's path."""
+def open_dialog(tmp_path, settings=SETTINGS, image=None):
+    """The window with a synthetic tile (or this image) loaded and its contacts found; and the tile's path."""
     style.setup()
     pg.mkQApp()
     path = tmp_path / "tile.png"
-    cv2.imencode(".png", render_tile(LATTICE, (0.0, 0.0), FOV, SIZE, seed=1))[1].tofile(str(path))
+    image = render_tile(LATTICE, (0.0, 0.0), FOV, SIZE, seed=1) if image is None else image
+    cv2.imencode(".png", image)[1].tofile(str(path))
     dialog = ContourDialog(settings, str(tmp_path))
     dialog.load_image(str(path))
     settle(dialog)
@@ -47,7 +50,7 @@ def settle(dialog, seconds=30):
 
 
 def test_the_window_edits_every_contour_setting_in_its_groups():
-    assert tuple(name for _, names in GROUPS for name in names) == CONTOUR_SETTINGS
+    assert tuple(name for _, names in GROUPS for name in names) == ("pattern",) + CONTOUR_SETTINGS
 
 
 def test_the_window_shows_the_contacts_a_run_finds(tmp_path):
@@ -162,6 +165,33 @@ def test_denoised_the_window_shows_the_image_denoised_then_upscaled(tmp_path):
     x, y = dialog.layers["Refined centres"].getData()
     np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
     assert "of the image denoised (median) and upscaled 2×" in dialog.summary.text() and dialog.values() == s
+
+
+def test_with_pattern_lines_the_window_shows_the_edges_of_the_lines(tmp_path):
+    """D153: the edges find_lines finds, drawn by the contour layers; the line gives the lines, their roughness and
+    noise per column; the centres and the settings lines do not use are greyed out."""
+    s = replace(SETTINGS, pattern="lines", dark_contacts=False)  # bright lines
+    dialog, path = open_dialog(tmp_path, s, line_image(noise=5.0))
+    detected, refined = find_lines(load_sem_image(path), **line_options(s))
+    for name, lines in (("Detected contours", detected), ("Refined contours", refined)):
+        x, y = dialog.layers[name].getData()
+        np.testing.assert_array_equal(np.column_stack([x, y]), drawable_edges(lines))
+    text = dialog.summary.text()
+    assert text.startswith(f"<b>3 lines found</b> (3 upper and 3 lower edges; otsu, threshold at grey level "
+                           f"{detected.threshold:.0f}). ")
+    numbers = f"Edge roughness {roughness_px(refined):.2f} px rms, noise per column {column_noise_px(refined):.2f} px."
+    assert numbers in text and "left out" not in text
+    assert dialog.boxes["Refined contours"].text() == "Refined edges" and dialog.layers["Refined contours"].isVisible()
+    assert not dialog.boxes["Refined centres"].isEnabled() and not dialog.layers["Refined centres"].isVisible()
+    greyed = [name for name, widget in dialog.editors.items() if not widget.isEnabled()]
+    assert greyed == ["median_px", "nlm_h", "tv_weight", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
+                      "normal_span"]
+    assert dialog.values() == s
+
+    dialog.editors["pattern"].setCurrentText("contacts")  # back: contours and centres again
+    settle(dialog)
+    assert dialog.boxes["Refined contours"].text() == "Refined contours" and dialog.boxes["Refined centres"].isEnabled()
+    assert "contacts found" in dialog.summary.text()
 
 
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):

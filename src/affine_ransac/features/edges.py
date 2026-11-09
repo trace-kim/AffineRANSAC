@@ -114,12 +114,19 @@ def crossings(profiles: np.ndarray, offsets: np.ndarray, level: float) -> np.nda
     return np.where(np.isfinite(distance.min(axis=1)), at[np.arange(len(at)), nearest], np.nan)
 
 
-def without_isolated(shifts: np.ndarray, neighbours: int = 3, tolerance_px: float = 0.5) -> np.ndarray:
+def without_isolated(shifts: np.ndarray, neighbours: int = 3, tolerance_px: float = 0.5,
+                     closed: bool = True) -> np.ndarray:
     """Shifts (M,) of the points of one closed contour, where a shift that is NaN, or further from the median of its
     `neighbours` on each side than 4 robust sigma (of all its points) + tolerance_px, is replaced by that median (0 if
-    its neighbours have none either)."""
+    its neighbours have none either). closed False: the points of an open edge (a line's, features.lines), whose
+    first and last points have neighbours on one side only."""
     steps = np.array([k for k in range(-neighbours, neighbours + 1) if k])
-    around = np.sort(shifts[(np.arange(len(shifts))[:, None] + steps) % len(shifts)], axis=1)  # NaN sort last
+    index = np.arange(len(shifts))[:, None] + steps
+    if closed:
+        around = shifts[index % len(shifts)]
+    else:  # past either end: no neighbour (NaN)
+        around = np.where((index >= 0) & (index < len(shifts)), shifts[np.clip(index, 0, len(shifts) - 1)], np.nan)
+    around = np.sort(around, axis=1)  # NaN sort last
     found = np.isfinite(around).sum(axis=1, keepdims=True)
     # the median of each point's finite neighbours: the middle one or two of them (none: NaN, as every value is)
     median = (np.take_along_axis(around, (found - 1) // 2, axis=1) + np.take_along_axis(around, found // 2, axis=1))

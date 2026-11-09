@@ -67,8 +67,8 @@ COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched"
           "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm",
           "in_image_correction", "in_image_order"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
-              "images": COMMON + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
-                                                           "min_match_fraction", "realign"]}
+              "images": COMMON + ["pattern"] + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
+                                                                        "min_match_fraction", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 
@@ -144,6 +144,9 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         log(text)
 
     check_settings(s, kind)
+    if kind == "images" and s.pattern != "contacts":  # lines: only the contour diagnosis finds them so far (D153)
+        raise ValueError("Lines can only be tried in the contour diagnosis window so far. Set PATTERN to contacts "
+                         "to run.")
     progress(0.0, "Reading the tiles")
     if kind == "images":
         progress(0.0, "Detecting the contact layer")
