@@ -20,3 +20,6 @@ docs/remote/
 build/
 dist/
 packaging/update.ini
+
+# runs saved by the agent command line (release/agent.py, D154): real results, never committed
+maskreg_runs/

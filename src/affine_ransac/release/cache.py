@@ -62,9 +62,8 @@ def cache_paths(folder, user_cache_dir) -> list[Path]:
     return [Path(folder) / CACHE_NAME, Path(user_cache_dir) / f"{key}_{CACHE_NAME}"]
 
 
-def save_cache(result: ReleaseResult, user_cache_dir, backup: bool = True, log=lambda text: None) -> Path:
-    """Write the result to the first cache path that can be written; returns it. backup: the result is a new run,
-    so the run it replaces is kept as a backup; False: the same run saved again (e.g. with its contact sizes)."""
+def run_arrays(result: ReleaseResult) -> dict:
+    """The plain arrays of a run file (FORMAT)."""
     arrays = {"centers": result.centers, "sizes": result.sizes, "stripe": result.stripe, "sem_nm": result.sem_nm, "design_nm": result.design_nm,
               "oas_centers": result.oas_centers}
     if result.slipped is not None:  # a run made before D109 has none: it stays unknown
@@ -86,21 +85,35 @@ def save_cache(result: ReleaseResult, user_cache_dir, backup: bool = True, log=l
             "oas_paths": result.oas_paths,
             "log": result.log}
     arrays["info"] = np.array(json.dumps(info))
-    errors = []
+    return arrays
+
+
+def write_run(arrays: dict, path: Path, backup: bool = False, log=lambda text: None):
+    """Write a run file: as <name>.part first, renamed when complete. backup: the file it replaces is kept (back_up)."""
+    part = path.with_name(path.name + ".part")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(part, "wb") as f:  # a file object: np.savez would add .npz to a name without it
+            np.savez_compressed(f, **arrays)
+        if backup and path.is_file():
+            log(f"Previous run kept as {back_up(path)}")
+        os.replace(part, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            part.unlink(missing_ok=True)
+        raise
+
+
+def save_cache(result: ReleaseResult, user_cache_dir, backup: bool = True, log=lambda text: None) -> Path:
+    """Write the result to the first cache path that can be written; returns it. backup: the result is a new run,
+    so the run it replaces is kept as a backup; False: the same run saved again (e.g. with its contact sizes)."""
+    arrays, errors = run_arrays(result), []
     for path in cache_paths(result.folder, user_cache_dir):
-        part = path.with_name(path.name + ".part")
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(part, "wb") as f:  # a file object: np.savez would add .npz to a name without it
-                np.savez_compressed(f, **arrays)
-            if backup and path.is_file():
-                log(f"Previous run kept as {back_up(path)}")
-            os.replace(part, path)
+            write_run(arrays, path, backup, log)
             return path
         except OSError as error:
             errors.append(f"{path}: {error}")
-            with contextlib.suppress(OSError):
-                part.unlink(missing_ok=True)
     raise OSError("The analysis could not be saved: " + "; ".join(errors))
 
 
@@ -134,7 +147,8 @@ def load_cache(folder, user_cache_dir, log=lambda text: None) -> tuple[ReleaseRe
 
 
 def read_run(path: Path, folder, log) -> tuple[ReleaseResult, str] | None:
-    """One saved run (load_cache), with its version and ANALYSIS number."""
+    """One saved run (load_cache), with its version and ANALYSIS number. folder: where the data is now (None: where
+    it was when the run was saved)."""
     with np.load(path, allow_pickle=False) as arrays:
         info = json.loads(str(arrays["info"]))
         made, file_format = made_by(info.get("version", "")), info.get("format", 0)
@@ -152,7 +166,7 @@ def read_run(path: Path, folder, log) -> tuple[ReleaseResult, str] | None:
             sizes = ContactSizes(arrays["contact_sizes/sem"], arrays["contact_sizes/design"],
                                  arrays["contact_sizes/roi_width_nm"].item())
         result = ReleaseResult(
-            folder=str(folder), kind=info["kind"], settings=settings, tile_ids=info["tile_ids"],
+            folder=str(info["folder"] if folder is None else folder), kind=info["kind"], settings=settings, tile_ids=info["tile_ids"],
             centers=arrays["centers"], sizes=arrays["sizes"],
             stripe=arrays["stripe"], sem_points=_get_parts(arrays, "sem_points"),
             design_points=_get_parts(arrays, "design_points"), stitch=_get_stitch(arrays, "stitch"),
