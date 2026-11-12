@@ -7,6 +7,8 @@
   the release's contour diagnosis find them.
 - find_lines(): the edges of the horizontal lines of one image, the same way (D153; so far only the contour diagnosis
   uses it).
+- find_contours(): the contours of any pattern in one image, the same way (D155; so far only the contour diagnosis
+  uses it).
 - stitch_design(): the same for the per-tile design files, which can be offset against each
   other (the same contact drawn at different positions in neighbouring .oas files).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
@@ -38,6 +40,7 @@ from scipy.spatial import cKDTree
 from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, denoised_image,
                                             detect_contacts, flatten_background, in_image_pixels, keep_contacts,
                                             upscaled_image)
+from affine_ransac.features.contours import Contours, detect_contours, in_image_contours, refine_contours
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.features.lines import LineEdges, detect_lines, in_image_lines, refine_line_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
@@ -288,6 +291,42 @@ def find_lines(
     refined = detected if refinement == "none" else refine_line_edges(
         big, detected, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement)
     return in_image_lines(detected, f), in_image_lines(refined, f)
+
+
+def find_contours(
+    image: np.ndarray,
+    *,  # by name only
+    background_px: float = 0.0,
+    denoise: str = "none",
+    median_px: int = 3,
+    nlm_h: float = 10.0,
+    tv_weight: float = 0.1,
+    upscale: int = 1,
+    detection: str = "otsu",
+    dark_contacts: bool = True,
+    detection_blur_px: float = 1.5,
+    min_area_px: int = 20,
+    max_area_px: int = 0,
+    refinement: str = "mid-level",
+    search_px: float = 5.0,
+    edge_step_px: float = 0.25,
+    edge_blur_px: float = 1.0,
+    normal_span: int = 3,
+) -> tuple[Contours, Contours]:
+    """The contours of any pattern in one SEM image (uint8), as find_contacts finds contacts (D155): (detected,
+    refined), in the image's own pixels (features.contours): the boundary of every region, of any shape, open where
+    the region runs out of the image. The options are the contour settings of the same names
+    (analysis.ANY_SHAPE_SETTINGS); dark_contacts: the regions are the darker side. On prepared_image, upscaled
+    `upscale` times, the options in pixels multiplied by it (areas by its square), as for contacts; refinement
+    "none": the detected contours."""
+    image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
+    f = upscale
+    big = upscaled_image(image, f)
+    detected, labels = detect_contours(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
+                                       max_area_px * f ** 2 or None, detection, normal_span * f)
+    refined = detected if refinement == "none" else refine_contours(
+        big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement)
+    return in_image_contours(detected, f), in_image_contours(refined, f)
 
 
 def process_tile(

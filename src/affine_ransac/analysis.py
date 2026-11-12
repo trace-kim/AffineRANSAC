@@ -117,8 +117,10 @@ class Settings:
     # Images only
     pattern: str = setting("contacts", "What the images show. contacts: contact holes, each measured at its centre, "
                                        "in x and y. lines: horizontal lines running across the image, each edge "
-                                       "measured across the lines (its height) in every column; so far only in the "
-                                       "contour diagnosis window, runs measure contacts")
+                                       "measured across the lines (its height) in every column. contours: any "
+                                       "pattern, the outline of every region, of any shape, open where the region "
+                                       "runs out of the image. Lines and contours so far only in the contour "
+                                       "diagnosis window, runs measure contacts")
     layer: int = setting(100, "Layer of the contacts in the .oas")
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
     background_px: float = setting(0.0, "Flatten the background first, so that one threshold fits the whole image "
@@ -147,7 +149,8 @@ class Settings:
                                       "regions darker than the background; finds contacts whose band noise breaks "
                                       "up, but more false regions")
     dark_contacts: bool = setting(True, "Contacts darker than the background (holes, with a bright band); off: "
-                                        "brighter. Lines: darker than the spaces; off: brighter. Detection and edge "
+                                        "brighter. Lines: darker than the spaces; off: brighter. Contours: the "
+                                        "regions outlined are the darker side; off: the brighter. Detection and edge "
                                         "refinement")
     detection_blur_px: float = setting(1.5, "Detection: Gaussian blur (sigma, px) of the image before thresholding; "
                                             "0 = none")
@@ -204,7 +207,11 @@ CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight
 # contour normals of the contacts
 LINE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS
                       if name not in ("min_area_px", "max_area_px", "min_solidity", "min_contrast", "normal_span"))
-PATTERNS = ("contacts", "lines")  # settings.pattern (D153)
+# The contour settings that find the contours of any pattern (pipeline.find_contours, D155): not the solidity limit
+# and the contrast check of the contacts
+ANY_SHAPE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS if name not in ("min_solidity", "min_contrast"))
+PATTERNS = ("contacts", "lines", "contours")  # settings.pattern (D153, D155)
+PATTERN_SETTINGS = {"contacts": CONTOUR_SETTINGS, "lines": LINE_SETTINGS, "contours": ANY_SHAPE_SETTINGS}
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
 BY_IMAGE = ("image by image", "fingerprint")  # stitched image by image after a placement (D133, D144)
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
@@ -282,6 +289,11 @@ def contour_options(s: Settings) -> dict:
 def line_options(s: Settings) -> dict:
     """The settings that find the lines in an SEM image, by name (pipeline.find_lines)."""
     return {name: getattr(s, name) for name in LINE_SETTINGS}
+
+
+def any_shape_options(s: Settings) -> dict:
+    """The settings that find the contours of any pattern in an SEM image, by name (pipeline.find_contours)."""
+    return {name: getattr(s, name) for name in ANY_SHAPE_SETTINGS}
 
 
 def check_image_records(records: list, layer: tuple[int, int]):

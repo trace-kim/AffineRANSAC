@@ -10,6 +10,8 @@ a setting finds them again, in a background thread, for the newest settings only
 the settings with those shown, which the app keeps for the next run; Cancel leaves the parameters as they were.
 With PATTERN lines (D153) it finds horizontal lines instead (pipeline.find_lines): the contour layers draw their
 detected and refined edges, and the line says how many lines were found, their edge roughness and the noise per column.
+With PATTERN contours (D155) it finds the contours of any pattern (pipeline.find_contours): the contour layers draw
+them, closed or open, and the line says how many were found and how many of them are open.
 
 Coordinates are the pixel frame: (x, y) px, y down, pixel centres at whole numbers (docs/SPEC.md §3).
 """
@@ -23,12 +25,14 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import CHOICES, LINE_SETTINGS, Settings, check_settings, contour_options, line_options
+from affine_ransac.analysis import (CHOICES, PATTERN_SETTINGS, Settings, any_shape_options, check_settings,
+                                    contour_options, line_options)
 from affine_ransac.app import editor, editor_value
 from affine_ransac.features.contact import DetectedContacts, contact_mask, upscaled_image
+from affine_ransac.features.contours import Contours
 from affine_ransac.features.lines import LineEdges, column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import find_contacts, find_lines, prepared_image
+from affine_ransac.pipeline import find_contacts, find_contours, find_lines, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
@@ -52,8 +56,8 @@ NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these s
 class Diagnosis:
     """What the window shows of one image with one set of settings."""
     image: np.ndarray           # the image the contacts are found in (pipeline.prepared_image; upscaled: more pixels)
-    detected: DetectedContacts | LineEdges  # after the contrast check (lines: none)
-    refined: DetectedContacts | LineEdges   # what the run measures (refinement none: the detected ones)
+    detected: DetectedContacts | LineEdges | Contours  # after the contrast check (lines, contours: none)
+    refined: DetectedContacts | LineEdges | Contours   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
     mask: np.ndarray            # uint8, the pixels of `image`: 1 = taken as contact by the threshold
 
@@ -66,6 +70,8 @@ def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
     given = replace(s, background_px=0.0, denoise="none")
     if s.pattern == "lines":
         (detected, refined), low_contrast = find_lines(flat, **line_options(given)), 0
+    elif s.pattern == "contours":
+        (detected, refined), low_contrast = find_contours(flat, **any_shape_options(given)), 0
     else:
         detected, refined, low_contrast = find_contacts(flat, **contour_options(given))
     shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
@@ -82,8 +88,13 @@ def summary(d: Diagnosis, s: Settings) -> str:
     left_out = [f"{count} {reasons[why]}" for why, count in d.detected.left_out.items() if count]
     if d.low_contrast:
         left_out.append(f"{d.low_contrast} below the contrast of {s.min_contrast:g} noise σ")
-    text = (f"<b>{len(d.refined.centers)} contacts found</b> ({s.detection}, threshold at grey level "
-            f"{d.detected.threshold:.0f}{of_the_image(s)}). ")
+    if s.pattern == "contours":
+        closed = d.refined.closed
+        found = (f"{len(closed)} contours found</b>: {int(closed.sum())} closed, {int((~closed).sum())} open, "
+                 f"ending at the image border")
+    else:
+        found = f"{len(d.refined.centers)} contacts found</b>"
+    text = f"<b>{found} ({s.detection}, threshold at grey level {d.detected.threshold:.0f}{of_the_image(s)}). "
     return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
 
 
@@ -119,9 +130,9 @@ def layer_name(name: str, s: Settings) -> str:
 
 def applies(name: str, s: Settings) -> bool:
     """Whether a contour setting changes anything, given the others: min_solidity for band only, each denoising
-    method's option for that method only, the refinement's options unless refinement is none; for lines, only the
-    settings that find lines (LINE_SETTINGS)."""
-    if s.pattern == "lines" and name != "pattern" and name not in LINE_SETTINGS:
+    method's option for that method only, the refinement's options unless refinement is none; for lines and for
+    contours, only the settings that find them (PATTERN_SETTINGS)."""
+    if name != "pattern" and name not in PATTERN_SETTINGS[s.pattern]:
         return False
     if name == "min_solidity":
         return s.detection == "band"
@@ -136,6 +147,15 @@ def drawable_edges(lines: LineEdges) -> np.ndarray:
     edges = np.column_stack([lines.edges, np.full(len(lines.edges), np.nan)])
     x = np.tile(np.append(np.arange(edges.shape[1] - 1, dtype=float), np.nan), len(edges))
     return np.column_stack([x, edges.ravel()]).astype(np.float32)
+
+
+def drawable_contours(contours: Contours) -> np.ndarray:
+    """The contours as one (rows, 2) float32 line to draw with connect="finite": a closed one with its first point
+    again, an open one as it is, each followed by a NaN row."""
+    nan = np.full((1, 2), np.nan)
+    parts = [np.vstack([points, points[:1], nan] if closed else [points, nan])
+             for points, closed in zip(contours.points, contours.closed)]
+    return np.concatenate(parts).astype(np.float32) if parts else np.empty((0, 2), np.float32)
 
 
 def changed_signal(widget: QtWidgets.QWidget):
@@ -291,7 +311,7 @@ class ContourDialog(QtWidgets.QDialog):
             widget.setEnabled(applies(name, s))
         for name, box in self.boxes.items():
             box.setText(layer_name(name, s))
-            no_centres = s.pattern == "lines" and name.endswith("centres")
+            no_centres = s.pattern != "contacts" and name.endswith("centres")  # only contacts have a centre
             detected = s.refinement == "none" and name.startswith("Refined")  # with none, the detected ones (D124)
             box.setEnabled(not (no_centres or detected))
         self.update_visibility()
@@ -367,9 +387,11 @@ class ContourDialog(QtWidgets.QDialog):
         self.layers["Threshold mask"].setImage(d.mask, levels=(0, 1))
         place(self.layers["Threshold mask"], self.image.shape)
         for name, found in (("Detected", d.detected), ("Refined", d.refined)):
-            lines = isinstance(found, LineEdges)
-            xy = drawable_edges(found) if lines else drawable_outlines(found.contours)
-            centres = np.empty((0, 2)) if lines else found.centers
+            if isinstance(found, DetectedContacts):
+                xy, centres = drawable_outlines(found.contours), found.centers
+            else:
+                xy = drawable_edges(found) if isinstance(found, LineEdges) else drawable_contours(found)
+                centres = np.empty((0, 2))
             self.layers[f"{name} contours"].setData(xy[:, 0], xy[:, 1], connect="finite")
             self.layers[f"{name} centres"].setData(centres[:, 0], centres[:, 1])
         self.summary.setText(summary(d, self.values()))

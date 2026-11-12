@@ -144,9 +144,9 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         log(text)
 
     check_settings(s, kind)
-    if kind == "images" and s.pattern != "contacts":  # lines: only the contour diagnosis finds them so far (D153)
-        raise ValueError("Lines can only be tried in the contour diagnosis window so far. Set PATTERN to contacts "
-                         "to run.")
+    if kind == "images" and s.pattern != "contacts":  # only the contour diagnosis finds the others so far (D153, D155)
+        raise ValueError(f"{s.pattern.capitalize()} can only be tried in the contour diagnosis window so far. Set "
+                         f"PATTERN to contacts to run.")
     progress(0.0, "Reading the tiles")
     if kind == "images":
         progress(0.0, "Detecting the contact layer")

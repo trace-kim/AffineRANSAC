@@ -917,13 +917,14 @@ def test_realignment_is_a_parameter_of_image_folders():
     assert "realign" not in PARAMETERS["contour CSV"]
 
 
-def test_a_run_with_pattern_lines_is_refused_so_far(tmp_path):
-    """D153: lines are only found in the contour diagnosis window so far; the pattern is a parameter of image folders,
-    so that it can be set back to contacts."""
+@pytest.mark.parametrize("pattern", ["lines", "contours"])
+def test_a_run_with_another_pattern_than_contacts_is_refused_so_far(tmp_path, pattern):
+    """D153, D155: lines and contours are only found in the contour diagnosis window so far; the pattern is a
+    parameter of image folders, so that it can be set back to contacts."""
     assert "pattern" in PARAMETERS["images"] and "pattern" not in PARAMETERS["contour CSV"]
     assert DEFAULTS.pattern == "contacts"
-    with pytest.raises(ValueError, match="contour diagnosis window so far"):
-        analyse_folder(tmp_path, "images", replace(DEFAULTS, pattern="lines"), records=[])
+    with pytest.raises(ValueError, match=f"{pattern.capitalize()} can only be tried in the contour diagnosis window"):
+        analyse_folder(tmp_path, "images", replace(DEFAULTS, pattern=pattern), records=[])
 
 
 def wait(window, seconds=120):

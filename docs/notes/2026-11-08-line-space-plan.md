@@ -37,7 +37,10 @@ it averages different lines' errors, which is why the row decision above exists.
 
 ## Steps, one per turn, each off by default until the user has checked it on real images
 
-Status: step 1 built 2026-11-09 (spec D153), awaiting the user's check on real images.
+Status: step 1 built 2026-11-09 (spec D153). On the real images it found no line (2026-11-12): their lines are
+vertical, and neither the direction nor that a line runs through the image may be assumed. Kept as built; beside it
+the pattern **contours** finds the contours of any pattern, open where a region runs out of the image (spec D155),
+awaiting the user's check on real images. Steps 2 and 3 below are to be rethought on those contours.
 
 1. **Line edges as a feature.** A pattern-type setting (contacts, the default | lines). For lines, keep
    the border-touching bands; per edge: polarity, height across (the existing mid-level refinement),

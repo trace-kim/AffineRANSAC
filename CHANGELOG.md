@@ -200,6 +200,9 @@ they open, flagged as outdated.
   file in hand are done. Nothing of it is shown or saved; what was shown stays. The results are unchanged (D152).
 - Contour diagnosis: *Pattern* lines finds the horizontal lines of a line & space image and draws their edges, with
   the edge roughness and the noise per column; runs still measure contacts only. The results are unchanged (D153).
+- Contour diagnosis: *Pattern* contours finds the outline of every region of any pattern, of any shape and
+  direction: closed where the region lies inside the image, open where it runs out of it. Runs still measure
+  contacts only. The results are unchanged (D155).
 - For AI agents: `python -m affine_ransac.release.agent run <folder>` analyses a folder without the window
   (`--set name=value` for parameters) and prints a review of the run as JSON; `review <file.npz>` prints it again.
   Its runs are saved under `maskreg_runs/`, never over the folder's own saved run. The results are unchanged (D154).

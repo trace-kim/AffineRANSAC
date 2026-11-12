@@ -12,14 +12,15 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtTest
 
-from affine_ransac.analysis import CONTOUR_SETTINGS, contour_options, line_options
+from affine_ransac.analysis import CONTOUR_SETTINGS, any_shape_options, contour_options, line_options
 from affine_ransac.features.contact import contact_mask
 from affine_ransac.features.lines import column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import find_contacts, find_lines, prepared_image
+from affine_ransac.pipeline import find_contacts, find_contours, find_lines, prepared_image
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS
-from affine_ransac.release.contour_dialog import GROUPS, ContourDialog, drawable_edges
+from affine_ransac.release.contour_dialog import GROUPS, ContourDialog, drawable_contours, drawable_edges
+from test_contours import shape_image, vertical_lines
 from test_lines import line_image
 from test_pipeline import FOV, LATTICE, SIZE, render_tile
 from test_release import make_window
@@ -192,6 +193,28 @@ def test_with_pattern_lines_the_window_shows_the_edges_of_the_lines(tmp_path):
     settle(dialog)
     assert dialog.boxes["Refined contours"].text() == "Refined contours" and dialog.boxes["Refined centres"].isEnabled()
     assert "contacts found" in dialog.summary.text()
+
+
+def test_with_pattern_contours_the_window_shows_the_contours_of_any_pattern(tmp_path):
+    """D155: the contours find_contours finds, drawn by the contour layers, open ones not closed; the line says how
+    many are closed and open; the centres and the settings contours do not use are greyed out."""
+    def pattern(x, y):  # two lines out of the image and a disc inside it
+        return vertical_lines(x, y) | (np.hypot(x - 130, y - 100) < 15)
+    s = replace(SETTINGS, pattern="contours", dark_contacts=False)  # bright regions
+    dialog, path = open_dialog(tmp_path, s, shape_image(pattern, noise=5.0))
+    detected, refined = find_contours(load_sem_image(path), **any_shape_options(s))
+    for name, contours in (("Detected contours", detected), ("Refined contours", refined)):
+        x, y = dialog.layers[name].getData()
+        np.testing.assert_array_equal(np.column_stack([x, y]), drawable_contours(contours))
+    drawn = drawable_contours(refined)
+    assert len(drawn) == sum(len(points) + 1 for points in refined.points) + 1  # only the disc's is closed
+    assert dialog.summary.text() == (f"<b>5 contours found</b>: 1 closed, 4 open, ending at the image border (otsu, "
+                                     f"threshold at grey level {detected.threshold:.0f}). ")
+    assert dialog.boxes["Refined contours"].text() == "Refined contours" and dialog.layers["Refined contours"].isVisible()
+    assert not dialog.boxes["Refined centres"].isEnabled() and not dialog.layers["Refined centres"].isVisible()
+    greyed = [name for name, widget in dialog.editors.items() if not widget.isEnabled()]
+    assert greyed == ["median_px", "nlm_h", "tv_weight", "min_solidity", "min_contrast"]
+    assert dialog.values() == s
 
 
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):
