@@ -7,8 +7,8 @@
   the release's contour diagnosis find them.
 - find_lines(): the edges of the horizontal lines of one image, the same way (D153; so far only the contour diagnosis
   uses it).
-- find_contours(): the contours of any pattern in one image, the same way (D155; so far only the contour diagnosis
-  uses it).
+- find_contours(): the contours of any pattern in one image, the same way (D155; the contour diagnosis, and the
+  stitching by contours of contour_stitching.py, D156).
 - stitch_design(): the same for the per-tile design files, which can be offset against each
   other (the same contact drawn at different positions in neighbouring .oas files).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly

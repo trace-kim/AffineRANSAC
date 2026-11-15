@@ -489,8 +489,9 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def show_contours(self, contours):
         self.contours = contours
         self.stitching_view.set_contours(contours)
-        self.status.set_idle(f"Contours of {len(contours.tile)} contacts loaded (Stitching tab: Detected and Refined "
-                             f"contours and centres)")
+        what = "contours" if self.result.settings.pattern == "contours" else "contacts"
+        self.status.set_idle(f"Contours of {len(contours.tile)} {what} loaded (Stitching tab: Detected and Refined "
+                             f"contours" + (")" if what == "contours" else " and centres)"))
 
     def show_design(self, masks):
         self.design = masks
@@ -671,6 +672,10 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             self.setWindowTitle(f"{TITLE} - {name}")
             self.status.set_idle(f"{name}: {len(result.tile_ids)} tiles, {len(result.design_nm)} contacts "
                                  f"({result.kind} folder)  |  {drawing}" + run_note(result))
+        elif failure.stitched_only:  # pattern contours: no further yet (D156)
+            self.setWindowTitle(f"{TITLE} - {name} - stitched only")
+            self.status.set_idle(f"{name}: {len(result.tile_ids)} images stitched by their contours, nothing saved  "
+                                 f"|  {drawing}")
         else:
             self.setWindowTitle(f"{TITLE} - {name} - analysis failed")
             self.status.set_idle(f"{name}: ANALYSIS FAILED, nothing saved: {failure}  |  {drawing}")
@@ -692,7 +697,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     def _job_failed(self, text: str, error: Exception):
         self.busy = False
-        self.log(text)
+        stitched_only = isinstance(error, AnalysisFailed) and error.stitched_only  # nothing failed (D156)
+        self.log(str(error) if stitched_only else text)
         if isinstance(error, BrokenProcessPool) and self.helpers is not None:  # a kept worker ended (D151)
             self.stop_helpers()
             self.log("!! The kept worker processes stopped working: the next run starts new ones")
@@ -703,7 +709,10 @@ class MaskRegWindow(QtWidgets.QMainWindow):
             self.status.set_idle("Failed - see View > Log")
         self.update_actions()
         last = text.strip().splitlines()[-1]  # "SomeError: message"; the log has the whole traceback
-        QtWidgets.QMessageBox.critical(self, TITLE, last.partition(": ")[2] or last)
+        if stitched_only:
+            QtWidgets.QMessageBox.information(self, TITLE, str(error))
+        else:
+            QtWidgets.QMessageBox.critical(self, TITLE, last.partition(": ")[2] or last)
         self.offer_update()
 
     def cancel_job(self):

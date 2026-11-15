@@ -152,6 +152,8 @@ def tile_details(r: ReleaseResult, tile: int, not_measured: dict | None = None) 
              f"stripe {int(r.stripe[tile]) + 1}, centre ({x:.3f}, {y:.3f}) µm",
              f"Shift from the stitching: measured {shift(r.stitch.corrections)}, design "
              f"{shift(r.design_stitch.corrections)}"]
+    if r.settings.pattern == "contours":  # stitched by contours (D156): no overlaps of paired contacts to tell of
+        return "<br>".join(lines[:2] + [f"Shift from the stitching by contours: {shift(r.stitch.corrections)}"])
     if not_measured and tile in not_measured:
         lines.append(f"<span style='color:{style.FAILURE}'><b>Not measured</b></span>: {not_measured[tile]}")
     overlaps = [overlaps_of(r.stitch, tile), overlaps_of(r.design_stitch, tile)]
@@ -260,7 +262,9 @@ class StitchingView(QtWidgets.QWidget):
         self.not_measured = not_measured
         self.contours = None  # TileContours, once loaded (set_contours)
         r = result
-        self.origin = np.round(np.concatenate(r.design_points).mean(axis=0), -3)  # whole µm
+        # whole µm; a result without contacts (pattern contours, D156): from the tiles
+        self.origin = np.round((np.concatenate(r.design_points) if sum(map(len, r.design_points)) else r.centers
+                                ).mean(axis=0), -3)
         self.shifts = {"nominal": (np.zeros_like(r.centers), np.zeros_like(r.centers)),
                        "stitched": tuple(np.nan_to_num(c) for c in
                                          placement_corrections(r.stitch.corrections, r.design_stitch.corrections)["mean"])}
@@ -446,6 +450,11 @@ class StitchingView(QtWidgets.QWidget):
         """What the stitching means for the results, worst first (D109), then the counts of both stitchings."""
         r, parts = self.result, []
         n = len(r.tile_ids)
+        if r.settings.pattern == "contours":  # stitched by contours (D156): its findings from the log, !! in red
+            found = [line for text in r.log if text.startswith(("Stitching by contours", "Overlaps after", "!!"))
+                     for line in text.split("\n")]
+            return "<br>".join(f"<span style='color:{style.FAILURE}'><b>{line[3:]}</b></span>"
+                               if line.startswith("!!") else line for line in found) +                 "<br><i>Load contours</i> and zoom into an overlap: the contours of both images should lie on each other."
         for name, stitch in (("Measured", r.stitch), ("Design", r.design_stitch)):
             failed = sum(f.failed for f in stitch.rejected)
             parts.append(f"{name}: {n - len(stitch.unplaced)} of {n} tiles stitched, {len(stitch.pairs)} overlaps used, "
@@ -717,10 +726,12 @@ class StitchingView(QtWidgets.QWidget):
             self.layers[name] = item
             # with refinement none the refined contours and centres are the detected ones: not offered (D124)
             offered = name.startswith("Detected") or r.settings.refinement != "none"
+            if r.settings.pattern == "contours" and name.endswith("centres"):  # only contacts have a centre
+                offered = False
             self.boxes[name].setEnabled(offered)
             self.boxes[name].setChecked(offered)
-            self.boxes[name].setToolTip("" if offered else "Refinement none: the detected contours and centres are "
-                                                           "the measured ones")
+            self.boxes[name].setToolTip("" if offered or r.settings.pattern == "contours" else
+                                        "Refinement none: the detected contours and centres are the measured ones")
         self.contours_button.setEnabled(False)
         self.update_positions()
         self.update_visibility()
@@ -741,8 +752,13 @@ class StitchingView(QtWidgets.QWidget):
         centres = self._contour_points(c.refined_centres, np.arange(len(c.refined_centres)))
         (x0, x1), (y0, y1) = self.plot.vb.viewRange()
         margin = 0.05 * max(x1 - x0, y1 - y0)
-        inside = np.flatnonzero((centres[:, 0] > x0 - margin) & (centres[:, 0] < x1 + margin)
-                                & (centres[:, 1] > y0 - margin) & (centres[:, 1] < y1 + margin))
+        if self.result.settings.pattern == "contours":  # a contour can cross its whole image: those of the tiles
+            tile_in_view = np.array([a < x1 and b > x0 and low < y1 and high > y0  # in view (D156)
+                                     for a, b, low, high in self.rectangles])
+            inside = np.flatnonzero(tile_in_view[c.tile])
+        else:
+            inside = np.flatnonzero((centres[:, 0] > x0 - margin) & (centres[:, 0] < x1 + margin)
+                                    & (centres[:, 1] > y0 - margin) & (centres[:, 1] < y1 + margin))
         too_many = len(inside) > MAX_CONTOURS
         shown = self.boxes["Detected contours"].isChecked() or self.boxes["Refined contours"].isChecked()
         self.contours_note.setText("Zoom in to see the contours" if too_many and shown else "")

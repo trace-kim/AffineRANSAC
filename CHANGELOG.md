@@ -203,6 +203,11 @@ they open, flagged as outdated.
 - Contour diagnosis: *Pattern* contours finds the outline of every region of any pattern, of any shape and
   direction: closed where the region lies inside the image, open where it runs out of it. Runs still measure
   contacts only. The results are unchanged (D155).
+- *Pattern* contours can be run: the images are stitched by their contours, whatever the pattern (lines in any
+  direction too), and the Stitching tab shows the placement, with the contours on *Load contours*. Straight lines
+  fix an image across them; along them it stays at its stage position. Images where positions apart fit equally
+  well (a repeating pattern) are named in the log. The run stops after the stitching and is not saved: comparing
+  contours with the design is not built yet. Contact runs are unchanged (D156).
 - For AI agents: `python -m affine_ransac.release.agent run <folder>` analyses a folder without the window
   (`--set name=value` for parameters) and prints a review of the run as JSON; `review <file.npz>` prints it again.
   Its runs are saved under `maskreg_runs/`, never over the folder's own saved run. The results are unchanged (D154).

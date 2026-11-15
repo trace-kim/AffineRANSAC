@@ -119,8 +119,8 @@ class Settings:
                                        "in x and y. lines: horizontal lines running across the image, each edge "
                                        "measured across the lines (its height) in every column. contours: any "
                                        "pattern, the outline of every region, of any shape, open where the region "
-                                       "runs out of the image. Lines and contours so far only in the contour "
-                                       "diagnosis window, runs measure contacts")
+                                       "runs out of the image; a run stitches the images by them and stops "
+                                       "there. Lines only in the contour diagnosis window")
     layer: int = setting(100, "Layer of the contacts in the .oas")
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
     background_px: float = setting(0.0, "Flatten the background first, so that one threshold fits the whole image "

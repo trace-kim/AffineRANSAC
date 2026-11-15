@@ -18,9 +18,13 @@ from the detection and after refinement (read_contours).
 
 A run that stitched the tiles but measured too few contacts raises AnalysisFailed, which carries what was found
 (the stitching, every tile's centres) and why each tile was not measured, so the app can show it.
+
+Pattern contours (D155, D156): the images are stitched by their contours (stitch_by_contours) and the run stops
+there, as an AnalysisFailed marked stitched_only: comparing contours with the design is not built yet.
 """
 
 import re
+import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
@@ -32,10 +36,12 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
-from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Settings, check_settings,
-                                   checked_overlaps, contour_options, detect_layer, helper_pool, in_image_map,
+from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Settings, any_shape_options,
+                                   check_settings, checked_overlaps, contour_options, detect_layer, helper_pool,
+                                   in_image_map,
                                    load_image_tiles, merged_contact_sizes, placement_guide, placement_text,
                                    report_stitching)
+from affine_ransac.contour_stitching import EdgePoints, edge_points, overlap_distances, placed_by_contours
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -43,7 +49,7 @@ from affine_ransac.intrafield import IntrafieldMap, correct_points
 from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
-from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, measurement_pairs,
+from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, find_contours, measurement_pairs,
                                     outlines_inside_frame, process_tile,
                                     stitch_design, stitch_image_by_image, stitch_tiles, stripe_directions,
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
@@ -122,9 +128,12 @@ class AnalysisFailed(RuntimeError):
     contacts, moving None), to show on the Stitching tab, never saved; not_measured: tile index -> why no error
     was computed for that tile (registration.design_errors_after_stitching)."""
 
-    def __init__(self, message: str, result: ReleaseResult, not_measured: dict[int, str]):
+    def __init__(self, message: str, result: ReleaseResult, not_measured: dict[int, str],
+                 stitched_only: bool = False):
+        """stitched_only: nothing failed; the run ends after the stitching because the rest is not built for its
+        pattern (contours, D156)."""
         super().__init__(message)
-        self.result, self.not_measured = result, not_measured
+        self.result, self.not_measured, self.stitched_only = result, not_measured, stitched_only
 
 
 def analyse_folder(folder, kind: str, settings: Settings, records: list | None = None,
@@ -144,9 +153,11 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         log(text)
 
     check_settings(s, kind)
-    if kind == "images" and s.pattern != "contacts":  # only the contour diagnosis finds the others so far (D153, D155)
-        raise ValueError(f"{s.pattern.capitalize()} can only be tried in the contour diagnosis window so far. Set "
-                         f"PATTERN to contacts to run.")
+    if kind == "images" and s.pattern == "lines":  # only the contour diagnosis finds them (D153)
+        raise ValueError("Lines can only be tried in the contour diagnosis window. Set PATTERN to contours (any "
+                         "pattern, lines too) or contacts to run.")
+    if kind == "images" and s.pattern == "contours":  # stitched by their contours; no further yet (D156)
+        raise stitch_by_contours(folder, records, s, record, lines, progress, pool)
     progress(0.0, "Reading the tiles")
     if kind == "images":
         progress(0.0, "Detecting the contact layer")
@@ -248,6 +259,100 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                                       s.moving_step_um * 1000)
     progress(1.0, "Done")
     return result(moving, LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None)
+
+
+def _edge_tile(image_path, fov_nm, options: dict) -> tuple[EdgePoints, int, int, float]:
+    """One SEM image's contours of any pattern (pipeline.find_contours, refined) as edge points in tile-local nm, how
+    many of them are closed and open, and the pixel size in nm; at module level so that worker processes can run
+    it."""
+    image = load_sem_image(image_path)
+    refined = find_contours(image, **options)[1]
+    pixel_nm = fov_nm[0] / image.shape[1]
+    points = edge_points(refined, image.shape, pixel_nm)
+    return points, int(refined.closed.sum()), int((~refined.closed).sum()), pixel_nm
+
+
+def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[str], progress,
+                       pool: ProcessPoolExecutor | None = None) -> AnalysisFailed:
+    """The run of an image folder with pattern contours, as far as it is built (D156): every image's contours of any
+    pattern (worker processes, as the tiles of a contact run), the images placed by them one at a time
+    (contour_stitching.placed_by_contours; search up to max_match_nm from the stage position, on the pixel grid),
+    and how far the edges of every overlap then lie apart (overlap_distances), logged with record (lines: the log
+    so far). Returns the AnalysisFailed to raise (stitched_only): its result shows on the Stitching tab and is not
+    saved; it has no contacts and no design."""
+    if not records:
+        raise ValueError("No images in the folder")
+    n, tile_ids = len(records), [r.tile_id for r in records]
+    centers = np.array([[r.center_x_nm, r.center_y_nm] for r in records], dtype=float)
+    sizes = np.array([[r.fov_x_nm, r.fov_y_nm] for r in records], dtype=float)
+    record("Pattern contours: the images are stitched by their contours; not compared with the design yet")
+    edges, pixels, closed, opened = [], [], 0, 0
+    with helper_pool() if pool is None else nullcontext(pool) as pool:  # a pool given is left running
+        futures = [pool.submit(_edge_tile, str(r.image_path), tuple(size), any_shape_options(s))
+                   for r, size in zip(records, sizes)]
+        try:
+            for k, future in enumerate(futures):
+                points, n_closed, n_open, pixel = future.result()
+                edges.append(points.moved(centers[k]))
+                pixels.append(pixel)
+                closed, opened = closed + n_closed, opened + n_open
+                progress(LOAD_SHARE * (k + 1) / n, f"Contours of image {k + 1} of {n}")
+        finally:
+            for future in futures:
+                future.cancel()  # after an error or a cancel (D152), the images not started are not read
+    record(f"{n} images: {closed} closed and {opened} open contours, {sum(len(e.xy) for e in edges)} edge points")
+    empty = [tile_ids[k] for k, e in enumerate(edges) if len(e.xy) == 0]
+    if empty:
+        record(f"!! {len(empty)} image(s) without a contour: {empty}")
+
+    progress(LOAD_SHARE, "Stitching by contours")
+    start = time.perf_counter()
+    pixel_nm = float(np.median(pixels))
+    corrections, choices = placed_by_contours(edges, centers, sizes, s.max_match_nm, pixel_nm)
+    record(contour_stitching_text(choices, corrections, tile_ids, s.max_match_nm, time.perf_counter() - start))
+    record(overlap_distance_text(overlap_distances(edges, centers, sizes, corrections, pixel_nm), tile_ids))
+    progress(1.0, "Done")
+    none = [np.empty((0, 2)) for _ in range(n)]
+    result = ReleaseResult(str(folder), "images", s, tile_ids, centers, sizes, tile_stripes(centers), none,
+                           list(none), StitchResult([], [], corrections), StitchResult([], [], np.zeros((n, 2))),
+                           np.empty((0, 2)), np.empty((0, 2)), None, [str(r.image_path) for r in records], lines)
+    return AnalysisFailed("The images are stitched by their contours (Stitching tab). Comparing contours with the "
+                          "design is not built yet.", result, {}, stitched_only=True)
+
+
+def contour_stitching_text(choices: list, corrections: np.ndarray, tile_ids: list[str], search_nm: float,
+                           seconds: float) -> str:
+    """How placed_by_contours placed the images, in words: how many, how many of them the edges fixed both ways or
+    across straight edges only, the ones several positions fitted equally (with !!), the ones not placed (with !!)."""
+    n = len(tile_ids)
+    placed = n - int(np.isnan(corrections[:, 0]).sum())
+    across = sum(c.directions == 1 for c in choices)
+    tied = [tile_ids[c.tile] for c in choices if c.positions > 1]
+    moved = np.linalg.norm([c.correction for c in choices], axis=1) if choices else np.zeros(1)
+    text = (f"Stitching by contours: {placed} of {n} images placed in {seconds:.0f} s (search {search_nm:g} nm, "
+            f"max_match_nm), moved by up to {moved.max():.1f} nm. {len(choices) - across} placed both ways by their "
+            f"edges; {across} across straight edges only, along them left at the stage position.")
+    if tied:
+        text += (f"\n!! {len(tied)} image(s) where positions apart fit equally well (a repeating pattern): the one "
+                 f"nearest the stage position was taken, which can be a whole pitch off: {tied[:20]}"
+                 f"{' ...' if len(tied) > 20 else ''}")
+    unplaced = [tile_ids[k] for k in np.flatnonzero(np.isnan(corrections[:, 0]))]
+    if unplaced:
+        text += (f"\n!! {len(unplaced)} image(s) NOT PLACED (too few edges shared with a placed neighbour): "
+                 f"{unplaced[:20]}{' ...' if len(unplaced) > 20 else ''}")
+    return text
+
+
+def overlap_distance_text(distances: list, tile_ids: list[str]) -> str:
+    """How far the edges of the overlaps lie apart after the stitching, in words: the typical and the largest."""
+    compared = [d for d in distances if d.pairs]
+    if not compared:
+        return "!! No overlap with edges in both images: the stitching cannot be checked"
+    rms = np.array([d.rms_nm for d in compared])
+    worst = compared[int(np.argmax(rms))]
+    return (f"Overlaps after the stitching: {len(compared)} with edges in both images; their edges lie "
+            f"{np.median(rms):.2f} nm apart (rms across the edges, median over the overlaps), at most "
+            f"{rms.max():.2f} nm ({tile_ids[worst.i]} / {tile_ids[worst.j]})")
 
 
 def measure_contact_sizes(result: ReleaseResult, roi_width_nm: float = 0.0,
@@ -430,6 +535,43 @@ class TileContours:
                                   # detected ones)
 
 
+def _tile_any_contours(image_path, fov_nm, options: dict) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
+    """One image's contours of any pattern reduced to what TileContours needs, tile-local nm: (detected contours,
+    refined contours, which are closed); at module level so that worker processes can run it."""
+    image = load_sem_image(image_path)
+    detected, refined = find_contours(image, **options)
+
+    def local(points):
+        return pixel_to_tile_nm(points, image.shape, fov_nm[0] / image.shape[1])
+    return [local(c) for c in detected.points], [local(c) for c in refined.points], detected.closed
+
+
+def read_any_contours(result: ReleaseResult, progress, pool: ProcessPoolExecutor | None = None) -> "TileContours":
+    """read_contours of a run with pattern contours (D156): each image's contours of any pattern found again with
+    the run's settings. Its "contacts" are contours, open ones too; their centres are the means of their points,
+    only to tell which are in view."""
+    s = result.settings
+    tiles, detected, refined, closed = [], [], [], []
+    with helper_pool() if pool is None else nullcontext(pool) as pool:
+        futures = [pool.submit(_tile_any_contours, path, tuple(size), any_shape_options(s))
+                   for path, size in zip(result.image_paths, result.sizes)]
+        try:
+            for k, future in enumerate(futures):
+                found, moved, whole = future.result()
+                tiles.append(np.full(len(found), k))
+                detected += found
+                refined += moved
+                closed += list(whole)
+                progress((k + 1) / len(futures), f"Contours of tile {k + 1} of {len(futures)}")
+        finally:
+            for future in futures:
+                future.cancel()
+    start = np.concatenate([[0], np.cumsum([len(c) + 2 for c in detected])]).astype(np.int64)
+    centres = [np.array([np.nanmean(c, axis=0) for c in found]).reshape(-1, 2) for found in (detected, refined)]
+    return TileContours(np.concatenate(tiles) if tiles else np.empty(0, int), start,
+                        drawable_outlines(detected, closed), drawable_outlines(refined, closed), *centres)
+
+
 def _tile_contours(arguments: tuple, options: dict) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
     """process_tile(*arguments, **options) reduced to what TileContours needs, tile-local nm: (detected contours,
     refined contours, detected centres, refined centres); at module level so that worker processes can run it."""
@@ -452,6 +594,8 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     pool: the worker processes to use, left running (high-performance mode, D151); None: new ones. If progress raises
     (MaskReg's Cancel, D152), the tiles not started are dropped."""
     s = result.settings
+    if s.pattern == "contours":
+        return read_any_contours(result, progress, pool)
     arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []
@@ -483,12 +627,14 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
                         np.concatenate(refined_centres).reshape(-1, 2))
 
 
-def drawable_outlines(contours: list[np.ndarray]) -> np.ndarray:
+def drawable_outlines(contours: list[np.ndarray], closed: list | None = None) -> np.ndarray:
     """The contours (each (M, 2)) as one (rows, 2) float32 line to draw with connect="finite": each closed (its first
-    point again) and followed by a NaN row."""
+    point again) and followed by a NaN row. closed: per contour, False for an open one (D155), which gets a second
+    NaN row instead of its first point, so that every contour takes its points + 2 rows."""
     nan = np.full((1, 2), np.nan)
-    return np.concatenate([np.vstack([c, c[:1], nan]) for c in contours]).astype(np.float32) if contours \
-        else np.empty((0, 2), np.float32)
+    closed = [True] * len(contours) if closed is None else closed
+    return np.concatenate([np.vstack([c, c[:1] if whole else nan, nan]) for c, whole in zip(contours, closed)]
+                          ).astype(np.float32) if contours else np.empty((0, 2), np.float32)
 
 
 def read_display_images(paths: list[str], progress: Callable[[float, str], None] = lambda fraction, stage: None

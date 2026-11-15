@@ -917,14 +917,72 @@ def test_realignment_is_a_parameter_of_image_folders():
     assert "realign" not in PARAMETERS["contour CSV"]
 
 
-@pytest.mark.parametrize("pattern", ["lines", "contours"])
-def test_a_run_with_another_pattern_than_contacts_is_refused_so_far(tmp_path, pattern):
-    """D153, D155: lines and contours are only found in the contour diagnosis window so far; the pattern is a
-    parameter of image folders, so that it can be set back to contacts."""
+def test_a_run_with_lines_is_refused(tmp_path):
+    """D153: lines are only found in the contour diagnosis window; the pattern is a parameter of image folders, so
+    that it can be set to contours (which runs, D156) or back to contacts."""
     assert "pattern" in PARAMETERS["images"] and "pattern" not in PARAMETERS["contour CSV"]
     assert DEFAULTS.pattern == "contacts"
-    with pytest.raises(ValueError, match=f"{pattern.capitalize()} can only be tried in the contour diagnosis window"):
-        analyse_folder(tmp_path, "images", replace(DEFAULTS, pattern=pattern), records=[])
+    with pytest.raises(ValueError, match="Lines can only be tried in the contour diagnosis window"):
+        analyse_folder(tmp_path, "images", replace(DEFAULTS, pattern="lines"), records=[])
+
+
+LINE_PITCH, LINE_PIXEL, LINE_SIZE = 80.0, 2.0, 200  # nm, nm, px: images of 400 nm
+
+
+def write_line_folder(folder, errors):
+    """Images one above the other (overlapping by a quarter) of bright vertical lines LINE_PITCH apart, each really
+    lying `errors[k]` nm from its stage position; their records, without .oas files."""
+    import cv2
+    from types import SimpleNamespace
+    fov, records = LINE_SIZE * LINE_PIXEL, []
+    for k, error in enumerate(np.asarray(errors, dtype=float)):
+        nominal = np.array([0.0, k * 0.75 * fov])
+        fine = (np.arange(LINE_SIZE * 8) + 0.5) / 8 - 0.5  # 8 samples per pixel, averaged: edges at sub-pixel places
+        x = (fine - (LINE_SIZE - 1) / 2) * LINE_PIXEL + nominal[0] + error[0]
+        row = 60.0 + 120.0 * (np.mod(x, LINE_PITCH) < LINE_PITCH / 2).reshape(LINE_SIZE, 8).mean(axis=1)
+        image = np.tile(row, (LINE_SIZE, 1)) + np.random.default_rng(k).normal(0, 4, (LINE_SIZE, LINE_SIZE))
+        image = cv2.GaussianBlur(image, (0, 0), 1.0).clip(0, 255).astype(np.uint8)
+        cv2.imencode(".png", image)[1].tofile(str(folder / f"{k}.png"))
+        records.append(SimpleNamespace(tile_id=f"T{k}", image_path=folder / f"{k}.png", oas_path=None,
+                                       center_x_nm=nominal[0], center_y_nm=nominal[1], fov_x_nm=fov, fov_y_nm=fov))
+    return records
+
+
+def test_a_run_with_contours_stitches_the_images_by_their_contours_and_stops_there(tmp_path):
+    """D156: pattern contours places the images by their contours: across the lines from the edges, along them from
+    the stage. The run ends as an AnalysisFailed marked stitched_only, whose result the Stitching tab shows, with
+    the images' contours on request; nothing is compared with the design yet."""
+    from affine_ransac.release.analysis import AnalysisFailed
+    from affine_ransac.release.views import tile_details
+    pg.mkQApp()
+    errors = np.array([[0.0, 0.0], [6.4, -3.0], [-4.6, 5.0]])
+    records = write_line_folder(tmp_path, errors)
+    s = replace(DEFAULTS, pattern="contours", dark_contacts=False, max_match_nm=20.0)
+    lines = []
+    with pytest.raises(AnalysisFailed, match="stitched by their contours") as stopped:
+        analyse_folder(tmp_path, "images", s, records, log=lines.append)
+    result = stopped.value.result
+    assert stopped.value.stitched_only and result.moving is None
+    moved = result.stitch.corrections - result.stitch.corrections[0]
+    np.testing.assert_allclose(moved[:, 0], errors[:, 0], atol=0.3)  # across the lines: from the edges
+    assert np.ptp(result.stitch.corrections[:, 1]) == 0              # along them: the stage position
+    text = "\n".join(lines)
+    assert "Stitching by contours: 3 of 3 images placed" in text and "2 across straight edges only" in text
+    assert "Overlaps after the stitching: 2 with edges in both images" in text and "!!" not in text
+
+    view = StitchingView(result, use_opengl=False, on_load_contours=lambda: None, not_measured={})
+    assert "Stitching by contours" in view.status_text() and "Overlaps after" in view.status_text()
+    assert "Shift from the stitching by contours" in tile_details(result, 1)
+    view.set_contours(read_contours(result))
+    assert not view.contours.tile.size == 0 and view.boxes["Refined contours"].isChecked()
+    assert not view.boxes["Refined centres"].isEnabled()  # only contacts have a centre
+    x, y = view.layers["Refined contours"].getData()  # at the placement shown first: stitched
+    assert np.isfinite(x).sum() > 1000
+    # the edges of all three images lie on each other across the lines: every edge is half a pitch from the next
+    edges_x = x[np.isfinite(x)] + view.origin[0]
+    half = LINE_PITCH / 2
+    common = np.angle(np.exp(2j * np.pi * edges_x / half).mean()) * half / (2 * np.pi)  # where the edges lie, mod half
+    assert np.median(np.abs(np.mod(edges_x - common + half / 2, half) - half / 2)) < 0.3
 
 
 def wait(window, seconds=120):
