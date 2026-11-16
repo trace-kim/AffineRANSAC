@@ -59,6 +59,11 @@ it stays as built at the user's wish (2026-11-12) and is not to be extended.
 
 ## Known problems, not fixed
 
+- The user's requested synthetic horizontal-line benchmark (2026-11-16) placed all 128 images with at most
+  0.0714 nm vertical error, but moved them along the unmeasured horizontal direction by up to 86 pixels despite
+  zero true horizontal error. All choices reported one measured direction. The 16-image example gave identical
+  42-pixel sideways shifts before and after D164, so it predates the optimization. No real-data claim or fix;
+  settings and reproduction are in `docs/notes/2026-11-16-contour-cpu-benchmark.md`.
 - A moving-window position holding fewer than 3 contacts stops the whole run (`fitting/moving_window.py`, code
   checked). The user met it on 2026-10-27.
 
