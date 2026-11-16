@@ -208,6 +208,9 @@ they open, flagged as outdated.
   fix an image across them; along them it stays at its stage position. Images where positions apart fit equally
   well (a repeating pattern) are named in the log. The run stops after the stitching and is not saved: comparing
   contours with the design is not built yet. Contact runs are unchanged (D156).
+- Contour diagnosis: a log under the figure. Every search adds the time of each of its steps, with the longest
+  marked, the time to draw the result, and the counts the times depend on (regions, holes, contours, edge points).
+  The results are unchanged (D157).
 - For AI agents: `python -m affine_ransac.release.agent run <folder>` analyses a folder without the window
   (`--set name=value` for parameters) and prints a review of the run as JSON; `review <file.npz>` prints it again.
   Its runs are saved under `maskreg_runs/`, never over the folder's own saved run. The results are unchanged (D154).

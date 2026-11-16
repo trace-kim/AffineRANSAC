@@ -217,6 +217,40 @@ def test_with_pattern_contours_the_window_shows_the_contours_of_any_pattern(tmp_
     assert dialog.values() == s
 
 
+def test_every_search_adds_the_time_of_each_step_to_the_log(tmp_path):
+    """D157: the log under the figure gets one entry per search, the newest last: the image and settings, the time
+    of every step with its share of the whole, the longest marked, what was not timed, and the counts the times
+    depend on. For contours every step of the detection and the refinement; for contacts and lines fewer."""
+    from affine_ransac.release.contour_dialog import NOT_TIMED
+    def pattern(x, y):
+        return vertical_lines(x, y) | (np.hypot(x - 130, y - 100) < 15)
+    s = replace(SETTINGS, pattern="contours", dark_contacts=False)
+    dialog, path = open_dialog(tmp_path, s, shape_image(pattern, noise=5.0))
+    entries = dialog.log_box.toPlainText().strip().split("\n\n")  # one per search so far
+    entry = entries[-1]
+    assert "tile.png, 300 × 200 px.  PATTERN contours, DETECTION otsu, REFINEMENT mid-level, UPSCALE 1" in entry
+    steps = {line.split(" %  ")[1].replace("   <== the longest", ""): float(line.split(" s ")[0])
+             for line in entry.splitlines() if " %  " in line}
+    for step in ("threshold mask", "trace every kept region in its bounding box",
+                 "interior level of every region (sorts every pixel of the image)",
+                 "band level of every contour (from all edge points of its region)",
+                 "edge position of every point, contour by contour",
+                 "draw them on screen (again at every zoom and pan)", NOT_TIMED):
+        assert step in steps, step
+    assert entry.count("<== the longest") == 1
+    total = float(entry.split(" s in all:")[0].split()[-1])
+    assert abs(sum(steps.values()) - total) < 0.01 * len(steps) + 0.01  # nothing of the whole is left out
+    assert "60,000 pixels searched. Mask: 3 regions; 3 kept, 0 smaller than MIN_AREA_PX" in entry
+    assert "Boundaries around holes inside the kept regions: 0" in entry
+    assert "5 contours (1 closed, 4 open)" in entry and "Most contours in one region: 2, with" in entry
+
+    dialog.editors["pattern"].setCurrentText("contacts")  # another search: another entry, below the others
+    settle(dialog)
+    after = dialog.log_box.toPlainText().strip().split("\n\n")
+    assert after[:-1] == entries
+    assert "PATTERN contacts" in after[-1] and "detect the contacts" in after[-1] and "refine their edges" in after[-1]
+
+
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):
     dialog, _ = open_dialog(tmp_path)
     closed = []

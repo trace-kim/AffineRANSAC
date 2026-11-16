@@ -86,6 +86,27 @@ def test_a_region_with_a_hole_gives_a_closed_contour_for_each_boundary():
         np.testing.assert_allclose(outward, -1 if radius.mean() < 40 else 1, atol=0.05)  # the hole's: into the hole
 
 
+def test_a_log_gets_the_time_of_every_step_and_the_counts_they_depend_on():
+    """D157: find_contours fills a StepLog, for the contour diagnosis log; the contours are the same with it."""
+    from affine_ransac.step_log import StepLog
+    log = StepLog()
+    _, refined = find_contours(shape_image(ring), **BRIGHT, log=log)
+    _, plain = find_contours(shape_image(ring), **BRIGHT)
+    assert all(np.array_equal(a, b) for a, b in zip(refined.points, plain.points))
+    assert list(log.seconds) == [
+        "flatten and denoise", "upscale", "threshold mask", "regions of the mask",
+        "go through the regions, leave out by size", "trace every kept region in its bounding box",
+        "cut the boundaries at the image border, direction of every point", "smooth the image for the edges",
+        "sample the image across the edge at every point",
+        "interior level of every region (sorts every pixel of the image)",
+        "band level of every contour (from all edge points of its region)",
+        "edge position of every point, contour by contour", "move the points to their edges",
+        "back to the image's own pixels"]
+    assert all(seconds >= 0 for seconds in log.seconds.values())
+    assert log.counts["regions"] == log.counts["kept"] == 1 and log.counts["holes"] == 1  # the ring and its hole
+    assert 110 ** 2 < log.counts["box_pixels"] < 115 ** 2  # the ring's bounding box: its outer diameter squared
+
+
 @pytest.mark.parametrize("rule", RULES)
 def test_every_rule_finds_the_edges_within_a_pixel(rule):
     _, refined = find_contours(shape_image(vertical_lines), refinement=rule, **BRIGHT)

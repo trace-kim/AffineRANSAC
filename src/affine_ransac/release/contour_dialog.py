@@ -18,7 +18,8 @@ Coordinates are the pixel frame: (x, y) px, y down, pixel centres at whole numbe
 
 import html
 import threading
-from dataclasses import dataclass, fields, replace
+import time
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,7 @@ from affine_ransac.features.contours import Contours
 from affine_ransac.features.lines import LineEdges, column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import find_contacts, find_contours, find_lines, prepared_image
+from affine_ransac.step_log import StepLog, timed
 from affine_ransac.release import style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
@@ -60,23 +62,73 @@ class Diagnosis:
     refined: DetectedContacts | LineEdges | Contours   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
     mask: np.ndarray            # uint8, the pixels of `image`: 1 = taken as contact by the threshold
+    log: StepLog = field(default_factory=StepLog)  # the time of each step of the search (log_entry, D157)
 
 
 def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
     """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
     mask."""
-    flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight)
+    log = StepLog()
+    with timed(log, "flatten and denoise"):
+        flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight)
     # find_contacts would flatten and denoise the image first: given it so (up to a few s), it need not do it again
     given = replace(s, background_px=0.0, denoise="none")
     if s.pattern == "lines":
-        (detected, refined), low_contrast = find_lines(flat, **line_options(given)), 0
+        with timed(log, "find the lines and their edges"):
+            (detected, refined), low_contrast = find_lines(flat, **line_options(given)), 0
     elif s.pattern == "contours":
-        (detected, refined), low_contrast = find_contours(flat, **any_shape_options(given)), 0
+        (detected, refined), low_contrast = find_contours(flat, **any_shape_options(given), log=log), 0
     else:
-        detected, refined, low_contrast = find_contacts(flat, **contour_options(given))
-    shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
-    mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
-    return Diagnosis(shown, detected, refined, low_contrast, mask)
+        seconds = {}
+        detected, refined, low_contrast = find_contacts(flat, **contour_options(given), seconds=seconds)
+        log.add("detect the contacts (upscale, threshold mask, regions, contrast check)", seconds["detect"])
+        log.add("refine their edges", seconds["refine"])
+    with timed(log, "upscale and threshold mask again, for the display"):
+        shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
+        mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
+    return Diagnosis(shown, detected, refined, low_contrast, mask, log)
+
+
+NOT_TIMED = "not timed (between the steps; waiting for the window)"
+
+
+def log_entry(d: Diagnosis, s: Settings, name: str, shape: tuple[int, int], total: float) -> str:
+    """One search as text for the window's log (D157): when, the image and the settings that decide the time; the
+    time of every step (d.log), with its share of `total` (seconds from the start of the search until it was drawn)
+    and the longest marked; what is left of the total as NOT_TIMED; then the counts the times depend on."""
+    seconds = dict(d.log.seconds)
+    seconds[NOT_TIMED] = max(total - sum(seconds.values()), 0.0)
+    longest = max(seconds, key=seconds.get)
+    lines = [f"{time.strftime('%H:%M:%S')}  {name}, {shape[1]} × {shape[0]} px.  PATTERN {s.pattern}, DETECTION "
+             f"{s.detection}, REFINEMENT {s.refinement}, UPSCALE {s.upscale}, DENOISE {s.denoise}, BACKGROUND_PX "
+             f"{s.background_px:g}, MIN_AREA_PX {s.min_area_px}",
+             f"  {total:.2f} s in all:"]
+    lines += [f"  {t:8.2f} s {100 * t / max(total, 1e-9):4.0f} %  {step}" + ("   <== the longest" * (step == longest))
+              for step, t in seconds.items()]
+    return "\n".join(lines + ["  " + line for line in count_lines(d, s)]) + "\n"
+
+
+def count_lines(d: Diagnosis, s: Settings) -> list[str]:
+    """What a search worked on, in words: the numbers its time depends on."""
+    pixels = f"{d.image.size:,} pixels searched"
+    if s.pattern == "lines":
+        return [f"{pixels}. {len(d.refined.upper):,} lines."]
+    if s.pattern == "contacts":
+        return [f"{pixels}. {len(d.refined.centers):,} contacts. Regions left out: {d.detected.left_out}."]
+    found, c, left = d.refined, d.log.counts, d.detected.left_out
+    regions, counts = np.unique(found.region, return_counts=True)
+    most = int(np.argmax(counts)) if len(counts) else None
+    points = np.array([len(p) for p in found.points])
+    lines = [f"{pixels}. Mask: {c['regions']:,} regions; {c['kept']:,} kept, {left['small']:,} smaller than "
+             f"MIN_AREA_PX, {left['large']:,} larger than MAX_AREA_PX.",
+             f"Bounding boxes of the kept regions, all together: {c['box_pixels'] / d.image.size:.1f} times the image.",
+             f"Boundaries around holes inside the kept regions: {c['holes']:,} (holes are not left out by size).",
+             f"{len(points):,} contours ({int(found.closed.sum()):,} closed, {int((~found.closed).sum()):,} open), "
+             f"{int(points.sum()):,} edge points."]
+    if most is not None:
+        lines.append(f"Most contours in one region: {int(counts[most]):,}, with "
+                     f"{int(points[found.region == regions[most]].sum()):,} edge points.")
+    return lines
 
 
 def summary(d: Diagnosis, s: Settings) -> str:
@@ -186,6 +238,9 @@ class ContourDialog(QtWidgets.QDialog):
         self.shown = None     # the image shown: the one the contacts are found in
         self.request = 0      # number of the newest search asked for
         self.running = False  # a search runs in the background thread
+        self.name = ""        # the file name of the image loaded
+        self.search_started = 0.0   # when the search running (or the last one) began (time.perf_counter)
+        self.searched_with = settings  # its settings
         self.searched.connect(self._searched)
         self.timer = QtCore.QTimer(self, singleShot=True, interval=150)  # a search once the typing pauses
         self.timer.timeout.connect(self.search)
@@ -262,6 +317,12 @@ class ContourDialog(QtWidgets.QDialog):
         self.cursor_label = QtWidgets.QLabel("")
         self.cursor_label.setStyleSheet(f"color: {style.MUTED}")
         self.plot.scene().sigMouseMoved.connect(self._show_cursor)
+        # The log (D157): every search adds the time of each of its steps, the newest last.
+        self.log_box = QtWidgets.QPlainTextEdit(readOnly=True)
+        self.log_box.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
+        self.log_box.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_box.setMaximumBlockCount(5000)
+        self.log_box.setPlaceholderText("Log: the time of every step of each search, the newest last")
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok
                                              | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         self.apply_button = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
@@ -282,8 +343,13 @@ class ContourDialog(QtWidgets.QDialog):
         status = QtWidgets.QHBoxLayout()
         status.addWidget(self.summary, stretch=1)
         status.addWidget(self.busy_label)
+        left = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)  # the figure over the log; drag to resize
+        left.addWidget(self.graphics)
+        left.addWidget(self.log_box)
+        left.setStretchFactor(0, 1)
+        left.setSizes([700, 190])
         middle = QtWidgets.QHBoxLayout()
-        middle.addWidget(self.graphics, stretch=1)
+        middle.addWidget(left, stretch=1)
         side = QtWidgets.QWidget()
         side.setLayout(panel)
         side.setFixedWidth(330)
@@ -329,7 +395,7 @@ class ContourDialog(QtWidgets.QDialog):
         except (OSError, ValueError) as error:
             QtWidgets.QMessageBox.warning(self, "Contour diagnosis", f"The image could not be read:\n{error}")
             return
-        self.image, self.shown, self.folder = image, image, str(Path(path).parent)
+        self.image, self.shown, self.folder, self.name = image, image, str(Path(path).parent), Path(path).name
         self.image_item.setImage(image, levels=(0, 255))
         place(self.image_item, image.shape)
         self.name_label.setText(f"{Path(path).name}   ({image.shape[1]} × {image.shape[0]} px)")
@@ -356,6 +422,7 @@ class ContourDialog(QtWidgets.QDialog):
         self.running = True
         self.busy_label.setText(f"Finding the {self.values().pattern}...")
         number, image, s = self.request, self.image, self.values()
+        self.search_started, self.searched_with = time.perf_counter(), s
 
         def work():
             try:
@@ -378,7 +445,14 @@ class ContourDialog(QtWidgets.QDialog):
             self.summary.setText(f"<span style='color:{style.FAILURE}'>The {self.values().pattern} could not be "
                                  f"found: {html.escape(str(found))}</span>")
             return
+        back = time.perf_counter()
         self.show_diagnosis(found)
+        shown = time.perf_counter()
+        self.graphics.viewport().repaint()  # drawn now, not when the window next gets to it, so that it is timed
+        found.log.add("give the image, mask and contours to the plot", shown - back)
+        found.log.add("draw them on screen (again at every zoom and pan)", time.perf_counter() - shown)
+        self.log_box.appendPlainText(log_entry(found, self.searched_with, self.name, self.image.shape,
+                                               time.perf_counter() - self.search_started))
 
     def show_diagnosis(self, d: Diagnosis):
         self.shown = d.image

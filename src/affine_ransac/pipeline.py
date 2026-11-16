@@ -50,6 +50,7 @@ from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.matching import candidate_shifts, match_points_tree, match_with_shift
 from affine_ransac.overlap import match_overlap, overlapping_pairs, points_in_box
 from affine_ransac.overlap_fit import OverlapFit, fit_overlap
+from affine_ransac.step_log import StepLog, timed
 from affine_ransac.stitching import apply_correction, solve_tile_affines, solve_tile_rigid, solve_tile_shifts
 
 
@@ -312,21 +313,25 @@ def find_contours(
     edge_step_px: float = 0.25,
     edge_blur_px: float = 1.0,
     normal_span: int = 3,
+    log: StepLog | None = None,
 ) -> tuple[Contours, Contours]:
     """The contours of any pattern in one SEM image (uint8), as find_contacts finds contacts (D155): (detected,
     refined), in the image's own pixels (features.contours): the boundary of every region, of any shape, open where
     the region runs out of the image. The options are the contour settings of the same names
     (analysis.ANY_SHAPE_SETTINGS); dark_contacts: the regions are the darker side. On prepared_image, upscaled
     `upscale` times, the options in pixels multiplied by it (areas by its square), as for contacts; refinement
-    "none": the detected contours."""
-    image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
+    "none": the detected contours. log: if given, gets the time of every step (the contour diagnosis log, D157)."""
+    with timed(log, "flatten and denoise"):
+        image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
     f = upscale
-    big = upscaled_image(image, f)
+    with timed(log, "upscale"):
+        big = upscaled_image(image, f)
     detected, labels = detect_contours(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
-                                       max_area_px * f ** 2 or None, detection, normal_span * f)
+                                       max_area_px * f ** 2 or None, detection, normal_span * f, log)
     refined = detected if refinement == "none" else refine_contours(
-        big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement)
-    return in_image_contours(detected, f), in_image_contours(refined, f)
+        big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement, log)
+    with timed(log, "back to the image's own pixels"):
+        return in_image_contours(detected, f), in_image_contours(refined, f)
 
 
 def process_tile(
