@@ -3,7 +3,9 @@
 import cv2
 import numpy as np
 import pytest
+from scipy import ndimage
 
+from affine_ransac.features.contours import mid_levels
 from affine_ransac.features.edges import RULES
 from affine_ransac.pipeline import find_contacts, find_contours
 from test_pipeline import FOV, LATTICE, SIZE, render_tile
@@ -106,6 +108,34 @@ def test_a_log_gets_the_time_of_every_step_and_the_counts_they_depend_on():
     assert all(seconds >= 0 for seconds in log.seconds.values())
     assert log.counts["regions"] == log.counts["kept"] == 1 and log.counts["holes"] == 1  # the ring and its hole
     assert 110 ** 2 < log.counts["box_pixels"] < 115 ** 2  # the ring's bounding box: its outer diameter squared
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_region_mid_levels_compute_each_shared_band_once(monkeypatch, dtype):
+    """Contours of one region share a band median, even when separated in contour order.
+    Keep the old arithmetic for both odd and even pixel/profile counts."""
+    signed = np.array([[30, 10, 90, 12], [42, 16, 24, 34], [28, 15, 21, 13]], dtype=dtype)
+    labels = np.array([[9, 9, 0, 2], [9, 9, 0, 2], [9, 0, 2, 2]])
+    region = np.array([9, 2, 9, 2])
+    offsets = np.array([-1.0, 0.0, 1.0])
+    parts = [np.array(values, dtype=dtype) for values in (
+        [[200, 50.1, 60.2]], [[200, 40.3, 55.4]],
+        [[200, 65.5, 70.6], [200, 75.7, 80.8]],
+        [[200, 45.9, 50.1], [200, 60.2, 65.3], [200, 70.4, 75.5]])]
+    interior = dict(zip(np.unique(region), ndimage.median(signed, labels, np.unique(region))))
+    expected = [(interior[number] + np.median(np.concatenate([
+        part[:, offsets >= 0].max(axis=1) for other, part in zip(region, parts) if other == number]))) / 2
+                for number in region]
+    median, counts = np.median, []
+
+    def counted_median(values):
+        counts.append(len(values))
+        return median(values)
+
+    monkeypatch.setattr(np, "median", counted_median)
+    actual = mid_levels(signed, labels, region, parts, offsets)
+    np.testing.assert_array_equal(actual, expected)
+    assert counts == [3, 4]  # one odd and one even band, once each; all their contours' samples are retained
 
 
 @pytest.mark.parametrize("rule", RULES)

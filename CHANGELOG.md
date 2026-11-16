@@ -11,6 +11,10 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- Contour diagnosis reuses the flattened and denoised image when only detection, refinement or upscaling settings
+  change. Total-variation warm-up runs once per process; contours sharing a region reuse its band level.
+  The denoising solver, contours and saved-run versions are unchanged (D163).
+
 First numbered version. Saved runs: format 3, analysis 9. Runs saved by earlier copies of MaskReg carry no version:
 they open, flagged as outdated.
 

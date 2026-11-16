@@ -1,3 +1,6 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import cv2
 import numpy as np
 import pytest
@@ -122,6 +125,56 @@ def test_total_variation_gives_scikit_images_numbers():
     flat, rounds = total_variation(image, 0.5, max_rounds=3)
     np.testing.assert_array_equal(flat, denoise_tv_chambolle(image, weight=0.5, max_num_iter=3))
     assert rounds == 3
+
+
+def test_total_variation_warmup_runs_once_for_concurrent_callers(monkeypatch):
+    from affine_ransac.features import total_variation as tv
+
+    monkeypatch.setattr(tv, "_loops_ready", False)
+    entered, finish = threading.Event(), threading.Event()
+    start = threading.Barrier(4)
+    calls = []
+
+    def warmup(*args, **kwargs):
+        calls.append(1)
+        entered.set()
+        assert finish.wait(5)
+
+    def prepare():
+        start.wait(timeout=5)
+        tv.compile_loops()
+
+    monkeypatch.setattr(tv, "total_variation", warmup)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pending = [pool.submit(prepare) for _ in range(4)]
+        try:
+            assert entered.wait(5)
+            assert not any(task.done() for task in pending)
+        finally:
+            finish.set()
+        for task in pending:
+            task.result(timeout=5)
+    tv.compile_loops()
+    assert len(calls) == 1
+
+
+def test_total_variation_warmup_retries_after_failure(monkeypatch):
+    from affine_ransac.features import total_variation as tv
+
+    monkeypatch.setattr(tv, "_loops_ready", False)
+    calls = []
+
+    def warmup(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("compilation failed")
+
+    monkeypatch.setattr(tv, "total_variation", warmup)
+    with pytest.raises(RuntimeError, match="compilation failed"):
+        tv.compile_loops()
+    tv.compile_loops()
+    tv.compile_loops()
+    assert len(calls) == 2
 
 
 def test_each_denoising_method_is_the_librarys_own():

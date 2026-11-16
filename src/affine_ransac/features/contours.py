@@ -177,7 +177,9 @@ def mid_levels(signed: np.ndarray, labels: np.ndarray, region: np.ndarray, parts
         brightest = defaultdict(list)
         for number, part in zip(region, parts):
             brightest[number].append(part[:, offsets >= 0].max(axis=1))
-        return [(interior[number] + np.median(np.concatenate(brightest[number]))) / 2 for number in region]
+        levels = {number: (interior[number] + np.median(np.concatenate(values))) / 2
+                  for number, values in brightest.items()}
+        return [levels[number] for number in region]
 
 
 def in_image_contours(contours: Contours, factor: int) -> Contours:

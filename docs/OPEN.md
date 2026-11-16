@@ -23,6 +23,7 @@ day; nothing here was confirmed again by the user that day.
 
 | What | Built | State and what to check |
 |---|---|---|
+| Reuse contour preprocessing and shared region statistics (D163) | 2026-11-16 | Diagnosis reuses the native-resolution flattened/denoised image while only downstream settings change; new images or active preprocessing changes invalidate it. Numba warm-up runs once per process; contours sharing a region reuse its band level. Exact-output and invalidation tests pass; real-data timing is not measured. Check the log's reuse entry while adjusting area or refinement settings. The first denoising of a new image still uses the D159 solver. |
 | Stitching by contours (D156), pattern `contours` | 2026-11-16 | The user's first runs were slow and left many images not placed. Why they were not placed is not known. Out of this came the step-time log (D157) and a faster total variation (D158, D159; the user: still a bit slow). To learn first: the first line of the stitching log, how many of how many images were placed. |
 | SEM–design pairs after the stitching (D143); stitching method `fingerprint` (D144, off by default) | 2026-10-28 | Not run on the real data as of 2026-10-28. Order: the defaults first (D143 alone), then `stitch_method = fingerprint`. If D143 alone removes the staircase, the fingerprint can be reverted. Parts added only for problems seen on synthetic mosaics, to trim if the run is good: in D143 `_design_around` with the −1 rows of `merge_values`, and `MIN_FOLLOWED` / `_followed`; in D144 `clearly_better` / `by_fit` in `overlap_checks`, and `capped_rms` (code checked: the contour stitching uses `capped_rms` too now). The log lines (`offset_steps`, `fingerprint_text`) stay: the user judges by them. Gap: D143 has no setting to go back to the old pairing, though the user asked for fixes to be optional. |
 | Parameters window in sections (D147) | 2026-10-30 | Layout only; waiting for the user's look. |
@@ -40,7 +41,10 @@ it stays as built at the user's wish (2026-11-12) and is not to be extended.
   reverted the same day: averaging blocks of pixels does not denoise, and total variation is needed for a proper
   threshold mask on their images. Noted with D159, not built: a total variation solver that needs fewer
   rounds (it changes the results, so the user judges it). What was built and left out among the denoisers, and
-  why: D132.
+  why: D132. D163 removes repeated preparation during diagnosis and repeated per-region work without changing the
+  method. It does not settle this request for a faster first denoising pass. Before further kernel or solver changes,
+  use the D159 rounds/time log on the real images; other costs visible in the code remain the interior-median sort
+  over the whole upscaled image and duplicate upscale/threshold work for the diagnosis display.
 - **Contours, stage 3:** pair the contours with the design, fit, report, as step 3 of
   `docs/notes/2026-11-08-line-space-plan.md`. What is reported is settled there and is not to be asked again. It
   needs a stitching that works on the real images first, and how the `.oas` clips hold the lines: look at what the

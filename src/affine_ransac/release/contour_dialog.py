@@ -66,12 +66,34 @@ class Diagnosis:
     log: StepLog = field(default_factory=StepLog)  # the time of each step of the search (log_entry, D157)
 
 
-def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
+class PreparedImageCache:
+    """One loaded image's native-resolution preprocessing, reused by sequential diagnosis searches.
+
+    Loaded images are not edited in place. A new image gets a new cache, so an older search still finishing in
+    the background cannot replace its preparation. Only the active preprocessing options belong in the key.
+    """
+
+    def __init__(self):
+        self.image = self.key = self.flat = None
+
+    def prepare(self, image: np.ndarray, s: Settings, log: StepLog) -> np.ndarray:
+        strength = {"median": s.median_px, "non-local means": s.nlm_h,
+                    "total variation": s.tv_weight}.get(s.denoise)
+        key = (s.background_px, s.dark_contacts if s.background_px > 0 else None, s.denoise, strength)
+        if self.image is image and self.key == key:
+            with timed(log, "reuse flattened and denoised image"):
+                return self.flat
+        flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h,
+                              s.tv_weight, log=log)
+        self.image, self.key, self.flat = image, key, flat
+        return flat
+
+
+def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | None = None) -> Diagnosis:
     """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
-    mask."""
+    mask. preparation: the window's single-image cache; omitted, preprocessing runs afresh."""
     log = StepLog()
-    flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight,
-                          log=log)
+    flat = (preparation if preparation is not None else PreparedImageCache()).prepare(image, s, log)
     # find_contacts would flatten and denoise the image first: given it so (up to a few s), it need not do it again
     given = replace(s, background_px=0.0, denoise="none")
     if s.pattern == "lines":
@@ -241,6 +263,7 @@ class ContourDialog(QtWidgets.QDialog):
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint)
         self.settings, self.folder = settings, folder
         self.image = None     # the SEM image loaded (uint8)
+        self.preparation = PreparedImageCache()
         self.prepared = None  # the image the contacts are found in, of the last search shown
         self.shown = None     # the image shown: the prepared one, or the one loaded (Original image, D160)
         self.request = 0      # number of the newest search asked for
@@ -408,6 +431,7 @@ class ContourDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Contour diagnosis", f"The image could not be read:\n{error}")
             return
         self.image, self.prepared, self.folder, self.name = image, None, str(Path(path).parent), Path(path).name
+        self.preparation = PreparedImageCache()
         self.show_image()
         self.name_label.setText(f"{Path(path).name}   ({image.shape[1]} × {image.shape[0]} px)")
         self.plot.setRange(xRange=(-0.5, image.shape[1] - 0.5), yRange=(-0.5, image.shape[0] - 0.5), padding=0.02)
@@ -433,11 +457,12 @@ class ContourDialog(QtWidgets.QDialog):
         self.running = True
         self.busy_label.setText(f"Finding the {self.values().pattern}...")
         number, image, s = self.request, self.image, self.values()
+        preparation = self.preparation  # a newly loaded image gets its own, while this search finishes
         self.search_started, self.searched_with = time.perf_counter(), s
 
         def work():
             try:
-                found = diagnose(image, s)
+                found = diagnose(image, s, preparation)
             except Exception as error:
                 found = error
             try:

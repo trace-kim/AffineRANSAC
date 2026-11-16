@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # must be set before Qt starts
 
 import time
+import threading
 from dataclasses import replace
 
 import cv2
@@ -20,6 +21,8 @@ from affine_ransac.pipeline import find_contacts, find_contours, find_lines, pre
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS
 from affine_ransac.release.contour_dialog import GROUPS, ContourDialog, drawable_contours, drawable_edges
+from affine_ransac.release.contour_dialog import PreparedImageCache, diagnose
+from affine_ransac.step_log import StepLog
 from test_contours import shape_image, vertical_lines
 from test_lines import line_image
 from test_pipeline import FOV, LATTICE, SIZE, render_tile
@@ -86,6 +89,102 @@ def test_a_change_finds_the_contacts_again_with_the_newest_settings(tmp_path):
     settle(dialog)
     assert dialog.summary.text().startswith("<b>0 contacts found</b>") and "smaller than 1000000 px" in \
         dialog.summary.text()
+
+
+def test_downstream_changes_reuse_preprocessing_with_identical_contours(monkeypatch):
+    from affine_ransac.release import contour_dialog
+    image = shape_image(vertical_lines, noise=5.0)
+    s = replace(SETTINGS, pattern="contours", dark_contacts=False, denoise="total variation")
+    calls = []
+    prepare = contour_dialog.prepared_image
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(contour_dialog, "prepared_image", counted)
+    cache = PreparedImageCache()
+    diagnose(image, s, cache)
+    changed = replace(s, min_area_px=50, edge_blur_px=0.5, upscale=2, detection="otsu3")
+    reused = diagnose(image, changed, cache)
+    assert len(calls) == 1
+    assert "reuse flattened and denoised image" in reused.log.seconds
+    assert "total variation rounds" not in reused.log.counts  # no old work attributed to this search
+    fresh = diagnose(image, changed)
+    np.testing.assert_array_equal(reused.image, fresh.image)
+    np.testing.assert_array_equal(reused.mask, fresh.mask)
+    for found, expected in ((reused.detected, fresh.detected), (reused.refined, fresh.refined)):
+        np.testing.assert_array_equal(drawable_contours(found), drawable_contours(expected))
+        np.testing.assert_array_equal(found.region, expected.region)
+        np.testing.assert_array_equal(found.closed, expected.closed)
+        assert found.threshold == expected.threshold and found.left_out == expected.left_out
+
+
+def test_preprocessing_cache_invalidates_for_each_active_option_and_new_image(monkeypatch):
+    from affine_ransac.release import contour_dialog
+    calls = []
+
+    def prepare(image, *args, **kwargs):
+        calls.append(args)
+        return image.copy()
+
+    monkeypatch.setattr(contour_dialog, "prepared_image", prepare)
+    cache, image = PreparedImageCache(), np.zeros((8, 9), np.uint8)
+    s = SETTINGS
+    for changes in ({}, {"background_px": 10}, {"dark_contacts": False}, {"denoise": "median"},
+                    {"median_px": 5}, {"denoise": "non-local means"}, {"nlm_h": 12},
+                    {"denoise": "total variation"}, {"tv_weight": 0.2}):
+        s = replace(s, **changes)
+        previous = len(calls)
+        cache.prepare(image, s, StepLog())
+        assert len(calls) == previous + 1
+        cache.prepare(image, replace(s, pattern="lines", min_area_px=30), StepLog())
+        assert len(calls) == previous + 1
+    cache.prepare(image, replace(s, median_px=7, nlm_h=20), StepLog())  # inactive options
+    assert len(calls) == 9
+    cache.prepare(image.copy(), s, StepLog())  # even a same-sized reload must not reuse the old image
+    assert len(calls) == 10
+
+
+def test_new_image_during_search_does_not_reuse_old_preparation(tmp_path, monkeypatch):
+    from affine_ransac.release import contour_dialog
+    prepare = contour_dialog.prepared_image
+    entered, finish = threading.Event(), threading.Event()
+
+    def waiting(*args, **kwargs):
+        entered.set()
+        assert finish.wait(10), "test did not release the preprocessing worker"
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(contour_dialog, "prepared_image", waiting)
+    style.setup()
+    pg.mkQApp()
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    cv2.imencode(".png", np.full((80, 90), 70, np.uint8))[1].tofile(str(first))
+    cv2.imencode(".png", np.full((80, 90), 140, np.uint8))[1].tofile(str(second))
+    dialog = ContourDialog(SETTINGS)
+    try:
+        dialog.load_image(str(first))
+        assert entered.wait(10)
+        old_cache = dialog.preparation
+        dialog.load_image(str(second))
+        assert dialog.preparation is not old_cache
+        finish.set()
+        settle(dialog)
+        np.testing.assert_array_equal(dialog.prepared, np.full((80, 90), 140, np.uint8))
+        assert dialog.preparation.image is dialog.image
+        # A later downstream change should reuse the second image, with no further preparation.
+        def unexpected(*args, **kwargs):
+            raise AssertionError("preprocessing ran again")
+        monkeypatch.setattr(contour_dialog, "prepared_image", unexpected)
+        dialog.editors["min_area_px"].setValue(50)
+        settle(dialog)
+        assert "could not be found" not in dialog.summary.text()
+        assert "reuse flattened and denoised image" in dialog.log_box.toPlainText().strip().split("\n\n")[-1]
+    finally:
+        finish.set()
+        dialog.close()
 
 
 def test_invalid_settings_are_named_and_cannot_be_applied(tmp_path):

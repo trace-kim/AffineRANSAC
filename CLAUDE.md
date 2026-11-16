@@ -60,6 +60,8 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 
 ## Remote agent (one-way handoff)
 The real data (SEM images, `.oas`, metadata CSV) is only on the user's remote machine. Data-specific work there is done by a **remote agent**: **opencode** with an unknown model, *not* Claude Code. Its standing rules are in `AGENTS.md`.
+`AGENTS.md` governs that remote task-file role, not an agent doing local development. For local development,
+follow this file; reviewing and fixing the existing code does not require a remote task file.
 - **One-way:** you write tasks in `docs/tasks/TNNN-<name>.md` and push them; the user pulls them on the remote. The remote agent **never commits or pushes**, and you **never see its code, files or reports**. **Nothing leaves the remote machine:** never ask the user to paste or forward reports, code or data. What you learn comes only from what the user chooses to tell you in their own words. When you need a fact, ask the user a short, specific question; they may already know the answer (e.g. the image orientation).
 - **Assume its work is correct.** If something comes back wrong, fix it with a new or updated task file.
 - **Task files must be self-contained and exact:** list the files it may create; give the exact interface (names, types, units, frames), the required tests, the checks to run on the real data, and what the summary must contain. Never rely on it reading `CLAUDE.md`. One small step per task file, on a small sample of tiles; never bundle analyses to save round trips.

@@ -17,6 +17,8 @@ import numpy as np
 
 STEP = 0.25  # scikit-image's step: 1 / (2 x the number of dimensions)
 _one_search_at_a_time = threading.Lock()  # numba's simplest thread pool ends the program if two threads enter it
+_compile_lock = threading.Lock()
+_loops_ready = False
 
 
 @numba.njit(parallel=True, cache=True)
@@ -56,8 +58,14 @@ def _step_p(flat, p, weight, row_sums):
 
 
 def compile_loops():
-    """Compile the two loops now (or load them from numba's cache), on a tiny image of the same types."""
-    total_variation(np.zeros((2, 2)), 0.1, max_rounds=1)
+    """Warm the two loops once per process; concurrent callers wait until both are ready."""
+    global _loops_ready
+    # A separate lock: total_variation itself takes _one_search_at_a_time. Mark ready only after success,
+    # so a failed first compilation can be retried by the next call.
+    with _compile_lock:
+        if not _loops_ready:
+            total_variation(np.zeros((2, 2)), 0.1, max_rounds=1)
+            _loops_ready = True
 
 
 def total_variation(image: np.ndarray, weight: float, eps: float = 2.0e-4,

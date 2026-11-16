@@ -357,6 +357,7 @@ levels; patch 7 px and search window 21 px, OpenCV's recommended sizes, not sett
 **total variation** (`tv_weight`, on the grey levels / 255; Chambolle's algorithm, `features.total_variation`:
 the pixels of `skimage.restoration.denoise_tv_chambolle`, compiled with numba, about 7 times as fast, D159;
 rounded back to grey levels: flat regions with sharp edges between them).
+The compiled loops are warmed once per process, with concurrent callers waiting for that warm-up (D163).
 Detection, the contrast check and refinement all see the denoised image; the option of a method not chosen changes
 nothing (greyed in the window). Denoised before it is upscaled: bicubic interpolation spreads each noisy pixel over f ×
 f pixels with smooth transitions, so a median would need an f times wider window, and non-local means, made for noise
@@ -1516,6 +1517,15 @@ searched (upscaled), regions of the mask, kept and left out by size, the kept re
 of the image, the boundaries around holes (not left out by size), contours closed and open, edge points, and the
 most contours in one region with that region's edge points. Timing changes nothing that is found
 (`tests/test_contours.py`, `tests/test_contour_dialog.py`).
+
+**Reusing preparation (D163).** The diagnosis window keeps one native-resolution flattened and denoised image
+(`PreparedImageCache`). A later search reuses it if the loaded image, background size (and tone when flattening),
+denoiser and its active strength are unchanged. Detection, refinement, pattern and upscaling settings do not
+invalidate it. Loading an image replaces the cache, including while an older search finishes. A hit is logged as
+*reuse flattened and denoised image*, with no denoising rounds attributed to that search. A run still prepares each
+tile afresh. In contour refinement, the band median and resulting mid-level are computed once per region and shared
+by all its contours; the pixels, profiles and arithmetic are unchanged. The first-image solver, whole-image sort
+for interior medians, and separate display upscale/mask remain as before.
 
 **Release: Saved parameters (D136).** *Analysis → Parameters* is `release/parameters_dialog.ParametersDialog`: the
 research app's `SettingsDialog` with one row on top: *Saved parameters* (a drop-down of the saved sets, by name in any
