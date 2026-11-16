@@ -30,7 +30,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from affine_ransac.analysis import (CHOICES, PATTERN_SETTINGS, Settings, any_shape_options, check_settings,
                                     contour_options, line_options)
 from affine_ransac.app import editor, editor_value
-from affine_ransac.features.contact import DetectedContacts, contact_mask, upscaled_image
+from affine_ransac.features.contact import DetectedContacts, binned_image, contact_mask, upscaled_image
 from affine_ransac.features.contours import Contours
 from affine_ransac.features.lines import LineEdges, column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
@@ -42,8 +42,8 @@ from affine_ransac.release.views import figure
 
 GROUPS = (("Pattern", ("pattern",)),
           ("Pre-processing", ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale")),
-          ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
-                                        "max_area_px", "min_solidity", "min_contrast")),
+          ("Detection (thresholding)", ("detection_binning", "detection", "dark_contacts", "detection_blur_px",
+                                        "min_area_px", "max_area_px", "min_solidity", "min_contrast")),
           ("Edge refinement", ("refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")))
 REFINEMENT_OPTIONS = ("search_px", "edge_step_px", "edge_blur_px", "normal_span")  # unused with refinement none
 DENOISE_OPTIONS = {"median_px": "median", "nlm_h": "non-local means", "tv_weight": "total variation"}  # each method's
@@ -62,7 +62,8 @@ class Diagnosis:
     detected: DetectedContacts | LineEdges | Contours  # after the contrast check (lines, contours: none)
     refined: DetectedContacts | LineEdges | Contours   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
-    mask: np.ndarray            # uint8, the pixels of `image`: 1 = taken as contact by the threshold
+    mask: np.ndarray            # uint8, the pixels of the image searched (`image`; binned, D161: fewer): 1 = taken as
+                                # contact by the threshold
     log: StepLog = field(default_factory=StepLog)  # the time of each step of the search (log_entry, D157)
 
 
@@ -86,8 +87,15 @@ def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
         log.add("refine their edges", seconds["refine"])
     with timed(log, "upscale and threshold mask again, for the display"):
         shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
-        mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
+        searched = binned_image(flat, binning(s)) if binning(s) > 1 else shown  # as find_contours bins it (D161)
+        mask, _ = contact_mask(searched, s.dark_contacts, s.detection_blur_px * searched.shape[1] / flat.shape[1],
+                               s.detection)
     return Diagnosis(shown, detected, refined, low_contrast, mask, log)
+
+
+def binning(s: Settings) -> int:
+    """How many times the image is binned for the detection: detection_binning, contours only (D161)."""
+    return s.detection_binning if s.pattern == "contours" else 1
 
 
 NOT_TIMED = "not timed (between the steps; waiting for the window)"
@@ -102,7 +110,8 @@ def log_entry(d: Diagnosis, s: Settings, name: str, shape: tuple[int, int], tota
     longest = max(seconds, key=seconds.get)
     lines = [f"{time.strftime('%H:%M:%S')}  {name}, {shape[1]} × {shape[0]} px.  PATTERN {s.pattern}, DETECTION "
              f"{s.detection}, REFINEMENT {s.refinement}, UPSCALE {s.upscale}, DENOISE {s.denoise}, BACKGROUND_PX "
-             f"{s.background_px:g}, MIN_AREA_PX {s.min_area_px}",
+             f"{s.background_px:g}, MIN_AREA_PX {s.min_area_px}"
+             + (f", DETECTION_BINNING {s.detection_binning}" if s.pattern == "contours" else ""),
              f"  {total:.2f} s in all:"]
     lines += [f"  {t:8.2f} s {100 * t / max(total, 1e-9):4.0f} %  {step}" + ("   <== the longest" * (step == longest))
               for step, t in seconds.items()]
@@ -116,7 +125,7 @@ def log_entry(d: Diagnosis, s: Settings, name: str, shape: tuple[int, int], tota
 
 def count_lines(d: Diagnosis, s: Settings) -> list[str]:
     """What a search worked on, in words: the numbers its time depends on."""
-    pixels = f"{d.image.size:,} pixels searched"
+    pixels = f"{d.mask.size:,} pixels searched"
     if s.pattern == "lines":
         return [f"{pixels}. {len(d.refined.upper):,} lines."]
     if s.pattern == "contacts":
@@ -127,7 +136,7 @@ def count_lines(d: Diagnosis, s: Settings) -> list[str]:
     points = np.array([len(p) for p in found.points])
     lines = [f"{pixels}. Mask: {c['regions']:,} regions; {c['kept']:,} kept, {left['small']:,} smaller than "
              f"MIN_AREA_PX, {left['large']:,} larger than MAX_AREA_PX.",
-             f"Bounding boxes of the kept regions, all together: {c['box_pixels'] / d.image.size:.1f} times the image.",
+             f"Bounding boxes of the kept regions, all together: {c['box_pixels'] / d.mask.size:.1f} times the image.",
              f"Boundaries around holes inside the kept regions: {c['holes']:,} (holes are not left out by size).",
              f"{len(points):,} contours ({int(found.closed.sum()):,} closed, {int((~found.closed).sum()):,} open), "
              f"{int(points.sum()):,} edge points."]
@@ -175,7 +184,8 @@ def of_the_image(s: Settings) -> str:
     """What was done to the image before the search, in words ("" if nothing)."""
     steps = [step for step, done in (("flattened", s.background_px > 0),
                                      (f"denoised ({s.denoise})", s.denoise != "none"),
-                                     (f"upscaled {s.upscale}×", s.upscale > 1)) if done]
+                                     (f"upscaled {s.upscale}×", s.upscale > 1),
+                                     (f"binned {binning(s)}× for the detection", binning(s) > 1)) if done]
     if len(steps) > 1:
         steps = [", ".join(steps[:-1]) + " and " + steps[-1]]
     return f" of the image {steps[0]}" if steps else ""

@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from affine_ransac.analysis import CONTOUR_SETTINGS, Settings, current_names
+from affine_ransac.analysis import CONTOUR_SETTINGS, CONTOURS_ONLY, Settings, current_names
 from affine_ransac.app import SettingsDialog, set_editor_value
 from affine_ransac.release import style
 from affine_ransac.release.analysis import DEFAULTS, PARAMETERS
@@ -27,7 +27,7 @@ USER_PARAMETERS = list(dict.fromkeys(PARAMETERS["images"] + PARAMETERS["contour 
 SECTIONS = (("Stitching", ("stitch_method", "overlap_tolerance_nm"), False),
             ("In-image correction", ("in_image_correction",), False),
             ("Registration", ("moving_window_um", "moving_step_um", "moving_window_per_stripe"), False),
-            ("Contour detection", ("pattern",) + CONTOUR_SETTINGS, True),
+            ("Contour detection", ("pattern",) + CONTOUR_SETTINGS + CONTOURS_ONLY, True),
             ("Advanced", ("max_match_nm", "outlier_factor", "min_matched", "design_max_match_nm", "design_search_nm",
                           "design_tolerance_nm", "min_match_fraction", "realign", "tile_margin_nm", "in_image_order",
                           "group_radius_nm", "row_gap_nm"), True))

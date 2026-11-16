@@ -8,7 +8,7 @@
 - find_lines(): the edges of the horizontal lines of one image, the same way (D153; so far only the contour diagnosis
   uses it).
 - find_contours(): the contours of any pattern in one image, the same way (D155; the contour diagnosis, and the
-  stitching by contours of contour_stitching.py, D156).
+  stitching by contours of contour_stitching.py, D156); its regions optionally found in the image binned (D161).
 - stitch_design(): the same for the per-tile design files, which can be offset against each
   other (the same contact drawn at different positions in neighbouring .oas files).
 - stitch_tiles(): match the contacts of every overlapping tile pair, fit each pair robustly
@@ -37,10 +37,11 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, contact_contrast, denoised_image,
-                                            detect_contacts, flatten_background, in_image_pixels, keep_contacts,
-                                            upscaled_image)
-from affine_ransac.features.contours import Contours, detect_contours, in_image_contours, refine_contours
+from affine_ransac.features.contact import (BAND_MIN_SOLIDITY, DetectedContacts, binned_image, contact_contrast,
+                                            denoised_image, detect_contacts, flatten_background, in_image_pixels,
+                                            keep_contacts, upscaled_image)
+from affine_ransac.features.contours import (Contours, detect_contours, in_image_contours, labels_in, refine_contours,
+                                             rescaled_contours)
 from affine_ransac.features.edges import RULES, refine_edges
 from affine_ransac.features.lines import LineEdges, detect_lines, in_image_lines, refine_line_edges
 from affine_ransac.geometry.frames import pixel_to_tile_nm
@@ -318,6 +319,7 @@ def find_contours(
     edge_step_px: float = 0.25,
     edge_blur_px: float = 1.0,
     normal_span: int = 3,
+    detection_binning: int = 1,
     log: StepLog | None = None,
 ) -> tuple[Contours, Contours]:
     """The contours of any pattern in one SEM image (uint8), as find_contacts finds contacts (D155): (detected,
@@ -325,17 +327,40 @@ def find_contours(
     the region runs out of the image. The options are the contour settings of the same names
     (analysis.ANY_SHAPE_SETTINGS); dark_contacts: the regions are the darker side. On prepared_image, upscaled
     `upscale` times, the options in pixels multiplied by it (areas by its square), as for contacts; refinement
-    "none": the detected contours. log: if given, gets the time of every step (the contour diagnosis log, D157)."""
+    "none": the detected contours. log: if given, gets the time of every step (the contour diagnosis log, D157).
+    detection_binning > 1 (D161): the regions are found in the image binned that many times (binned_image: pixel
+    noise divided by it, its square fewer pixels), with the detection's options in pixels divided by it (areas by
+    its square); the edges are then refined in the image itself (upscaled, if asked), searched at least a binned
+    pixel each way (the detected outline is that coarse)."""
     image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight, log=log)
-    f = upscale
+    f, b = upscale, detection_binning
     with timed(log, "upscale"):
         big = upscaled_image(image, f)
-    detected, labels = detect_contours(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
-                                       max_area_px * f ** 2 or None, detection, normal_span * f, log)
-    refined = detected if refinement == "none" else refine_contours(
-        big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement, log)
+    searched = big
+    if b > 1:
+        with timed(log, "bin the image for the detection"):
+            searched = binned_image(image, b)
+    k = searched.shape[1] / image.shape[1]  # pixels of the image searched per pixel of the image: f, or about 1 / b
+    detected, labels = detect_contours(searched, dark_contacts, detection_blur_px * k, round(min_area_px * k ** 2),
+                                       round(max_area_px * k ** 2) or None, detection, max(1, round(normal_span * k)),
+                                       log)
+    if refinement == "none":
+        refined = detected
+    else:
+        start, start_labels = detected, labels
+        if b > 1:
+            with timed(log, "the detected contours and regions in the image the edges are refined in"):
+                start = rescaled_contours(detected, np.divide(big.shape[::-1], searched.shape[::-1]))
+                start_labels = labels_in(labels, big.shape)
+        search = max(search_px, b) * f
+        refined = refine_contours(big, start, start_labels, dark_contacts, search, edge_step_px * f,
+                                  edge_blur_px * f, refinement, log)
     with timed(log, "back to the image's own pixels"):
-        return in_image_contours(detected, f), in_image_contours(refined, f)
+        if b > 1:
+            detected = rescaled_contours(detected, np.divide(image.shape[::-1], searched.shape[::-1]))
+        else:
+            detected = in_image_contours(detected, f)
+        return detected, detected if refinement == "none" else in_image_contours(refined, f)
 
 
 def process_tile(

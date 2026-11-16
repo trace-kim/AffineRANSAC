@@ -36,12 +36,13 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
-from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Settings, any_shape_options,
-                                   check_settings, checked_overlaps, contour_options, detect_layer, helper_pool,
-                                   in_image_map,
+from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, CONTOURS_ONLY, ContactSizes, Settings,
+                                   any_shape_options, check_settings, checked_overlaps, contour_options, detect_layer,
+                                   helper_pool, in_image_map,
                                    load_image_tiles, merged_contact_sizes, placement_guide, placement_text,
                                    report_stitching)
-from affine_ransac.contour_stitching import EdgePoints, edge_points, overlap_distances, placed_by_contours
+from affine_ransac.contour_stitching import (GATE_PX, MIN_POINTS, EdgePoints, edge_points, overlap_distances,
+                                             placed_by_contours)
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -49,6 +50,7 @@ from affine_ransac.intrafield import IntrafieldMap, correct_points
 from affine_ransac.io.design import contact_outlines, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
+from affine_ransac.overlap import overlapping_pairs
 from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, find_contours, measurement_pairs,
                                     outlines_inside_frame, process_tile,
                                     stitch_design, stitch_image_by_image, stitch_tiles, stripe_directions,
@@ -73,8 +75,8 @@ COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched"
           "moving_window_um", "moving_step_um", "moving_window_per_stripe", "stitch_method", "overlap_tolerance_nm",
           "in_image_correction", "in_image_order"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
-              "images": COMMON + ["pattern"] + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
-                                                                        "min_match_fraction", "realign"]}
+              "images": COMMON + ["pattern"] + list(CONTOUR_SETTINGS) + list(CONTOURS_ONLY)
+              + ["design_search_nm", "design_tolerance_nm", "min_match_fraction", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 
@@ -312,7 +314,8 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
         edges, centers, sizes, s.max_match_nm, pixel_nm,
         lambda placed, total: progress(LOAD_SHARE + (1 - LOAD_SHARE) * placed / total,
                                        f"Placing image {placed} of {total} by its contours"))
-    record(contour_stitching_text(choices, corrections, tile_ids, s.max_match_nm, time.perf_counter() - start))
+    record(contour_stitching_text(choices, corrections, tile_ids, s.max_match_nm, time.perf_counter() - start,
+                                  beside_placed(centers, sizes, corrections)))
     record(overlap_distance_text(overlap_distances(edges, centers, sizes, corrections, pixel_nm), tile_ids))
     progress(1.0, "Done")
     none = [np.empty((0, 2)) for _ in range(n)]
@@ -323,10 +326,19 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
                           "design is not built yet.", result, {}, stitched_only=True)
 
 
+def beside_placed(centers: np.ndarray, sizes: np.ndarray, corrections: np.ndarray) -> set[int]:
+    """The images not placed that overlap a placed one (D161): compared with it, but their edges did not line up.
+    The other images not placed were never compared: the placement goes out from the placed images only."""
+    placed = ~np.isnan(corrections[:, 0])
+    return {k for i, j, _ in overlapping_pairs(centers, sizes) for k, o in ((i, j), (j, i))
+            if not placed[k] and placed[o]}
+
+
 def contour_stitching_text(choices: list, corrections: np.ndarray, tile_ids: list[str], search_nm: float,
-                           seconds: float) -> str:
+                           seconds: float, beside: set[int] = frozenset()) -> str:
     """How placed_by_contours placed the images, in words: how many, how many of them the edges fixed both ways or
-    across straight edges only, the ones several positions fitted equally (with !!), the ones not placed (with !!)."""
+    across straight edges only, the ones several positions fitted equally (with !!), the ones not placed (with !!),
+    split into those beside a placed image (`beside`: beside_placed) and those never compared."""
     n = len(tile_ids)
     placed = n - int(np.isnan(corrections[:, 0]).sum())
     across = sum(c.directions == 1 for c in choices)
@@ -339,11 +351,19 @@ def contour_stitching_text(choices: list, corrections: np.ndarray, tile_ids: lis
         text += (f"\n!! {len(tied)} image(s) where positions apart fit equally well (a repeating pattern): the one "
                  f"nearest the stage position was taken, which can be a whole pitch off: {tied[:20]}"
                  f"{' ...' if len(tied) > 20 else ''}")
-    unplaced = [tile_ids[k] for k in np.flatnonzero(np.isnan(corrections[:, 0]))]
-    if unplaced:
-        text += (f"\n!! {len(unplaced)} image(s) NOT PLACED (too few edges shared with a placed neighbour): "
-                 f"{unplaced[:20]}{' ...' if len(unplaced) > 20 else ''}")
+    unplaced = np.flatnonzero(np.isnan(corrections[:, 0]))
+    if len(unplaced):
+        failed = [tile_ids[k] for k in unplaced if k in beside]
+        never = [tile_ids[k] for k in unplaced if k not in beside]
+        text += (f"\n!! {len(unplaced)} image(s) NOT PLACED: {len(failed)} beside a placed image, but fewer than "
+                 f"{MIN_POINTS} of their edge points came within {GATE_PX:g} px of its edges{first_ids(failed)}; "
+                 f"{len(never)} never compared, as no neighbour of theirs was placed{first_ids(never)}")
     return text
+
+
+def first_ids(ids: list[str], most: int = 20) -> str:
+    """Up to `most` image names, after a colon ("" if none)."""
+    return f": {ids[:most]}{' ...' if len(ids) > most else ''}" if ids else ""
 
 
 def overlap_distance_text(distances: list, tile_ids: list[str]) -> str:

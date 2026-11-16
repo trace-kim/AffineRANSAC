@@ -119,6 +119,18 @@ def upscaled_image(image: np.ndarray, factor: int) -> np.ndarray:
     return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
 
 
+def binned_image(image: np.ndarray, factor: int) -> np.ndarray:
+    """The image with each block of factor x factor pixels averaged into one (cv2.INTER_AREA; D161): as a dwell
+    factor² times as long, the pixel noise divided by factor; factor 1: the image itself. Both cover the same area:
+    pixel (x, y) of the result lies at ((x + 0.5) sx - 0.5, (y + 0.5) sy - 0.5) of the image, (sx, sy) its size over
+    the result's (factor, where the image's size is a multiple of it)."""
+    if factor == 1:
+        return image
+    rows, cols = image.shape
+    size = (max(1, round(cols / factor)), max(1, round(rows / factor)))  # (width, height)
+    return cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+
+
 def in_image_pixels(contacts: DetectedContacts, factor: int) -> DetectedContacts:
     """Contacts found in an image upscaled by `factor` (upscaled_image), in the pixel frame of the image itself."""
     if factor == 1:

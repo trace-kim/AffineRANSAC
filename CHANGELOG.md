@@ -217,6 +217,10 @@ they open, flagged as outdated.
   a start takes about a second more, to load it. The results are unchanged (D159).
 - *Contour diagnosis*: a check box *Original image* shows the image as loaded instead of the one the contours
   are found in (flattened, denoised, upscaled), under the same contours. The results are unchanged (D160).
+- *Pattern* contours: parameter `detection_binning` (1 = off) finds the regions in the image with each block of N × N
+  pixels averaged into one (less noise, N² fewer pixels to search), then refines every edge in the full image; for
+  patterns many pixels wide, without denoising. The stitching log now splits the images not placed into those beside
+  a placed image whose edges did not line up and those never compared. Contact runs are unchanged (D161).
 - For AI agents: `python -m affine_ransac.release.agent run <folder>` analyses a folder without the window
   (`--set name=value` for parameters) and prints a review of the run as JSON; `review <file.npz>` prints it again.
   Its runs are saved under `maskreg_runs/`, never over the folder's own saved run. The results are unchanged (D154).

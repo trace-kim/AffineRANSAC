@@ -142,6 +142,60 @@ def test_upscaled_contours_are_in_the_pixels_of_the_image():
     assert max(points[:, 1].max() for points in upscaled.points) < SHAPE[0] - 1  # inside the image
 
 
+@pytest.mark.parametrize("binning", (2, 3, 4))
+def test_regions_found_in_the_binned_image_give_the_edges_of_the_image_itself(binning):
+    """D161: the regions are found in the image binned (3: 200 x 300 px is no multiple of it, so its two scales differ
+    a little); every edge is refined in the image itself, as without binning; the detected contours, as coarse as
+    the binned pixels, are given in the image's pixels."""
+    detected, refined = find_contours(shape_image(vertical_lines), detection_binning=binning, **BRIGHT)
+    assert len(refined.points) == 4 and not refined.closed.any()
+    order = np.argsort([points[:, 0].mean() for points in refined.points])
+    for k, x_edge, faces in zip(order, (60.3, 85.7, 180.0, 201.4), (-1, 1, -1, 1)):
+        points, normals = refined.points[k], refined.normals[k]
+        np.testing.assert_allclose(points[:, 0], x_edge, atol=0.05)
+        np.testing.assert_allclose(normals, np.tile([faces, 0.0], (len(points), 1)), atol=1e-9)
+        assert np.all(np.abs(detected.points[k][:, 0] - x_edge) <= binning)
+        assert 0 < detected.points[k][:, 1].min() and detected.points[k][:, 1].max() < SHAPE[0] - 1
+
+
+def test_binned_detection_with_upscaled_refinement_and_on_a_ring():
+    """D161 with D131: found binned, refined upscaled; a ring's two closed contours, facing the right ways, at their
+    radii as without binning."""
+    _, both = find_contours(shape_image(vertical_lines), detection_binning=2, upscale=2, **BRIGHT)
+    x = np.sort([points[:, 0].mean() for points in both.points])
+    np.testing.assert_allclose(x, (60.3, 85.7, 180.0, 201.4), atol=0.05)
+    _, refined = find_contours(shape_image(ring), detection_binning=4, **BRIGHT)
+    assert len(refined.points) == 2 and refined.closed.all()
+    for points, normals in zip(refined.points, refined.normals):
+        radial = points - [150, 100]
+        radius = np.hypot(*radial.T)
+        np.testing.assert_allclose(radius, 30.4 if radius.mean() < 40 else 55.2, atol=0.15)
+        outward = (normals * radial).sum(axis=1) / radius
+        assert np.all(np.sign(outward) == (-1 if radius.mean() < 40 else 1))  # the hole's into the hole
+
+
+def test_binned_detection_logs_its_own_steps():
+    from affine_ransac.step_log import StepLog
+    log = StepLog()
+    find_contours(shape_image(ring), detection_binning=4, **BRIGHT, log=log)
+    steps = list(log.seconds)
+    assert steps.index("bin the image for the detection") < steps.index("threshold mask") < steps.index(
+        "the detected contours and regions in the image the edges are refined in") < steps.index(
+        "sample the image across the edge at every point")
+    assert 25 ** 2 < log.counts["box_pixels"] < 30 ** 2  # the ring's bounding box in binned pixels
+
+
+def test_rescaled_contours_and_labels_cover_the_same_area():
+    from affine_ransac.features.contours import Contours, labels_in, rescaled_contours
+    edge = Contours([np.array([[0.0, 0.0], [1.0, 1.0]])], [np.full((2, 2), np.sqrt(0.5))], np.array([False]),
+                    np.array([1]), 100.0)
+    stretched = rescaled_contours(edge, (2.0, 1.0))
+    np.testing.assert_allclose(stretched.points[0], [[0.5, 0.0], [2.5, 1.0]])  # pixel centres: (x + 0.5) 2 - 0.5
+    np.testing.assert_allclose(stretched.normals[0], np.tile([1.0, 2.0], (2, 1)) / np.sqrt(5))  # at right angles still
+    labels = np.array([[1, 2, 0], [3, 3, 0]])
+    np.testing.assert_array_equal(labels_in(labels, (4, 6)), np.repeat(np.repeat(labels, 2, axis=0), 2, axis=1))
+
+
 def test_contacts_inside_the_image_are_the_closed_contours_and_cut_ones_are_open():
     """The contacts' own detection drops a contact cut by the image border; here it gives its edge inside the image."""
     image = render_tile(LATTICE, (0.0, 0.0), FOV, SIZE, seed=1)

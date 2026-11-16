@@ -154,6 +154,12 @@ class Settings:
                                         "refinement")
     detection_blur_px: float = setting(1.5, "Detection: Gaussian blur (sigma, px) of the image before thresholding; "
                                             "0 = none")
+    detection_binning: int = setting(1, "Contours only. Detection: find the regions in the image with each block of "
+                                        "this many by this many pixels averaged into one (noise divided by it, its "
+                                        "square fewer pixels to search), then refine every edge in the full image "
+                                        "(searched at least this many pixels each way). For patterns many pixels "
+                                        "wide; then the threshold mask may need no denoising. The other settings in "
+                                        "pixels stay pixels of the image as loaded. 1 = off")
     min_area_px: int = setting(20, "Detection: regions of fewer pixels are left out (noise)")
     max_area_px: int = setting(0, "Detection: regions of more pixels are left out; 0 = no limit")
     min_solidity: float = setting(BAND_MIN_SOLIDITY, "Detection, band only: regions less solid than this (area / "
@@ -194,7 +200,7 @@ class Settings:
 
 CSV_ONLY = {"tile_margin_nm"}
 RELEASE_ONLY = {"moving_window_per_stripe", "in_image_correction",  # used by the release's analysis only
-                "pattern"}                                          # (release/analysis.py, its contour diagnosis)
+                "pattern", "detection_binning"}                     # (release/analysis.py, its contour diagnosis)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
@@ -207,9 +213,11 @@ CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight
 # contour normals of the contacts
 LINE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS
                       if name not in ("min_area_px", "max_area_px", "min_solidity", "min_contrast", "normal_span"))
-# The contour settings that find the contours of any pattern (pipeline.find_contours, D155): not the solidity limit
-# and the contrast check of the contacts
-ANY_SHAPE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS if name not in ("min_solidity", "min_contrast"))
+# The settings that find the contours of any pattern (pipeline.find_contours, D155): not the solidity limit and the
+# contrast check of the contacts; and the binning of the detection, theirs only (D161)
+CONTOURS_ONLY = ("detection_binning",)
+ANY_SHAPE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS
+                           if name not in ("min_solidity", "min_contrast")) + CONTOURS_ONLY
 PATTERNS = ("contacts", "lines", "contours")  # settings.pattern (D153, D155)
 PATTERN_SETTINGS = {"contacts": CONTOUR_SETTINGS, "lines": LINE_SETTINGS, "contours": ANY_SHAPE_SETTINGS}
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
@@ -263,6 +271,7 @@ def check_settings(s: Settings, kind: str):
               "min_match_fraction": (0 < s.min_match_fraction <= 1, "must be in (0, 1]"),
               "background_px": (s.background_px == 0 or s.background_px >= 3, "must be 0 (off) or >= 3"),
               "upscale": (1 <= s.upscale <= MAX_UPSCALE, f"must be 1 (off) to {MAX_UPSCALE}"),
+              "detection_binning": (s.detection_binning >= 1, "must be >= 1 (1: off)"),
               "median_px": (s.median_px >= 3 and s.median_px % 2 == 1, "must be odd and >= 3"),
               "nlm_h": (s.nlm_h > 0, "must be > 0"),
               "tv_weight": (s.tv_weight > 0, "must be > 0"),
