@@ -211,6 +211,7 @@ they open, flagged as outdated.
 - Contour diagnosis: a log under the figure. Every search adds the time of each of its steps, with the longest
   marked, the time to draw the result, and the counts the times depend on (regions, holes, contours, edge points).
   The results are unchanged (D157).
+- Denoising by total variation takes about half the time on large images. The results are unchanged (D158).
 - For AI agents: `python -m affine_ransac.release.agent run <folder>` analyses a folder without the window
   (`--set name=value` for parameters) and prints a review of the run as JSON; `review <file.npz>` prints it again.
   Its runs are saved under `maskreg_runs/`, never over the folder's own saved run. The results are unchanged (D154).

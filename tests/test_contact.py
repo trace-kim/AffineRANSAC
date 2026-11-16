@@ -5,7 +5,7 @@ import pytest
 from skimage.restoration import denoise_tv_chambolle
 
 from affine_ransac.features.contact import (DetectedContacts, denoised_image, detect_contacts, flatten_background,
-                                            in_image_pixels, upscaled_image)
+                                            in_image_pixels, total_variation, upscaled_image)
 from affine_ransac.io.sem_image import crop_databar, load_sem_image
 from sample_sem import write_sem_like
 
@@ -104,6 +104,19 @@ def test_an_upscaled_image_covers_the_same_area_and_its_contacts_map_back():
         np.testing.assert_allclose(found.centers, [[6, 4]], atol=1e-6)
         np.testing.assert_allclose(found.contours[0], [[6, 4]], atol=1e-6)
         assert found.areas[0] == 16 and found.threshold == 100.0
+
+
+def test_total_variation_gives_scikit_images_numbers():
+    """D158: our loop (arrays made once) returns exactly what scikit-image's does, whether it ends by its cost
+    (weights 0.05 to 0.5: after different numbers of iterations) or by the iteration limit."""
+    rng = np.random.default_rng(0)
+    yy, xx = np.mgrid[:61, :90]
+    disks = 120 + 60 * (((xx % 20) - 10) ** 2 + ((yy % 20) - 10) ** 2 > 30)
+    image = np.clip(disks + rng.normal(0, 25, disks.shape), 0, 255) / 255.0
+    for weight in (0.05, 0.1, 0.5):
+        np.testing.assert_array_equal(total_variation(image, weight), denoise_tv_chambolle(image, weight=weight))
+    np.testing.assert_array_equal(total_variation(image, 0.5, max_iterations=3),
+                                  denoise_tv_chambolle(image, weight=0.5, max_num_iter=3))
 
 
 def test_each_denoising_method_is_the_librarys_own():
