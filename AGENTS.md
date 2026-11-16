@@ -1,5 +1,12 @@
 # AGENTS.md: standing instructions for the remote agent
 
+**Scope:** These instructions apply only to the remote **opencode** agent receiving
+`docs/tasks/` work. **Codex doing local development follows `CLAUDE.md` instead**, even
+when this file is supplied as workspace context. It may edit tracked code, tests and
+documentation for the user's request without a remote task file or a separate approval
+to override the remote-only restrictions below. The user reaffirmed this on 2026-11-16;
+do not ask them to resolve this role distinction again.
+
 You are working on the machine that holds the **real data** (SEM images, `.oas` files, the
 metadata CSV). This repository is developed elsewhere by another agent that has **no access
 to the data**. That agent sends you work as task files in `docs/tasks/`. Communication is

@@ -863,13 +863,14 @@ most edge points in its overlaps stays, then one image at a time against all its
 1. `mismatch`: for **every shift on the pixel grid** up to `max_match_nm` each way, the mean squared distance from its
    edge points to the neighbour's nearest edge facing the same way (8 sectors of 45°, its own or the one beside it),
    each distance at most the gate (`GATE_PX`, 3 px); only points the shift brings inside the neighbour's image count.
-   One FFT correlation per facing direction: the image of its points against the image of the distance to the
-   neighbour's edges (chamfer matching).
+   FFT correlations by facing direction: the image of its points against the image of the distance to the
+   neighbour's edges (chamfer matching; evaluated together, D164).
 2. `coarse_fit`: the shifts that fit as well as the best one on that grid (tried: at least `MIN_POINTS` 40 points and
    `MIN_SHARE` 0.25 of the most any shift compares; as good: the log of the ratio of the mean squares within three
    spreads, 2/n each, n one point per `SHARED_NOISE_PX` 4 px of edge, as neighbouring points share the edge blur's
    noise; the rounding to bins, bin²/12, added). The grid is blind to what is smaller than a pixel, so:
-3. `exact_fit` compares those shifts without the grid: edge points that do not share noise (`thinned`: one per 4 px,
+3. `exact_fits` compares those shifts without the grid, in bounded batches (`exact_fit` is the scalar reference):
+   edge points that do not share noise (`thinned`: one per 4 px,
    at most 600), paired with the neighbours' points by position and facing (within the gate and about 30°), their
    distances across the edge after the small move across the edges that fits best; a point with no such edge counts
    the gate; points landing within two gates of the neighbour's border are not expected to pair. `as_good` again.
@@ -877,6 +878,17 @@ most edge points in its overlaps stays, then one image at a time against all its
    distances across the edges (beyond three robust spreads left out), moving only the directions the edges measure
    (`across_step`: the eigenvalues of Σ n nᵀ; a direction measured less than `WELL_MEASURED` 0.1 as well as the best
    one stays), until it moves less than 0.01 nm.
+
+**CPU execution (D164).** Only the valid correlation window is needed, so FFT dimensions need cover the larger
+image, not the sum of both images' extents: none of the requested shifts wraps a point. Sector spectra are summed
+before one inverse transform. Covered-point counts are exact rectangle sums of a cumulative point image; they
+need no FFT. Exact comparisons query the facing tree and solve the small normal equations in batches of at most
+64 shifts (at most 600 sampled points each), keeping every candidate and the same gate, border test, measured
+directions and tie rule. Refinement reuses that tree. Moved neighbours are reused while unplaced neighbours need
+them; a placed tile's candidate surfaces are released. No GPU or new dependency is required. FFT and reduction
+roundoff can differ from the scalar implementation; tests compare grid distances with direct sums and batched
+fits with the scalar scores, including empty samples, straight/slanted/rough edges and mask-scale coordinates.
+These checks establish the computation, not real-image stitching quality or a measured speedup on the remote PC.
 
 So one rule covers the cases: **shapes** fix one position both ways; **straight lines** fix it across them, and
 along them the image stays at its stage position, for lack of anything else (§13 question 14), unless the **edge
@@ -892,7 +904,7 @@ distance across the edges between the two images' paired edges, the check that n
 (logged: the median over the overlaps and the largest).
 The run (`release/analysis.stitch_by_contours`): every image's contours in worker processes, the placement (one
 process; the status bar counts the images placed; `lined_up` only on the image's edge points in its overlaps), the two
-log lines; **then it stops**: comparing contours with the design (S6) is not built. It ends as an `AnalysisFailed`
+summary log lines and the stitching timings (D164); **then it stops**: comparing contours with the design (S6) is not built. It ends as an `AnalysisFailed`
 marked `stitched_only`, whose result (no contacts, no design; the corrections in `stitch`) the Stitching tab shows;
 nothing is saved, and no `.oas` is read. The tab's status shows those log lines; *Load contours*
 (`read_any_contours`) draws the detected and refined contours, open ones open, those of the tiles in view, at the
@@ -902,6 +914,11 @@ stage errors, noise 0.3 nm): circles, both ways within 0.2 nm; straight lines, a
 unchanged; lines a pitch apart with a stage error above half a pitch, the nearest position, a whole pitch off,
 flagged; lines with their own roughness of 1.5 nm, the true row and the position along within a pixel, not flagged.
 `tests/test_release.py`: a folder of three images of rendered bright lines, across within 0.3 nm.
+
+The timing log (`StepLog`) lists overlap discovery/counting, grid search, sample/tree preparation, exact candidate
+comparison, refinement and the final overlap check, in seconds. Counts give images, overlaps, edge points, grid
+shifts per surface, surfaces actually computed, choices evaluated and exact shifts tested. The last line names
+the slowest step, so one remote run distinguishes the remaining costs without guessing from synthetic timings.
 
 ### S6 — SEM↔design matching
 **Implemented (v1, D20):** `matching.py::match_points(a, b, max_distance)` gives one-to-one

@@ -5,7 +5,9 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 **Before any work, read the parts of `docs/SPEC.md` the task touches**, not the whole file (it is long): find them with `grep -n '^#' docs/SPEC.md`, then read the open questions (§13) and the decision rows the text cites (D123: `grep -n '^| D123 ' docs/DECISIONS.md`). The spec is the source of truth for what the code does: architecture, coordinate conventions, algorithms. `docs/DECISIONS.md` is the Decision Log, the history with the reasons; it also holds decisions that later rows replaced, so never read it as the current behaviour. `docs/OPEN.md` lists what waits for the user's decision, what is built but not yet run on the real data, and the known problems: read it too, and keep it current.
 
 ## The real data: what you can and cannot know
-- The real data is only on the user's PCs. You never see an image, a result or a log of theirs.
+- The real images and datasets are on the user's remote PC, which local Codex cannot access (reaffirmed
+  2026-11-16). Do not search this development PC for them or ask for a local data-folder path. You never see an
+  image, a result or a log of theirs; local checks cannot establish real-data timings or stitching quality.
 - Your only evidence is what the user tells you. They type findings from the logs by hand when you ask: ask for a few named values in one message and say what each answer would mean. Never ask for pasted output, and never hand back a list of settings to toggle.
 - What the user says they saw or checked is a fact. Don't ask them to check it again; work out what it implies.
 - Synthetic images show that the code does what you intended, nothing more: a test may pin down a bug you found by reading the code. They never show that a method works on the real images, how long it takes there, or what causes a problem there. Don't rank, reject or tune methods on them, and don't answer a real-data problem with a synthetic reproduction or synthetic timings. (A timing on this PC holds only for work whose cost does not depend on what is in the image; say so.)

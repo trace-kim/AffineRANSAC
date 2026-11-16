@@ -56,6 +56,7 @@ from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, f
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, design_errors_after_stitching,
                                         merge_observations, offset_steps, paired_errors)
 from affine_ransac.stitching import placement_corrections
+from affine_ransac.step_log import StepLog, timed
 
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
@@ -307,13 +308,21 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
 
     progress(LOAD_SHARE, "Stitching by contours")
     start = time.perf_counter()
+    timing = StepLog()
     pixel_nm = float(np.median(pixels))
     corrections, choices = placed_by_contours(
         edges, centers, sizes, s.max_match_nm, pixel_nm,
         lambda placed, total: progress(LOAD_SHARE + (1 - LOAD_SHARE) * placed / total,
-                                       f"Placing image {placed} of {total} by its contours"))
+                                       f"Placing image {placed} of {total} by its contours"), log=timing)
     record(contour_stitching_text(choices, corrections, tile_ids, s.max_match_nm, time.perf_counter() - start))
-    record(overlap_distance_text(overlap_distances(edges, centers, sizes, corrections, pixel_nm), tile_ids))
+    with timed(timing, "check overlaps after placement"):
+        distances = overlap_distances(edges, centers, sizes, corrections, pixel_nm)
+    record(overlap_distance_text(distances, tile_ids))
+    for name, seconds in timing.seconds.items():
+        record(f"Contour stitching time: {name}: {seconds:.3f} s")
+    record("Contour stitching work: " + ", ".join(f"{name}={value}" for name, value in timing.counts.items()))
+    longest = max(timing.seconds, key=timing.seconds.get)
+    record(f"Contour stitching slowest step: {longest} ({timing.seconds[longest]:.3f} s)")
     progress(1.0, "Done")
     none = [np.empty((0, 2)) for _ in range(n)]
     result = ReleaseResult(str(folder), "images", s, tile_ids, centers, sizes, tile_stripes(centers), none,

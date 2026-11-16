@@ -971,6 +971,10 @@ def test_a_run_with_contours_stitches_the_images_by_their_contours_and_stops_the
     text = "\n".join(lines)
     assert "Stitching by contours: 3 of 3 images placed" in text and "2 across straight edges only" in text
     assert "Overlaps after the stitching: 2 with edges in both images" in text and "!!" not in text
+    assert "Contour stitching time: compare candidate shifts exactly:" in text
+    assert "Contour stitching time: check overlaps after placement:" in text
+    assert "Contour stitching work: images=3" in text and "exact_shifts=" in text
+    assert "Contour stitching slowest step:" in text
 
     view = StitchingView(result, use_opengl=False, on_load_contours=lambda: None, not_measured={})
     assert "Stitching by contours" in view.status_text() and "Overlaps after" in view.status_text()

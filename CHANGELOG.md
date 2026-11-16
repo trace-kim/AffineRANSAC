@@ -11,6 +11,10 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- Contour stitching does less CPU work: smaller FFTs, one inverse transform for all facing directions, rectangle
+  sums for overlap counts, batched exact shift comparisons, reused neighbours/trees and released search caches.
+  The search and fitting rules are unchanged. The log now gives stitching times and work counts and names the
+  slowest step. Real-data speedup remains to be measured on the remote PC; no GPU dependency (D164).
 - Contour diagnosis reuses the flattened and denoised image when only detection, refinement or upscaling settings
   change. Total-variation warm-up runs once per process; contours sharing a region reuse its band level.
   The denoising solver, contours and saved-run versions are unchanged (D163).
