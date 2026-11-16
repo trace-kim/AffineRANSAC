@@ -958,9 +958,11 @@ def test_a_run_with_contours_stitches_the_images_by_their_contours_and_stops_the
     errors = np.array([[0.0, 0.0], [6.4, -3.0], [-4.6, 5.0]])
     records = write_line_folder(tmp_path, errors)
     s = replace(DEFAULTS, pattern="contours", dark_contacts=False, max_match_nm=20.0)
-    lines = []
+    lines, stages = [], []
     with pytest.raises(AnalysisFailed, match="stitched by their contours") as stopped:
-        analyse_folder(tmp_path, "images", s, records, log=lines.append)
+        analyse_folder(tmp_path, "images", s, records, log=lines.append,
+                       progress=lambda fraction, stage: stages.append(stage))
+    assert "Contours of image 3 of 3" in stages and "Placing image 3 of 3 by its contours" in stages
     result = stopped.value.result
     assert stopped.value.stitched_only and result.moving is None
     moved = result.stitch.corrections - result.stitch.corrections[0]

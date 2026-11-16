@@ -308,7 +308,10 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
     progress(LOAD_SHARE, "Stitching by contours")
     start = time.perf_counter()
     pixel_nm = float(np.median(pixels))
-    corrections, choices = placed_by_contours(edges, centers, sizes, s.max_match_nm, pixel_nm)
+    corrections, choices = placed_by_contours(
+        edges, centers, sizes, s.max_match_nm, pixel_nm,
+        lambda placed, total: progress(LOAD_SHARE + (1 - LOAD_SHARE) * placed / total,
+                                       f"Placing image {placed} of {total} by its contours"))
     record(contour_stitching_text(choices, corrections, tile_ids, s.max_match_nm, time.perf_counter() - start))
     record(overlap_distance_text(overlap_distances(edges, centers, sizes, corrections, pixel_nm), tile_ids))
     progress(1.0, "Done")

@@ -272,7 +272,7 @@ class ContourChoice:
 
 
 def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.ndarray, search_nm: float,
-                       bin_nm: float) -> tuple[np.ndarray, list[ContourChoice]]:
+                       bin_nm: float, progress=lambda placed, total: None) -> tuple[np.ndarray, list[ContourChoice]]:
     """(n_tiles, 2) corrections that place the images one at a time by their contours, and how each was placed.
 
     edges: per tile, its edge points in mask nm at the stage position; centers, fovs: (n_tiles, 2), nm; search_nm:
@@ -286,7 +286,8 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
     fit equally (a repeating pattern), the nearest is taken and the choice says so (positions > 1). Images with one
     position are placed first, so that an undecided one does not decide for its neighbours (as
     pipeline.placed_image_by_image); either way the one sharing the most edge points with the placed ones goes
-    first. An image never placed (no placed neighbour with MIN_POINTS edge points to compare) gets NaN."""
+    first. An image never placed (no placed neighbour with MIN_POINTS edge points to compare) gets NaN.
+    progress(placed, total) is called after every image placed."""
     n = len(edges)
     corrections, choices = np.full((n, 2), np.nan), []
     if n == 0:
@@ -323,8 +324,9 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
         their_boxes = [tuple(np.add(boxes[o], np.repeat(corrections[o], 2))) for o in placed]
         tree = facing_tree(theirs, gate)
         mine = [edges[k].inside(box, search_nm) for box in their_boxes]  # my points some shift brings into theirs
-        sample = thinned(EdgePoints(np.concatenate([e.xy for e in mine]), np.concatenate([e.normals for e in mine]),
-                                    edges[k].step_nm), bin_nm)
+        mine = EdgePoints(np.concatenate([e.xy for e in mine]), np.concatenate([e.normals for e in mine]),
+                          edges[k].step_nm)
+        sample = thinned(mine, bin_nm)
         fits = np.array([exact_fit(tree, theirs, sample, their_boxes, shift, gate)
                          for shift in grid_shifts(coarse, bin_nm)])
         exact = np.zeros_like(coarse)
@@ -332,7 +334,7 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
         shifts = grid_shifts(exact, bin_nm)
         nearest = shifts[np.argmin(np.linalg.norm(shifts, axis=1))]
         groups = separate_groups(exact)
-        shift, pairs, rms, directions = lined_up(theirs, edges[k], nearest, gate)
+        shift, pairs, rms, directions = lined_up(theirs, mine, nearest, gate)  # the others have no edge to meet
         return ContourChoice(k, shift, pairs, rms, groups, directions) if pairs >= MIN_POINTS else None
 
     place(int(np.argmax([sum(shared[k, o] for o in neighbours[k]) for k in range(n)])), 0.0)
@@ -348,6 +350,7 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
         k = max([k for k in found if options[k][1].positions == 1] or found, key=lambda t: gain[t])
         choices.append(options[k][1])
         place(k, options[k][1].correction)
+        progress(len(choices) + 1, n)
 
 
 @dataclass
