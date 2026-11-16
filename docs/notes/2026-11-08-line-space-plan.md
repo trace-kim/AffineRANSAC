@@ -35,7 +35,7 @@ Contact holes are the special case where edges face every way, so today's method
 A row offset of the whole mosaic against the design is harmless (D105); a slip between neighbours is not,
 it averages different lines' errors, which is why the row decision above exists.
 
-## Steps, one per turn, each off by default until the user has checked it on real images
+## Steps, one commit each, each off by default until the user has checked it on real images
 
 Status: step 1 built 2026-11-09 (spec D153). On the real images it found no line (2026-11-12): their lines are
 vertical, and neither the direction nor that a line runs through the image may be assumed. Kept as built; beside it
@@ -68,7 +68,9 @@ output per line (one across error per image, or a profile along the line).
 
 ## Rules that bind this work
 
-- One step per turn: build, commit, push, stop, wait for the user's real-data result. Synthetic tests only
+- This plan is approved, so `CLAUDE.md` "An approved plan" applies: build every step, one commit each, and stop
+  only where a step cannot be built without a fact from the real data (changed 2026-11-16; it said one step
+  per turn, which left the flow at step 1). Synthetic tests only
   for what the step needs; no ranking of methods on synthetic images.
 - Nothing changes for contact datasets: the pattern-type setting defaults to contacts. `ANALYSIS` and
   `FORMAT` (D99) apply as soon as results or run files change.
