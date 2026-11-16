@@ -15,7 +15,6 @@ day; nothing here was confirmed again by the user that day.
 
 | Item | Last word | The decision |
 |---|---|---|
-| `detection_binning` (D161): built, off by default | 2026-11-16 | The user rejected it as the answer to their request: it does not denoise, and total variation is needed for a clean threshold mask. Either revert D161, or keep it and correct the "may need no denoising" wording (the setting's help text in `analysis.py`, spec S2, the D161 row). The split of the NOT PLACED log line is in the same commit. |
 | Load contours: the "same centres" check is too loose | 2026-10-30 | `release/analysis.read_contours` compares with `np.allclose(..., atol=0.01)` and the default relative tolerance, which allows about 10 nm per mm of coordinate; the spec says within 0.01 nm (D141). Code checked: still so. The fix is `rtol=0` and a test at mask-scale coordinates; it may flag runs that pass today. Waiting for the go. |
 | Stripe drift: one unmatched tile breaks the chain (research app) | 2026-10-09 | A tile whose overlaps do not match breaks the stitching in measurement order: only the largest piece is placed, the rest stays nominal, and the drift-corrected sets lose most tiles. Code checked: a tile not stitched in measurement order still stays nominal. Options told to the user: bridge the breaks through the all-overlap placement, or flag tiles with large offsets. Waiting for the choice. |
 | Single tiles paired one row off on a repeating array | 2026-10-28 | `docs/notes/2026-10-28-single-tile-row-off.md`: two flaws in `matching.consistent_choice`, found on synthetic staggered mosaics, not confirmed on the real data; the note ends with four questions to the user. Spec S5 *Known problem* 1 and 2 are earlier synthetic diagnoses that the user did not accept. D143 and D144 (below) were built the same day. |
@@ -24,7 +23,7 @@ day; nothing here was confirmed again by the user that day.
 
 | What | Built | State and what to check |
 |---|---|---|
-| Stitching by contours (D156), pattern `contours` | 2026-11-16 | The user's first runs were slow and left many images not placed. Why they were not placed is not known. Out of this came the step-time log (D157) and a faster total variation (D158, D159; the user: still a bit slow). To learn first: the counts on the NOT PLACED log lines. |
+| Stitching by contours (D156), pattern `contours` | 2026-11-16 | The user's first runs were slow and left many images not placed. Why they were not placed is not known. Out of this came the step-time log (D157) and a faster total variation (D158, D159; the user: still a bit slow). To learn first: the first line of the stitching log, how many of how many images were placed. |
 | SEM–design pairs after the stitching (D143); stitching method `fingerprint` (D144, off by default) | 2026-10-28 | Not run on the real data as of 2026-10-28. Order: the defaults first (D143 alone), then `stitch_method = fingerprint`. If D143 alone removes the staircase, the fingerprint can be reverted. Parts added only for problems seen on synthetic mosaics, to trim if the run is good: in D143 `_design_around` with the −1 rows of `merge_values`, and `MIN_FOLLOWED` / `_followed`; in D144 `clearly_better` / `by_fit` in `overlap_checks`, and `capped_rms` (code checked: the contour stitching uses `capped_rms` too now). The log lines (`offset_steps`, `fingerprint_text`) stay: the user judges by them. Gap: D143 has no setting to go back to the old pairing, though the user asked for fixes to be optional. |
 | Parameters window in sections (D147) | 2026-10-30 | Layout only; waiting for the user's look. |
 | High-performance mode (D151, off by default) | 2026-11-04 | On the workstation, a second run should load without the long start-up wait. |
@@ -37,7 +36,9 @@ it stays as built at the user's wish (2026-11-12) and is not to be extended.
 ## Asked for, not built
 
 - **A faster proper denoising for contours, and a reliable contour extraction** (user, 2026-11-16). The method was
-  left open, so a proposal comes first. Noted with D159, not built: a total variation solver that needs fewer
+  left open, so a proposal comes first. D161 (regions found in a binned image) was built for it without one and
+  reverted the same day: averaging blocks of pixels does not denoise, and total variation is needed for a proper
+  threshold mask on their images. Noted with D159, not built: a total variation solver that needs fewer
   rounds (it changes the results, so the user judges it). What was built and left out among the denoisers, and
   why: D132.
 - **Contours, stage 3:** pair the contours with the design, fit, report, as step 3 of

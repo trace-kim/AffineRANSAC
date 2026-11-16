@@ -948,20 +948,6 @@ def write_line_folder(folder, errors):
     return records
 
 
-def test_images_not_placed_are_split_into_those_beside_a_placed_image_and_those_never_compared():
-    """D161: the placement goes out from the placed images, so an image not placed was either compared with a placed
-    neighbour, whose edges its own did not meet, or had no placed neighbour and was never compared."""
-    from affine_ransac.release.analysis import beside_placed, contour_stitching_text
-    centers = np.array([[0.0, 0.0], [90.0, 0.0], [180.0, 0.0], [270.0, 0.0]])  # a row, overlaps of 10 nm
-    sizes = np.full((4, 2), 100.0)
-    corrections = np.array([[0.0, 0.0]] + [[np.nan, np.nan]] * 3)  # only the first placed
-    beside = beside_placed(centers, sizes, corrections)
-    assert beside == {1}
-    text = contour_stitching_text([], corrections, ["A", "B", "C", "D"], 20.0, 1.0, beside)
-    assert ("!! 3 image(s) NOT PLACED: 1 beside a placed image, but fewer than 40 of their edge points came within "
-            "3 px of its edges: ['B']; 2 never compared, as no neighbour of theirs was placed: ['C', 'D']") in text
-
-
 def test_a_run_with_contours_stitches_the_images_by_their_contours_and_stops_there(tmp_path):
     """D156: pattern contours places the images by their contours: across the lines from the edges, along them from
     the stage. The run ends as an AnalysisFailed marked stitched_only, whose result the Stitching tab shows, with

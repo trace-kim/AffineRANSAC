@@ -446,26 +446,6 @@ facing out of its line; a line 30° off the x axis, both edges within 0.1 px; a 
 0.1 px, the inner contour facing the centre; contacts (`render_tile`): the closed contours are the contacts
 `find_contacts` finds (their middles within 0.2 px of its centres), and the contacts it drops as cut give open ones.
 
-**Detection on a binned image (D161; `pattern` contours only).** Setting `detection_binning` (1 = off, the default;
-`analysis.CONTOURS_ONLY`, MaskReg only): `find_contours` finds the regions (threshold mask, regions, their contours
-and directions) in the prepared image **binned** `detection_binning` times (`features.contact.binned_image`: each
-block of N × N pixels averaged into one, `cv2.INTER_AREA`; a size that is no multiple of N gives scales a little
-different from N, used as they are), then **refines every edge in the image itself** (upscaled, if `upscale` asks):
-the detected contours and region numbers are carried over (`rescaled_contours`: pixel (x, y) to ((x + 0.5) s − 0.5),
-directions turned with the stretch; `labels_in`: each pixel takes the region of the binned pixel its centre falls in),
-and the edge search reaches at least N pixels each way (`max(search_px, N)`; the detected outline is as coarse as the
-binned pixels). The detection's settings in pixels stay pixels of the image as loaded (`detection_blur_px` / N,
-areas / N², `normal_span` / N, at least 1). Why: the mask decides only on which side of an edge a pixel lies, which
-needs no fine pixels where the pattern is many pixels wide; the refinement places the edge. N × N pixels averaged
-are, for the noise, one pixel with an N² times longer dwell: the shot noise falls by N (CD-SEM tools average many
-pixels along an edge for the same reason), without rounds over the whole image as total variation needs, and the
-regions are searched in N² fewer pixels. The detected contours (as coarse as the binned pixels) are given in the
-image's pixels; the diagnosis window shows the binned image's threshold mask stretched over the image, the image
-itself, and says "binned N× for the detection". Contacts and lines do not use it (greyed). Synthetic
-(`tests/test_contours.py`): with N = 2, 3, 4 the refined edges of vertical lines within 0.05 px, as without (so
-the refinement, not the bins, places them), the detected ones within N px; N = 2 with `upscale` 2 the same; a
-ring's radii within 0.15 px, each contour facing the right way.
-
 No radius or centre is assumed, so either rule works for any shape (circles, ellipses, rectangles).
 The refined centre is the area centroid of the refined contour. A point without a tangent (its ±3
 neighbours coincide, at the tip of a 1 px wide spur) is not moved (D69). Known limit: at sharply curved
@@ -906,10 +886,7 @@ logged with !! (`ContourChoice.positions` > 1, `separate_groups`: groups of fitt
 This is the order of question 14 in one criterion: the roughness and the residuals of the lines seen twice are both
 in the distance across the edges; tied → smallest correction, logged. Images with one group are placed first, so
 that an undecided one does not decide for its neighbours. An image sharing fewer than `MIN_POINTS` edge points with
-its placed neighbours is not placed (NaN, logged). The placement goes out from the placed images only, so once every
-image beside them fails, the rest are never compared; the log (`contour_stitching_text`, D161) splits the images not
-placed into those beside a placed image (`release/analysis.beside_placed`: fewer than `MIN_POINTS` of their edge
-points came within the gate of its edges) and those never compared. `overlap_distances`: after the placement, per overlap the rms
+its placed neighbours is not placed (NaN, logged). `overlap_distances`: after the placement, per overlap the rms
 distance across the edges between the two images' paired edges, the check that needs no trust in the placement
 (logged: the median over the overlaps and the largest).
 The run (`release/analysis.stitch_by_contours`): every image's contours in worker processes, the placement (one
@@ -1521,8 +1498,7 @@ Enter in a setting closes nothing (no default button).
 
 **Its log (D157).** Under the figure (a splitter, to resize or close it), a read-only text box: **every search
 adds an entry, the newest last** (`contour_dialog.log_entry`): the time, the file and its size, the settings that
-decide the time (pattern, detection, refinement, upscale, denoise, background_px, min_area_px; with contours
-detection_binning, D161, whose steps are binning the image and carrying the contours over); the seconds from the
+decide the time (pattern, detection, refinement, upscale, denoise, background_px, min_area_px); the seconds from the
 start of the search until it was drawn; then **every step with its seconds and its share of that whole, the longest
 marked**; what the steps do not account for as "not timed"; then the counts the times depend on. The steps are timed
 where they run (`step_log.StepLog`, `timed`; `Diagnosis.log`): with `pattern` contours each step of

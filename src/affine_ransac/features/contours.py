@@ -14,8 +14,6 @@ the direction its edge faces: out of its region.
   contact.
 - in_image_contours(): contours found in an upscaled image (features.contact.upscaled_image) in the image's own
   pixels.
-- rescaled_contours(), labels_in(): contours and region numbers found in a binned image (features.contact.binned_image)
-  in the pixels of the image their edges are refined in (D161).
 
 Pixel frame: (x, y) = (column, row), y pointing down, pixel centres at whole numbers (docs/SPEC.md §3).
 """
@@ -188,26 +186,3 @@ def in_image_contours(contours: Contours, factor: int) -> Contours:
         return contours
     points = [(p + 0.5) / factor - 0.5 for p in contours.points]
     return Contours(points, contours.normals, contours.closed, contours.region, contours.threshold, contours.left_out)
-
-
-def rescaled_contours(contours: Contours, scale) -> Contours:
-    """Contours in the pixels of another image of the same area, with (sx, sy) = `scale` times as many pixels per
-    side (D161: from the binned image the regions are found in to the image the edges are refined in): point (x, y)
-    goes to ((x + 0.5) sx - 0.5, (y + 0.5) sy - 0.5); each direction turns with the stretch (divided by the scale,
-    made unit again; (0, 0), no direction, stays)."""
-    scale = np.asarray(scale, dtype=float)
-    points = [(p + 0.5) * scale - 0.5 for p in contours.points]
-    normals = []
-    for n in contours.normals:
-        turned = n / scale
-        length = np.linalg.norm(turned, axis=1, keepdims=True)
-        normals.append(np.divide(turned, length, out=np.zeros_like(turned), where=length > 0))
-    return Contours(points, normals, contours.closed, contours.region, contours.threshold, contours.left_out)
-
-
-def labels_in(labels: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    """detect_contours' region numbers for another image of the same area and this shape (D161): each of its pixels
-    takes the number of the pixel of `labels` its centre falls in."""
-    rows = np.minimum((np.arange(shape[0]) + 0.5) * labels.shape[0] / shape[0], labels.shape[0] - 1).astype(int)
-    cols = np.minimum((np.arange(shape[1]) + 0.5) * labels.shape[1] / shape[1], labels.shape[1] - 1).astype(int)
-    return labels[np.ix_(rows, cols)]

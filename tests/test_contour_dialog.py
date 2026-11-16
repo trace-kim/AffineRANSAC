@@ -12,8 +12,8 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtTest
 
-from affine_ransac.analysis import CONTOUR_SETTINGS, CONTOURS_ONLY, any_shape_options, contour_options, line_options
-from affine_ransac.features.contact import binned_image, contact_mask
+from affine_ransac.analysis import CONTOUR_SETTINGS, any_shape_options, contour_options, line_options
+from affine_ransac.features.contact import contact_mask
 from affine_ransac.features.lines import column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import find_contacts, find_contours, find_lines, prepared_image
@@ -51,9 +51,7 @@ def settle(dialog, seconds=30):
 
 
 def test_the_window_edits_every_contour_setting_in_its_groups():
-    names = tuple(name for _, names in GROUPS for name in names)
-    assert tuple(name for name in names if name not in CONTOURS_ONLY) == ("pattern",) + CONTOUR_SETTINGS
-    assert dict(GROUPS)["Detection (thresholding)"][0] == "detection_binning"  # contours only, D161
+    assert tuple(name for _, names in GROUPS for name in names) == ("pattern",) + CONTOUR_SETTINGS
 
 
 def test_the_window_shows_the_contacts_a_run_finds(tmp_path):
@@ -108,8 +106,7 @@ def test_settings_that_change_nothing_are_greyed_out(tmp_path):
     assert dialog.editors["min_solidity"].isEnabled()
     dialog.editors["refinement"].setCurrentText("none")
     assert [name for name, widget in dialog.editors.items() if not widget.isEnabled()] == \
-        ["median_px", "nlm_h", "tv_weight", "detection_binning", "search_px", "edge_step_px", "edge_blur_px",
-         "normal_span"]  # detection_binning: contours only
+        ["median_px", "nlm_h", "tv_weight", "search_px", "edge_step_px", "edge_blur_px", "normal_span"]
     for method, option in (("median", "median_px"), ("non-local means", "nlm_h"), ("total variation", "tv_weight")):
         dialog.editors["denoise"].setCurrentText(method)  # each method's option only
         assert [name for name in ("median_px", "nlm_h", "tv_weight") if dialog.editors[name].isEnabled()] == [option]
@@ -216,8 +213,8 @@ def test_with_pattern_lines_the_window_shows_the_edges_of_the_lines(tmp_path):
     assert dialog.boxes["Refined contours"].text() == "Refined edges" and dialog.layers["Refined contours"].isVisible()
     assert not dialog.boxes["Refined centres"].isEnabled() and not dialog.layers["Refined centres"].isVisible()
     greyed = [name for name, widget in dialog.editors.items() if not widget.isEnabled()]
-    assert greyed == ["median_px", "nlm_h", "tv_weight", "detection_binning", "min_area_px", "max_area_px",
-                      "min_solidity", "min_contrast", "normal_span"]
+    assert greyed == ["median_px", "nlm_h", "tv_weight", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
+                      "normal_span"]
     assert dialog.values() == s
 
     dialog.editors["pattern"].setCurrentText("contacts")  # back: contours and centres again
@@ -245,27 +242,6 @@ def test_with_pattern_contours_the_window_shows_the_contours_of_any_pattern(tmp_
     assert not dialog.boxes["Refined centres"].isEnabled() and not dialog.layers["Refined centres"].isVisible()
     greyed = [name for name, widget in dialog.editors.items() if not widget.isEnabled()]
     assert greyed == ["median_px", "nlm_h", "tv_weight", "min_solidity", "min_contrast"]
-    assert dialog.values() == s
-
-
-def test_with_detection_binning_the_window_shows_the_binned_mask_over_the_image_and_the_edges_refined_in_it(tmp_path):
-    """D161: the threshold mask is that of the binned image, stretched over the image as loaded; the image shown and
-    the refined contours are those of the image itself; the line and the log say it was binned."""
-    s = replace(SETTINGS, pattern="contours", dark_contacts=False, detection_binning=4)
-    dialog, path = open_dialog(tmp_path, s, shape_image(vertical_lines, noise=5.0))
-    image = load_sem_image(path)
-    np.testing.assert_array_equal(dialog.image_item.image, image)
-    mask = dialog.layers["Threshold mask"]
-    np.testing.assert_array_equal(mask.image, contact_mask(binned_image(image, 4), False, 1.5 / 4, "otsu")[0])
-    assert mask.image.shape == (50, 75)
-    assert mask.mapRectToParent(mask.boundingRect()) == QtCore.QRectF(-0.5, -0.5, image.shape[1], image.shape[0])
-    _, refined = find_contours(image, **any_shape_options(s))
-    x, y = dialog.layers["Refined contours"].getData()
-    np.testing.assert_array_equal(np.column_stack([x, y]), drawable_contours(refined))
-    assert "of the image binned 4× for the detection" in dialog.summary.text()
-    entry = dialog.log_box.toPlainText().strip().split("\n\n")[-1]
-    assert "DETECTION_BINNING 4" in entry and "bin the image for the detection" in entry
-    assert "3,750 pixels searched" in entry
     assert dialog.values() == s
 
 
