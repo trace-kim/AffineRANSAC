@@ -187,7 +187,7 @@ def direct_mismatch(theirs, their_box, mine, my_box, reach, bin_nm):
 
 
 @pytest.mark.parametrize("reach,bin_nm", [(0, 1.0), (3, 1.7), (5, 0.8)])
-def test_mismatch_equals_explicit_grid_distances_with_one_small_inverse_fft(monkeypatch, reach, bin_nm):
+def test_mismatch_equals_explicit_grid_distances_with_at_most_one_inverse_fft(monkeypatch, reach, bin_nm):
     rng = np.random.default_rng(71)
     normals = np.column_stack([np.cos(np.arange(8) * np.pi / 4), np.sin(np.arange(8) * np.pi / 4)])
     mine = EdgePoints(rng.uniform(-8, 8, (40, 2)), normals[np.arange(40) % 8], bin_nm)
@@ -204,7 +204,7 @@ def test_mismatch_equals_explicit_grid_distances_with_one_small_inverse_fft(monk
     expected_total, expected_count = direct_mismatch(theirs, their_box, mine, my_box, reach, bin_nm)
     np.testing.assert_array_equal(count, expected_count)
     np.testing.assert_allclose(total, expected_total, rtol=2e-6, atol=2e-4)
-    assert len(calls) == 1
+    assert len(calls) <= 1
     np.testing.assert_array_equal(coarse_fit(total, count, bin_nm, bin_nm),
                                   coarse_fit(expected_total, expected_count, bin_nm, bin_nm))
 
@@ -283,4 +283,25 @@ def test_logged_placement_with_several_neighbours_equals_scalar_candidates(monke
         (c.tile, c.pairs, c.positions, c.directions) for c in old_choices]
     assert visits == [(2, 5), (3, 5), (4, 5)] and np.isnan(actual[4]).all()
     assert log.counts["images"] == 5 and log.counts["exact_shifts"] > 0
+    assert log.counts["refinements"] == len(choices) < log.counts["choices"]
     assert len(log.seconds) == 5 and all(t >= 0 for t in log.seconds.values())
+
+
+def test_failed_lazy_refinement_defers_the_tile_until_it_has_another_neighbour(monkeypatch):
+    rng = np.random.default_rng(86)
+    points = seen(circles(rng), [0, 0], [0, 0], rng)
+    original, calls = stitching.lined_up, []
+
+    def first_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return np.zeros(2), 0, np.nan, 0
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stitching, "lined_up", first_fails)
+    log = StepLog()
+    corrections, choices = placed_by_contours([points] * 3, np.zeros((3, 2)), np.full((3, 2), FOV),
+                                               10.0, PIXEL, log=log)
+    np.testing.assert_allclose(corrections, 0, atol=1e-10)
+    assert [c.tile for c in choices] == [2, 1]
+    assert log.counts["refinements"] == 3  # first tile fails, other placed, first succeeds against both

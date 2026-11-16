@@ -101,7 +101,7 @@ def test_a_log_gets_the_time_of_every_step_and_the_counts_they_depend_on():
         "go through the regions, leave out by size", "trace every kept region in its bounding box",
         "cut the boundaries at the image border, direction of every point", "smooth the image for the edges",
         "sample the image across the edge at every point",
-        "interior level of every region (sorts every pixel of the image)",
+        "interior level of every region (group pixels and select medians)",
         "band level of every contour (from all edge points of its region)",
         "edge position of every point, contour by contour", "move the points to their edges",
         "back to the image's own pixels"]

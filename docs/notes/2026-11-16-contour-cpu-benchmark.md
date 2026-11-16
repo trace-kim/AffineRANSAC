@@ -1,9 +1,10 @@
 # CPU contour-stitching benchmark, 2026-11-16
 
-For the user's requested synthetic acquisition sequence, allow **about 24 minutes for 1,200 images on this PC**:
-about **20 minutes for stitching and its overlap checks**, plus **4 minutes for contour extraction**.
-This is an extrapolation from up to 128 images, not a measured 1,200-image run or a forecast for unseen real SEM
-images. The production algorithm was not changed for this benchmark.
+**Withdrawn as a whole-run estimate.** The user correctly rejected this benchmark's omission of required
+total-variation denoising and upscaling. Its former 24-minute estimate does not answer the intended workload.
+The user then cancelled the proposed CPU rerun; no replacement benchmark is authorized or reported here.
+The measurements below are retained only as historical evidence for the explicitly undenoised, unscaled
+synthetic input and the earlier implementation. They must not be used to forecast the user's remote run.
 
 ## Acquisition and machine
 
@@ -63,7 +64,7 @@ The 128-image placement spent:
 It computed 253 overlap search surfaces, evaluated 253 choices, and compared 45,179 shifts exactly. Each search
 surface had 40,401 grid shifts. Thus the remaining dominant cost for this workload is the grid search.
 
-## Estimate for 1,200 images
+## Withdrawn estimate for 1,200 images
 
 This acquisition geometry has 2,397 overlapping pairs at 1,200 images. The larger measured runs cost
 0.5003, 0.5027 and 0.4888 seconds per overlapping pair (32, 64 and 128 images).
@@ -114,7 +115,7 @@ No behavior was adjusted to improve the benchmark result.
 
 ## Reproduction and artifacts
 
-Run from the repository root:
+Historical command, at revision `f6e4b96` (not a request to rerun):
 
 ```powershell
 python benchmarks/contour_stitching.py --counts 8 16 32 64 128 --repeats 1 --out build/contour-benchmark
@@ -125,6 +126,9 @@ the extracted edge arrays (`edges.npz`), and full measurements/settings (`result
 `build/contour-benchmark/` directory. On the machine where this report was made, `comparison.json` also holds
 the additional before/after and 1,200-box measurements. The generated images and arrays are not committed.
 The 33 contour-stitching unit tests passed after the benchmark.
+
+The current runner requires explicit `--denoise` and `--upscale` arguments and accepts `--tv-weight`, so it cannot
+silently repeat this preprocessing omission. D165 changes the implementation again; no timing for it is reported.
 
 **Assumed, not known:** the same workload and processor for the 1,200-image estimate; its transfer to real SEM
 data, different settings or the remote CPU is not established.

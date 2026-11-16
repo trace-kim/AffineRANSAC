@@ -359,7 +359,7 @@ def test_every_search_adds_the_time_of_each_step_to_the_log(tmp_path):
     steps = {line.split(" %  ")[1].replace("   <== the longest", ""): float(line.split(" s ")[0])
              for line in entry.splitlines() if " %  " in line}
     for step in ("threshold mask", "trace every kept region in its bounding box",
-                 "interior level of every region (sorts every pixel of the image)",
+                 "interior level of every region (group pixels and select medians)",
                  "band level of every contour (from all edge points of its region)",
                  "edge position of every point, contour by contour",
                  "draw them on screen (again at every zoom and pan)", NOT_TIMED):

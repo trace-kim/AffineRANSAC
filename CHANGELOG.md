@@ -11,6 +11,12 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- Further contour CPU work reductions: bounded edge neighbourhoods replace full distance transforms; compact
+  point runs use interval sums instead of FFTs; overlap counts use the small shift grid; only the next selected
+  candidate is refined. Region medians use grouped selection instead of sorting all upscaled pixels.
+  Denoising, upscaling, search range and fitting rules are preserved. Extraction logs its elapsed time and summed
+  worker-step times, with the configured denoiser/upscaling and TV rounds. Correctness checked; no new benchmark
+  or remote speedup claim. The previous estimate omitting denoising/upscaling is withdrawn (D165).
 - Contour stitching does less CPU work: smaller FFTs, one inverse transform for all facing directions, rectangle
   sums for overlap counts, batched exact shift comparisons, reused neighbours/trees and released search caches.
   The search and fitting rules are unchanged. The log now gives stitching times and work counts and names the

@@ -88,7 +88,8 @@ def covered_counts(image: np.ndarray, covered_x: np.ndarray, covered_y: np.ndarr
     return sums[np.ix_(y1, x1)] - sums[np.ix_(y0, x1)] - sums[np.ix_(y1, x0)] + sums[np.ix_(y0, x0)]
 
 
-def mismatch(theirs: EdgePoints, their_box, mine: EdgePoints, my_box, reach: int, bin_nm: float
+def mismatch(theirs: EdgePoints, their_box, mine: EdgePoints, my_box, reach: int, bin_nm: float,
+             *, log: StepLog | None = None
              ) -> tuple[np.ndarray, np.ndarray]:
     """How well my image's edges lie on those of a placed image, for every shift of mine up to `reach` bins each way.
 
@@ -99,10 +100,11 @@ def mismatch(theirs: EdgePoints, their_box, mine: EdgePoints, my_box, reach: int
     squared distance (nm², at most the gate, GATE_PX bins) to their nearest edge facing the same way (the same
     SECTORS sector or the one beside it). total / count is small where the edges lie on each other.
     The total comes from correlations by facing direction: my points as an image, against the image of the distance
-    to their edges (chamfer matching). Rectangle sums count covered points without an FFT."""
+    to their edges (chamfer matching). Compact point runs use row sums; other sectors share an FFT. Every point
+    contributes a rectangle to the small search grid for the coverage counts. No point or shift is dropped."""
     size = 2 * reach + 1
     total, count = np.zeros((size, size)), np.zeros((size, size))
-    gate, grown = GATE_PX * bin_nm, reach * bin_nm
+    grown = reach * bin_nm
     # the part of my image that some shift brings into theirs
     x0, x1 = max(my_box[0], their_box[0] - grown), min(my_box[1], their_box[1] + grown)
     y0, y1 = max(my_box[2], their_box[2] - grown), min(my_box[3], their_box[3] + grown)
@@ -115,6 +117,7 @@ def mismatch(theirs: EdgePoints, their_box, mine: EdgePoints, my_box, reach: int
     inside = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
     if not inside.any():
         return total, count
+    from affine_ransac.contour_grid import capped_cost, compact_runs, correlate_runs, point_coverage
     ix, iy, my_sector = ix[inside], iy[inside], facing_sectors(mine.normals[inside])[0]
     jx, jy = np.round((theirs.xy - [x0, y0]) / bin_nm).astype(int).T + reach
     there = (jx >= 0) & (jx < wide) & (jy >= 0) & (jy < high)
@@ -126,25 +129,34 @@ def mismatch(theirs: EdgePoints, their_box, mine: EdgePoints, my_box, reach: int
     covered_y = (cell_y >= their_box[2]) & (cell_y <= their_box[3])
     covered = np.outer(covered_y, covered_x).astype(np.float32)
 
-    def as_image(rows, columns):
-        image = np.zeros((h, w), np.float32)
-        np.add.at(image, (rows, columns), 1)
-        return image
-    count = covered_counts(as_image(iy, ix), covered_x, covered_y, size)
+    count = point_coverage(iy, ix, covered_x, covered_y, size)
     # Only valid shifts are needed: no point wraps at these shifts, so padding to the larger image
     # is sufficient. Full linear correlation pads to the SUM of the two image sizes instead.
     shape = tuple(fft.next_fast_len(n, real=True) for n in (high, wide))
-    spectrum = np.zeros((shape[0], shape[1] // 2 + 1), dtype=np.complex64)
+    spectrum = None
     for sector in np.unique(my_sector):
-        edges = np.zeros((high, wide), bool)
         facing = (their_sector == sector) | (their_other == sector)
-        edges[jy[facing], jx[facing]] = True
-        distance = ndimage.distance_transform_edt(~edges) * bin_nm if edges.any() else np.full(edges.shape, gate)
-        cost = (np.minimum(distance, gate) ** 2).astype(np.float32) * covered
-        mine_here = as_image(iy[my_sector == sector], ix[my_sector == sector])
-        spectrum += fft.rfftn(cost, shape) * fft.rfftn(mine_here, shape).conj()
+        cost = capped_cost(jy[facing], jx[facing], (high, wide), bin_nm, GATE_PX)
+        cost *= covered
+        rows, columns = iy[my_sector == sector], ix[my_sector == sector]
+        runs, weights, transposed = compact_runs(rows, columns, (h, w))
+        # Bound direct work by the grid area; fragmented contours retain the dense FFT path.
+        if len(runs) * size * size <= 4 * high * wide:
+            part = correlate_runs(cost.T if transposed else cost, runs, weights, size)
+            total += part.T if transposed else part
+            backend = "run_sum_sectors"
+        else:
+            mine_here = np.zeros((h, w), np.float32)
+            np.add.at(mine_here, (rows, columns), 1)
+            if spectrum is None:
+                spectrum = np.zeros((shape[0], shape[1] // 2 + 1), dtype=np.complex64)
+            spectrum += fft.rfftn(cost, shape) * fft.rfftn(mine_here, shape).conj()
+            backend = "fft_sectors"
+        if log is not None:
+            log.counts[backend] = log.counts.get(backend, 0) + 1
     # Correlation is linear: sum the sectors before doing the single inverse transform.
-    total = fft.irfftn(spectrum, shape)[:size, :size].astype(float)
+    if spectrum is not None:
+        total += fft.irfftn(spectrum, shape)[:size, :size]
     return np.maximum(total, 0), count
 
 
@@ -365,7 +377,8 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
             neighbours[j].append(i)
     if log is not None:
         log.counts.update(images=n, overlaps=len(shared) // 2, edge_points=sum(len(e.xy) for e in edges),
-                          search_shifts=(2 * reach + 1) ** 2, surfaces=0, choices=0, exact_shifts=0)
+                          search_shifts=(2 * reach + 1) ** 2, surfaces=0, choices=0, exact_shifts=0,
+                          run_sum_sectors=0, fft_sectors=0, refinements=0)
     surfaces = {}  # (k, o): mismatch of tile k against the placed tile o
     options = {}   # tile -> (its placed neighbours when its choice was found, the choice or None)
     gain = np.zeros(n)  # edge points each tile shares with the placed tiles
@@ -384,12 +397,22 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
                 placed_edges.pop(o, None)
                 placed_boxes.pop(o, None)
 
+    def overlap_points(k, placed):
+        with timed(log, "prepare overlap samples and facing tree"):
+            near = [placed_edges[o].inside(boxes[k], search_nm + gate) for o in placed]
+            theirs = EdgePoints(np.concatenate([e.xy for e in near]), np.concatenate([e.normals for e in near]), bin_nm)
+            their_boxes = [placed_boxes[o] for o in placed]
+            mine = [edges[k].inside(box, search_nm) for box in their_boxes]
+            mine = EdgePoints(np.concatenate([e.xy for e in mine]), np.concatenate([e.normals for e in mine]),
+                              edges[k].step_nm)
+            return theirs, mine, their_boxes, facing_tree(theirs, gate)
+
     def choice(k, placed) -> ContourChoice | None:
         total, count = 0.0, 0.0
         with timed(log, "grid search against placed neighbours"):
             for o in placed:
                 if (k, o) not in surfaces:
-                    surfaces[k, o] = mismatch(placed_edges[o], placed_boxes[o], edges[k], boxes[k], reach, bin_nm)
+                    surfaces[k, o] = mismatch(placed_edges[o], placed_boxes[o], edges[k], boxes[k], reach, bin_nm, log=log)
                     if log is not None:
                         log.counts["surfaces"] += 1
                 total, count = total + surfaces[k, o][0], count + surfaces[k, o][1]
@@ -398,15 +421,8 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
             log.counts["choices"] += 1
         if not coarse.any():
             return None
-        with timed(log, "prepare overlap samples and facing tree"):
-            near = [placed_edges[o].inside(boxes[k], search_nm + gate) for o in placed]
-            theirs = EdgePoints(np.concatenate([e.xy for e in near]), np.concatenate([e.normals for e in near]), bin_nm)
-            their_boxes = [placed_boxes[o] for o in placed]
-            tree = facing_tree(theirs, gate)
-            mine = [edges[k].inside(box, search_nm) for box in their_boxes]  # some shift brings my points into theirs
-            mine = EdgePoints(np.concatenate([e.xy for e in mine]), np.concatenate([e.normals for e in mine]),
-                              edges[k].step_nm)
-            sample = thinned(mine, bin_nm)
+        theirs, mine, their_boxes, tree = overlap_points(k, placed)
+        sample = thinned(mine, bin_nm)
         with timed(log, "compare candidate shifts exactly"):
             fits = exact_fits(tree, theirs, sample, their_boxes, grid_shifts(coarse, bin_nm), gate)
             if log is not None:
@@ -416,9 +432,9 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
             shifts = grid_shifts(exact, bin_nm)
             nearest = shifts[np.argmin(np.linalg.norm(shifts, axis=1))]
             groups = separate_groups(exact)
-        with timed(log, "refine selected shifts"):
-            shift, pairs, rms, directions = lined_up(theirs, mine, nearest, gate, tree=tree)
-        return ContourChoice(k, shift, pairs, rms, groups, directions) if pairs >= MIN_POINTS else None
+        # A provisional choice: refine only when its priority puts it first. Rebuild its overlap points then,
+        # rather than retaining large trees/arrays for every waiting tile.
+        return ContourChoice(k, nearest, 0, np.nan, groups, 0)
 
     place(int(np.argmax([sum(shared[k, o] for o in neighbours[k]) for k in range(n)])), 0.0)
     while True:
@@ -431,8 +447,17 @@ def placed_by_contours(edges: list[EdgePoints], centers: np.ndarray, fovs: np.nd
         if not found:
             return corrections, choices
         k = max([k for k in found if options[k][1].positions == 1] or found, key=lambda t: gain[t])
-        choices.append(options[k][1])
-        place(k, options[k][1].correction)
+        placed, candidate = options[k]
+        theirs, mine, _, tree = overlap_points(k, placed)
+        with timed(log, "refine selected shifts"):
+            shift, pairs, rms, directions = lined_up(theirs, mine, candidate.correction, gate, tree=tree)
+            if log is not None:
+                log.counts["refinements"] += 1
+        if pairs < MIN_POINTS:
+            options[k] = placed, None  # retry only after another neighbour is placed, as before
+            continue
+        choices.append(ContourChoice(k, shift, pairs, rms, candidate.positions, directions))
+        place(k, shift)
         progress(len(choices) + 1, n)
 
 

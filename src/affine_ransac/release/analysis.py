@@ -262,15 +262,23 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     return result(moving, LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None)
 
 
-def _edge_tile(image_path, fov_nm, options: dict) -> tuple[EdgePoints, int, int, float]:
+def _edge_tile(image_path, fov_nm, options: dict, log: StepLog | None = None) -> tuple[EdgePoints, int, int, float]:
     """One SEM image's contours of any pattern (pipeline.find_contours, refined) as edge points in tile-local nm, how
     many of them are closed and open, and the pixel size in nm; at module level so that worker processes can run
     it."""
-    image = load_sem_image(image_path)
-    refined = find_contours(image, **options)[1]
+    with timed(log, "read image"):
+        image = load_sem_image(image_path)
+    refined = find_contours(image, **options, log=log)[1]
     pixel_nm = fov_nm[0] / image.shape[1]
     points = edge_points(refined, image.shape, pixel_nm)
     return points, int(refined.closed.sum()), int((~refined.closed).sum()), pixel_nm
+
+
+def _timed_edge_tile(image_path, fov_nm, options: dict):
+    """Carry each worker's extraction step log back to the run, including configured denoising/upscaling."""
+    timing = StepLog()
+    result = _edge_tile(image_path, fov_nm, options, log=timing)
+    return result, timing.seconds, timing.counts
 
 
 def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[str], progress,
@@ -288,12 +296,17 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
     sizes = np.array([[r.fov_x_nm, r.fov_y_nm] for r in records], dtype=float)
     record("Pattern contours: the images are stitched by their contours; not compared with the design yet")
     edges, pixels, closed, opened = [], [], 0, 0
+    extraction_started, extraction_work, tv_rounds = time.perf_counter(), StepLog(), []
     with helper_pool() if pool is None else nullcontext(pool) as pool:  # a pool given is left running
-        futures = [pool.submit(_edge_tile, str(r.image_path), tuple(size), any_shape_options(s))
+        futures = [pool.submit(_timed_edge_tile, str(r.image_path), tuple(size), any_shape_options(s))
                    for r, size in zip(records, sizes)]
         try:
             for k, future in enumerate(futures):
-                points, n_closed, n_open, pixel = future.result()
+                (points, n_closed, n_open, pixel), seconds, counts = future.result()
+                for name, elapsed in seconds.items():
+                    extraction_work.add(name, elapsed)
+                if "total variation rounds" in counts:
+                    tv_rounds.append(counts["total variation rounds"])
                 edges.append(points.moved(centers[k]))
                 pixels.append(pixel)
                 closed, opened = closed + n_closed, opened + n_open
@@ -302,6 +315,12 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
             for future in futures:
                 future.cancel()  # after an error or a cancel (D152), the images not started are not read
     record(f"{n} images: {closed} closed and {opened} open contours, {sum(len(e.xy) for e in edges)} edge points")
+    record(f"Contour extraction: {time.perf_counter() - extraction_started:.3f} s elapsed; "
+           f"denoise={s.denoise}, upscale={s.upscale}")
+    for name, elapsed in extraction_work.seconds.items():
+        record(f"Contour extraction work: {name}: {elapsed:.3f} s summed across workers (not run elapsed time)")
+    if tv_rounds:
+        record(f"Contour extraction TV rounds: median {np.median(tv_rounds):g}, maximum {max(tv_rounds)}")
     empty = [tile_ids[k] for k, e in enumerate(edges) if len(e.xy) == 0]
     if empty:
         record(f"!! {len(empty)} image(s) without a contour: {empty}")

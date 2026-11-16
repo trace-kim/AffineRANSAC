@@ -435,7 +435,7 @@ hole's normals point into the hole), whether it is closed (`Contours.closed`) an
 region with a hole, or cut by the border, has several). Refined (`refine_contours`): each point moves **along its
 direction** by the contacts' edge rule (`refinement`, with `search_px`, `edge_step_px`, `edge_blur_px`, the
 contacts' 2-D blur): mid-level with two levels per region, as per contact (interior: the median of the smoothed image
-over the region's pixels, `scipy.ndimage.median`; band: the median over the profiles of all its contours of the
+over the region's pixels, `features.region_medians.region_medians`; band: the median over the profiles of all its contours of the
 brightest value outward); `without_isolated(closed=...)` per contour. Not used (greyed out): `min_solidity`, the
 contrast check. With `detection` band the mask is everything but the band, so each band gives two contours, its
 inner and its outer side. Upscaled, the contours are given in the image's own pixels (`in_image_contours`). The
@@ -446,6 +446,13 @@ rendered at known sub-pixel positions): vertical lines through the image, one op
 facing out of its line; a line 30° off the x axis, both edges within 0.1 px; a ring, outer and inner radius within
 0.1 px, the inner contour facing the centre; contacts (`render_tile`): the closed contours are the contacts
 `find_contacts` finds (their middles within 0.2 px of its centres), and the contacts it drops as cut give open ones.
+
+**Region medians (D165).** Count labels and copy the pixels of requested regions into contiguous groups, then
+select the middle value(s) with in-place partitioning. This replaces the global label/intensity sort used by
+`scipy.ndimage.median`; background and discarded regions are not copied into the value buffer. The median uses
+the same float32/float64 arithmetic, including even-sized groups. Tests compare medians exactly and the full
+refined contours with total-variation denoising and 4× upscaling enabled. The preprocessing, TV solver and
+upscaling settings are unchanged; no pixels are dropped from any requested region.
 
 No radius or centre is assumed, so either rule works for any shape (circles, ellipses, rectangles).
 The refined centre is the area centroid of the refined contour. A point without a tangent (its ±3
@@ -863,8 +870,8 @@ most edge points in its overlaps stays, then one image at a time against all its
 1. `mismatch`: for **every shift on the pixel grid** up to `max_match_nm` each way, the mean squared distance from its
    edge points to the neighbour's nearest edge facing the same way (8 sectors of 45°, its own or the one beside it),
    each distance at most the gate (`GATE_PX`, 3 px); only points the shift brings inside the neighbour's image count.
-   FFT correlations by facing direction: the image of its points against the image of the distance to the
-   neighbour's edges (chamfer matching; evaluated together, D164).
+   Correlations by facing direction: the image of its points against the image of the distance to the
+   neighbour's edges (chamfer matching; run sums or FFT, D164/D165).
 2. `coarse_fit`: the shifts that fit as well as the best one on that grid (tried: at least `MIN_POINTS` 40 points and
    `MIN_SHARE` 0.25 of the most any shift compares; as good: the log of the ratio of the mean squares within three
    spreads, 2/n each, n one point per `SHARED_NOISE_PX` 4 px of edge, as neighbouring points share the edge blur's
@@ -879,16 +886,31 @@ most edge points in its overlaps stays, then one image at a time against all its
    (`across_step`: the eigenvalues of Σ n nᵀ; a direction measured less than `WELL_MEASURED` 0.1 as well as the best
    one stays), until it moves less than 0.01 nm.
 
-**CPU execution (D164).** Only the valid correlation window is needed, so FFT dimensions need cover the larger
-image, not the sum of both images' extents: none of the requested shifts wraps a point. Sector spectra are summed
-before one inverse transform. Covered-point counts are exact rectangle sums of a cumulative point image; they
-need no FFT. Exact comparisons query the facing tree and solve the small normal equations in batches of at most
-64 shifts (at most 600 sampled points each), keeping every candidate and the same gate, border test, measured
-directions and tie rule. Refinement reuses that tree. Moved neighbours are reused while unplaced neighbours need
-them; a placed tile's candidate surfaces are released. No GPU or new dependency is required. FFT and reduction
-roundoff can differ from the scalar implementation; tests compare grid distances with direct sums and batched
-fits with the scalar scores, including empty samples, straight/slanted/rough edges and mask-scale coordinates.
-These checks establish the computation, not real-image stitching quality or a measured speedup on the remote PC.
+**CPU execution (D164/D165).** The capped distance field is filled at the cap, then only pixels strictly within
+3 px of a reference edge are lowered, taking the minimum where these neighbourhoods meet. Duplicate reference
+pixels are collapsed, as in the former binary raster. This gives the same float32 capped squared distances
+without a whole-image distance transform. Each moving point adds its rectangle of allowed shifts to a small
+difference grid; cumulative sums give exact covered-point counts without a full point image.
+
+For each facing sector, group consecutive occupied pixels of equal point count into runs. Choose the raster
+orientation with fewer runs. Where `runs × shifts <= 4 × distance-field pixels`, row prefix sums give the
+correlation by interval subtraction; duplicate points keep their weight. Fragmented sectors use FFTs: only the
+valid correlation window is needed, so FFT dimensions cover the larger image, not the sum of both images'
+extents. Their spectra are summed before one inverse transform, then added to any directly summed sectors.
+Every original point and search shift is retained; the choice of implementation does not assume a pattern or
+edge direction. Compiled loops are serial and release the GIL, without another thread pool beside denoising.
+
+Exact comparisons query the facing tree and solve the small normal equations in batches of at most 64 shifts
+(at most 600 sampled points each), keeping every candidate and the same gate, border test, measured directions
+and tie rule. A waiting candidate stores its nearest shift and number of fitting groups. Only the candidate
+selected by the existing placement priority is refined; if refinement finds too few pairs, discard that choice
+until another neighbour is placed and try the next candidate. Overlap samples and the tree are rebuilt for the
+selected candidate rather than retained for all waiting tiles. Moved neighbours are reused while unplaced
+neighbours need them; a placed tile's candidate surfaces are released. No GPU or new dependency is required.
+FFT and reduction roundoff can differ; tests compare grid distances with direct sums and batched fits with the
+scalar scores, including empty samples, straight/slanted/rough edges and mask-scale coordinates. These checks
+establish the computation, not real-image stitching quality or a measured speedup on the remote PC. The user
+cancelled further CPU benchmarks after rejecting the earlier estimate that omitted denoising and upscaling.
 
 So one rule covers the cases: **shapes** fix one position both ways; **straight lines** fix it across them, and
 along them the image stays at its stage position, for lack of anything else (§13 question 14), unless the **edge
@@ -904,7 +926,7 @@ distance across the edges between the two images' paired edges, the check that n
 (logged: the median over the overlaps and the largest).
 The run (`release/analysis.stitch_by_contours`): every image's contours in worker processes, the placement (one
 process; the status bar counts the images placed; `lined_up` only on the image's edge points in its overlaps), the two
-summary log lines and the stitching timings (D164); **then it stops**: comparing contours with the design (S6) is not built. It ends as an `AnalysisFailed`
+summary log lines and the extraction/stitching timings (D164/D165); **then it stops**: comparing contours with the design (S6) is not built. It ends as an `AnalysisFailed`
 marked `stitched_only`, whose result (no contacts, no design; the corrections in `stitch`) the Stitching tab shows;
 nothing is saved, and no `.oas` is read. The tab's status shows those log lines; *Load contours*
 (`read_any_contours`) draws the detected and refined contours, open ones open, those of the tiles in view, at the
@@ -917,8 +939,11 @@ flagged; lines with their own roughness of 1.5 nm, the true row and the position
 
 The timing log (`StepLog`) lists overlap discovery/counting, grid search, sample/tree preparation, exact candidate
 comparison, refinement and the final overlap check, in seconds. Counts give images, overlaps, edge points, grid
-shifts per surface, surfaces actually computed, choices evaluated and exact shifts tested. The last line names
-the slowest step, so one remote run distinguishes the remaining costs without guessing from synthetic timings.
+shifts per surface, surfaces actually computed, run-sum and FFT sectors, choices evaluated, exact shifts tested
+and refinements actually attempted. The last line names the slowest stitching step. Extraction logs its elapsed
+time and configured denoiser/upscaling, each processing step's time summed across workers (explicitly not run
+elapsed time), and median/maximum TV rounds when used. These distinguish extraction costs from placement costs
+without treating a stitching-only measurement as the full run or guessing from synthetic timings.
 
 ### S6 — SEM↔design matching
 **Implemented (v1, D20):** `matching.py::match_points(a, b, max_distance)` gives one-to-one
@@ -1525,7 +1550,7 @@ only when it is on, total variation as two steps: loading numba and its compiled
 only, and its rounds, with a line giving their count and the time of one, D159; upscale; threshold mask;
 regions of the mask; going through the regions; tracing every kept region in its bounding box; cutting the boundaries
 at the image border with the direction of every point; smoothing; sampling the image across the edge at every point;
-the interior level of every region, which sorts every pixel of the image; the band level of every contour, from all
+the interior level of every region, which groups pixels and selects medians (D165); the band level of every contour, from all
 edge points of its region; the edge position of every point, contour by contour; moving the points; back to the
 image's pixels), with contacts the two times `find_contacts` gives (detect, refine), with lines one. Then, for every
 pattern: the mask for the display, handing the image, mask and contours to the plot, and **drawing them on screen**
@@ -1541,8 +1566,8 @@ denoiser and its active strength are unchanged. Detection, refinement, pattern a
 invalidate it. Loading an image replaces the cache, including while an older search finishes. A hit is logged as
 *reuse flattened and denoised image*, with no denoising rounds attributed to that search. A run still prepares each
 tile afresh. In contour refinement, the band median and resulting mid-level are computed once per region and shared
-by all its contours; the pixels, profiles and arithmetic are unchanged. The first-image solver, whole-image sort
-for interior medians, and separate display upscale/mask remain as before.
+by all its contours; the pixels, profiles and arithmetic are unchanged. D165 replaces the whole-image sort for
+interior medians with grouped selection (S2). The first-image solver and separate display upscale/mask remain as before.
 
 **Release: Saved parameters (D136).** *Analysis → Parameters* is `release/parameters_dialog.ParametersDialog`: the
 research app's `SettingsDialog` with one row on top: *Saved parameters* (a drop-down of the saved sets, by name in any

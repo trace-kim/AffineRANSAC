@@ -1,7 +1,7 @@
 """CPU-only synthetic SEM benchmark requested by the user, 2026-11-16.
 
 Example (from the repository root):
-    python benchmarks/contour_stitching.py --counts 8 16 32 64 --repeats 2
+    python benchmarks/contour_stitching.py --counts 8 16 32 64 --denoise "total variation" --upscale 4
 
 Outputs stay under build/ (gitignored). No real images or metadata are needed. Images are generated once;
 each independent noisy acquisition is decoded and processed by MaskReg's own _edge_tile worker. Image
@@ -26,7 +26,7 @@ import numpy as np
 import scipy
 from scipy.special import ndtr
 
-from affine_ransac.analysis import any_shape_options, helper_pool, worker_count
+from affine_ransac.analysis import any_shape_options, check_settings, helper_pool, worker_count
 from affine_ransac.contour_stitching import overlap_distances, placed_by_contours
 from affine_ransac.release.analysis import DEFAULTS, _edge_tile
 from affine_ransac.step_log import StepLog
@@ -141,6 +141,10 @@ def main():
     parser.add_argument("--counts", type=int, nargs="+", default=[8, 16, 32, 64])
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--search-nm", type=float, default=DEFAULTS.max_match_nm)
+    parser.add_argument("--denoise", required=True, choices=["none", "median", "non-local means", "total variation"],
+                        help="Required: benchmark the intended preprocessing, not silent no-denoising defaults")
+    parser.add_argument("--upscale", required=True, type=int, help="Required: the intended interpolation factor")
+    parser.add_argument("--tv-weight", type=float, default=DEFAULTS.tv_weight)
     parser.add_argument("--out", type=Path, default=Path("build/contour-benchmark"))
     args = parser.parse_args()
     counts = sorted(set(args.counts))
@@ -149,7 +153,8 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     n = counts[-1]
     settings = replace(DEFAULTS, pattern="contours", dark_contacts=False, detection="otsu",
-                       max_match_nm=args.search_nm)
+                       max_match_nm=args.search_nm, denoise=args.denoise, upscale=args.upscale, tv_weight=args.tv_weight)
+    check_settings(settings, "images")
     rng = np.random.default_rng(SEED)
     errors = np.column_stack([np.zeros(n), rng.uniform(-3, 3, n)]) * PIXEL_NM
     centers = np.column_stack([np.zeros(n), np.arange(n) * STEP_PX]) * PIXEL_NM

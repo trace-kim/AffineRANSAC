@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
-from scipy import ndimage
 
 from affine_ransac.features.contact import contact_mask
 from affine_ransac.features.edges import RULES, crossings, edge_offsets, sample_profiles, without_isolated
@@ -171,8 +170,9 @@ def mid_levels(signed: np.ndarray, labels: np.ndarray, region: np.ndarray, parts
     over its pixels) and its band (the median over the profiles of all its contours of their brightest value from
     the start outward), as features.edges.level_offsets for one contact. parts: the profiles (M, T) of each contour."""
     numbers = np.unique(region)
-    with timed(log, "interior level of every region (sorts every pixel of the image)"):
-        interior = dict(zip(numbers, ndimage.median(signed, labels, numbers)))
+    with timed(log, "interior level of every region (group pixels and select medians)"):
+        from affine_ransac.features.region_medians import region_medians
+        interior = dict(zip(numbers, region_medians(signed, labels, numbers)))
     with timed(log, "band level of every contour (from all edge points of its region)"):
         brightest = defaultdict(list)
         for number, part in zip(region, parts):

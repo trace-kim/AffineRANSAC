@@ -975,6 +975,9 @@ def test_a_run_with_contours_stitches_the_images_by_their_contours_and_stops_the
     assert "Contour stitching time: check overlaps after placement:" in text
     assert "Contour stitching work: images=3" in text and "exact_shifts=" in text
     assert "Contour stitching slowest step:" in text
+    assert "Contour extraction:" in text and "denoise=none, upscale=1" in text
+    assert "Contour extraction work: interior level of every region (group pixels and select medians):" in text
+    assert "summed across workers (not run elapsed time)" in text
 
     view = StitchingView(result, use_opengl=False, on_load_contours=lambda: None, not_measured={})
     assert "Stitching by contours" in view.status_text() and "Overlaps after" in view.status_text()
