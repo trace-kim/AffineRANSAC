@@ -5,7 +5,7 @@ are not fixed, and what is queued. Only the user's run on the real data confirms
 
 - Each item has the date of the last word on it. An old date means "ask before acting on it", not "still true".
 - Change an item in the same commit that changes its state. Delete it once the user confirms or drops it: the
-  history is in git and in the Decision Log.
+  history is in git and in `docs/DECISIONS.md`.
 - No values or file names from the real data here.
 
 Started 2026-11-16 from the working notes kept until then. Where it says "code checked", the code was read that

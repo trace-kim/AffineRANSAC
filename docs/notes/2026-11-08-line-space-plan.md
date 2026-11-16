@@ -1,8 +1,9 @@
 # Line & space patterns in MaskReg: implementation plan
 
 Written 2026-11-08 for a fresh session. The big idea only; the details are the implementer's.
-Read first: `CLAUDE.md`, then in `docs/SPEC.md` the sections S2, S4, S5, S7 and the decisions D105,
-D133, D138, D143, D144 (find them with `grep -n '^#' docs/SPEC.md`). The principles, with pictures, are in
+Read first: `CLAUDE.md`, then in `docs/SPEC.md` the sections S2, S4, S5, S7 (find them with
+`grep -n '^#' docs/SPEC.md`) and in `docs/DECISIONS.md` the decisions D105, D133, D138, D143, D144. The
+principles, with pictures, are in
 `docs/notes/2026-11-08-line-space-method.html`; where that page and this plan differ (the order of the two
 row tests), this plan wins.
 
@@ -74,7 +75,7 @@ output per line (one across error per image, or a profile along the line).
   for what the step needs; no ranking of methods on synthetic images.
 - Nothing changes for contact datasets: the pattern-type setting defaults to contacts. `ANALYSIS` and
   `FORMAT` (D99) apply as soon as results or run files change.
-- Spec update and Decision Log entry in the same commit as the code.
+- Spec update and a row in `docs/DECISIONS.md` in the same commit as the code.
 - Plain words in the UI and the log; UI messages at most two short sentences.
 
 ## Where the pieces live

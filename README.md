@@ -1,7 +1,7 @@
 # AffineRANSAC
 
 Photomask registration-error measurement: OASIS design vs. stitched SEM images.
-Design and decisions: [`docs/SPEC.md`](docs/SPEC.md).
+Design: [`docs/SPEC.md`](docs/SPEC.md). Decisions and their reasons: [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Setup (once per machine)
 

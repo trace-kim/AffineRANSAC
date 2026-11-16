@@ -2,7 +2,7 @@
 
 Photomask registration-error measurement: OASIS design vs. stitched SEM images, with RANSAC-robust affine calibration.
 
-**Before any work, read the parts of `docs/SPEC.md` the task touches**, not the whole file (it is long): find them with `grep -n '^#' docs/SPEC.md`, then read the Decision Log (§12) rows they cite and the open questions (§13). It is the source of truth for architecture, coordinate conventions, algorithms, decisions (§12) and open questions (§13). `docs/OPEN.md` lists what waits for the user's decision, what is built but not yet run on the real data, and the known problems: read it too, and keep it current.
+**Before any work, read the parts of `docs/SPEC.md` the task touches**, not the whole file (it is long): find them with `grep -n '^#' docs/SPEC.md`, then read the open questions (§13) and the decision rows the text cites (D123: `grep -n '^| D123 ' docs/DECISIONS.md`). The spec is the source of truth for what the code does: architecture, coordinate conventions, algorithms. `docs/DECISIONS.md` is the Decision Log, the history with the reasons; it also holds decisions that later rows replaced, so never read it as the current behaviour. `docs/OPEN.md` lists what waits for the user's decision, what is built but not yet run on the real data, and the known problems: read it too, and keep it current.
 
 ## The real data: what you can and cannot know
 - The real data is only on the user's PCs. You never see an image, a result or a log of theirs.
@@ -43,7 +43,7 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 - A step that drops data (a filter, a threshold) ships off unless its value was checked on the real data, and the log says loudly (`!!`) when it empties a tile.
 
 ## Key rules
-- If code deviates from the spec, update `docs/SPEC.md` in the same change and add a Decision Log entry.
+- If code deviates from the spec, update `docs/SPEC.md` in the same change and add a row to `docs/DECISIONS.md`.
 - Don't guess answers to the open questions in §13; ask the user.
 - Internal units: nm, float64. **Display** (notebooks, plots, tables): positions in **µm**, position errors/differences in **nm**. Design frame is y-up; image pixel frame `(x, y)` px is y-down (origin = centre of the top-left pixel). All frame conversions go through `geometry/frames.py`.
 - RANSAC is used only for the SEM→design fit, never for tile stitching. Its outliers are excluded from fitting the affine, never from reporting. Its threshold τ stays 0.5 nm: never change or tune it. Drift correction comes before any affine: never fit an affine to the data, in any role, before the drift step.
@@ -72,4 +72,4 @@ The real data (SEM images, `.oas`, metadata CSV) is only on the user's remote ma
 
 ## Keeping these rules
 - When the user corrects how you work, change the matching rule in this file in the same turn: replace it, don't stack a second rule on it, and don't write a memory note for it.
-- Where things go: what is open → `docs/OPEN.md`; facts the user states about their data and PCs → your memory note `user-stated-facts`; decisions and their reasons → the Decision Log. Beyond that, memory notes are only for facts about this PC and its tools.
+- Where things go: what is open → `docs/OPEN.md`; facts the user states about their data and PCs → your memory note `user-stated-facts`; decisions and their reasons → `docs/DECISIONS.md`. Beyond that, memory notes are only for facts about this PC and its tools.
