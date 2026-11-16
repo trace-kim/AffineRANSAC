@@ -212,6 +212,9 @@ they open, flagged as outdated.
   marked, the time to draw the result, and the counts the times depend on (regions, holes, contours, edge points).
   The results are unchanged (D157).
 - Denoising by total variation takes about half the time on large images. The results are unchanged (D158).
+- Denoising by total variation is compiled and uses every processor thread: about 7 times as fast as before D158
+  on a 2048 × 2048 image. The contour diagnosis log shows its rounds and the time of one; the first search after
+  a start takes about a second more, to load it. The results are unchanged (D159).
 - For AI agents: `python -m affine_ransac.release.agent run <folder>` analyses a folder without the window
   (`--set name=value` for parameters) and prints a review of the run as JSON; `review <file.npz>` prints it again.
   Its runs are saved under `maskreg_runs/`, never over the folder's own saved run. The results are unchanged (D154).

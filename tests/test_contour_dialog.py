@@ -250,6 +250,13 @@ def test_every_search_adds_the_time_of_each_step_to_the_log(tmp_path):
     assert after[:-1] == entries
     assert "PATTERN contacts" in after[-1] and "detect the contacts" in after[-1] and "refine their edges" in after[-1]
 
+    dialog.editors["denoise"].setCurrentText("total variation")  # D159: its loading and rounds apart, and their count
+    settle(dialog)
+    entry = dialog.log_box.toPlainText().strip().split("\n\n")[-1]
+    assert "DENOISE total variation" in entry and "total variation: its rounds" in entry
+    assert "total variation: load numba and its loops (first use in this process only)" in entry
+    assert " ms each." in entry.split("Total variation: ")[1].split("\n")[0]
+
 
 def test_enter_in_a_setting_does_not_close_the_window(tmp_path):
     dialog, _ = open_dialog(tmp_path)

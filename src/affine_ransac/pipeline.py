@@ -199,13 +199,18 @@ class TileResult:
 
 
 def prepared_image(image: np.ndarray, background_px: float = 0.0, dark_contacts: bool = True, denoise: str = "none",
-                   median_px: int = 3, nlm_h: float = 10.0, tv_weight: float = 0.1, upscale: int = 1) -> np.ndarray:
+                   median_px: int = 3, nlm_h: float = 10.0, tv_weight: float = 0.1, upscale: int = 1,
+                   log: StepLog | None = None) -> np.ndarray:
     """The image the contacts are found in (find_contacts): with its background flattened over background_px
     (features.contact.flatten_background) if that is > 0, then denoised (denoised_image: method `denoise` with its
     option), then upscaled `upscale` times (upscaled_image); with none of them, the image itself. Denoised before it
-    is upscaled: interpolation spreads each noisy pixel over several, which no longer look like noise (D132)."""
-    flat = flatten_background(image, background_px, dark_contacts) if background_px > 0 else image
-    return upscaled_image(denoised_image(flat, denoise, median_px, nlm_h, tv_weight), upscale)
+    is upscaled: interpolation spreads each noisy pixel over several, which no longer look like noise (D132).
+    log: if given, gets the time of the flattening and of the denoising, each only if it is done (D157)."""
+    flat = image
+    if background_px > 0:
+        with timed(log, "flatten the background"):
+            flat = flatten_background(image, background_px, dark_contacts)
+    return upscaled_image(denoised_image(flat, denoise, median_px, nlm_h, tv_weight, log), upscale)
 
 
 def find_contacts(
@@ -321,8 +326,7 @@ def find_contours(
     (analysis.ANY_SHAPE_SETTINGS); dark_contacts: the regions are the darker side. On prepared_image, upscaled
     `upscale` times, the options in pixels multiplied by it (areas by its square), as for contacts; refinement
     "none": the detected contours. log: if given, gets the time of every step (the contour diagnosis log, D157)."""
-    with timed(log, "flatten and denoise"):
-        image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
+    image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight, log=log)
     f = upscale
     with timed(log, "upscale"):
         big = upscaled_image(image, f)

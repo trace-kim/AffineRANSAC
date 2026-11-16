@@ -36,6 +36,8 @@ import cv2
 import numpy as np
 from skimage.filters import threshold_multiotsu
 
+from affine_ransac.step_log import StepLog, timed
+
 METHODS = ("otsu", "otsu3", "band")
 BAND_MIN_SOLIDITY = 0.9
 LEFT_OUT = ("border", "small", "large", "not solid")  # why a region is not a contact (step 4)
@@ -72,69 +74,40 @@ def flatten_background(image: np.ndarray, size_px: float, dark_contacts: bool = 
 
 
 def denoised_image(image: np.ndarray, method: str = "none", median_px: int = 3, nlm_h: float = 10.0,
-                   tv_weight: float = 0.1) -> np.ndarray:
+                   tv_weight: float = 0.1, log: StepLog | None = None) -> np.ndarray:
     """The image (uint8) with its pixel noise removed by `method` (D132); "none": the image itself.
     "median": each pixel the median of a median_px x median_px window (odd): removes isolated bright or dark pixels and
     spots narrower than half the window, and keeps straight edges where they are.
     "non-local means": each pixel a weighted mean of the pixels whose NLM_PATCH_PX patch looks like its own, within
     NLM_SEARCH_PX (cv2.fastNlMeansDenoising); nlm_h (grey levels) sets how alike: larger removes more noise, and detail.
-    "total variation": the image closest to it with the least total variation (Chambolle's algorithm, total_variation,
-    on the grey levels / 255): flat regions with sharp edges between them; tv_weight: larger is flatter."""
+    "total variation": the image closest to it with the least total variation (Chambolle's algorithm on the grey
+    levels / 255, total_variation_image): flat regions with sharp edges between them; tv_weight: larger is flatter.
+    log: if given, gets the time of the denoising (the contour diagnosis log, D157)."""
+    if method not in DENOISERS:
+        raise ValueError(f"denoise must be one of {DENOISERS}, not {method!r}")
     if method == "none":
         return image
-    if method == "median":
-        return cv2.medianBlur(image, median_px)
-    if method == "non-local means":
+    if method == "total variation":
+        return total_variation_image(image, tv_weight, log)
+    with timed(log, f"denoise ({method})"):
+        if method == "median":
+            return cv2.medianBlur(image, median_px)
         return cv2.fastNlMeansDenoising(image, None, h=nlm_h, templateWindowSize=NLM_PATCH_PX,
                                         searchWindowSize=NLM_SEARCH_PX)
-    if method == "total variation":
-        flat = total_variation(image / 255.0, tv_weight)
-        return np.clip(np.round(flat * 255), 0, 255).astype(np.uint8)
-    raise ValueError(f"denoise must be one of {DENOISERS}, not {method!r}")
 
 
-def total_variation(image: np.ndarray, weight: float, eps: float = 2.0e-4, max_iterations: int = 200) -> np.ndarray:
-    """The 2-D float image closest to `image` with the least total variation: the same numbers as
-    skimage.restoration.denoise_tv_chambolle(image, weight) (the same operations in the same order; D158), about twice
-    as fast on a 2048 x 2048 image: every array is made once and written into, where scikit-image makes about ten new
-    image-sized arrays in every iteration.
-    Each iteration: `flat` = image minus the divergence of p; p (a vector per pixel: rows, columns) takes a step
-    against the gradient of `flat` and is scaled back by its length. Ends when the cost (what was removed, squared,
-    plus weight x the gradient lengths; mean per pixel) changes by less than eps x the first cost."""
-    p = np.zeros((2,) + image.shape, image.dtype)
-    gradient = np.zeros_like(p)  # its last row (rows) and last column (columns) stay 0
-    removed = np.zeros_like(image)  # flat - image
-    flat, flat_made = image, np.empty_like(image)
-    length, square = np.empty_like(image), np.empty_like(image)
-    step = 0.25
-    for iteration in range(max_iterations):
-        if iteration > 0:
-            np.add(p[0], p[1], out=removed)
-            np.negative(removed, out=removed)
-            removed[1:, :] += p[0, :-1, :]
-            removed[:, 1:] += p[1, :, :-1]
-            flat = np.add(image, removed, out=flat_made)
-        np.multiply(removed, removed, out=square)
-        cost = square.sum()
-        np.subtract(flat[1:], flat[:-1], out=gradient[0, :-1])
-        np.subtract(flat[:, 1:], flat[:, :-1], out=gradient[1, :, :-1])
-        np.multiply(gradient[0], gradient[0], out=length)
-        np.multiply(gradient[1], gradient[1], out=square)
-        length += square
-        np.sqrt(length, out=length)
-        cost = (cost + weight * length.sum()) / float(image.size)
-        length *= step / weight
-        length += 1.0
-        gradient *= step
-        p -= gradient
-        p /= length
-        if iteration == 0:
-            first = previous = cost
-        elif abs(previous - cost) < eps * first:
-            break
-        else:
-            previous = cost
-    return flat
+def total_variation_image(image: np.ndarray, weight: float, log: StepLog | None = None) -> np.ndarray:
+    """The uint8 image denoised by total variation: the pixels of skimage.restoration.denoise_tv_chambolle on the grey
+    levels / 255, rounded back to grey levels, computed by the compiled loops of features.total_variation (D159).
+    log: if given, gets the loading apart (first use in a process only), the rounds, and their count."""
+    with timed(log, "total variation: load numba and its loops (first use in this process only)"):
+        from affine_ransac.features import total_variation as tv  # not at the top: numba takes ~0.5 s to import
+        tv.compile_loops()
+    with timed(log, "total variation: its rounds"):
+        flat, rounds = tv.total_variation(image / 255.0, weight)
+    if log is not None:
+        log.counts["total variation rounds"] = rounds
+    return np.clip(np.round(flat * 255), 0, 255).astype(np.uint8)
 
 
 def upscaled_image(image: np.ndarray, factor: int) -> np.ndarray:

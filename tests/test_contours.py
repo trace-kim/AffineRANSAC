@@ -87,14 +87,15 @@ def test_a_region_with_a_hole_gives_a_closed_contour_for_each_boundary():
 
 
 def test_a_log_gets_the_time_of_every_step_and_the_counts_they_depend_on():
-    """D157: find_contours fills a StepLog, for the contour diagnosis log; the contours are the same with it."""
+    """D157: find_contours fills a StepLog, for the contour diagnosis log; the contours are the same with it.
+    D159: no flattening or denoising asked, so neither is in it."""
     from affine_ransac.step_log import StepLog
     log = StepLog()
     _, refined = find_contours(shape_image(ring), **BRIGHT, log=log)
     _, plain = find_contours(shape_image(ring), **BRIGHT)
     assert all(np.array_equal(a, b) for a, b in zip(refined.points, plain.points))
     assert list(log.seconds) == [
-        "flatten and denoise", "upscale", "threshold mask", "regions of the mask",
+        "upscale", "threshold mask", "regions of the mask",
         "go through the regions, leave out by size", "trace every kept region in its bounding box",
         "cut the boundaries at the image border, direction of every point", "smooth the image for the edges",
         "sample the image across the edge at every point",

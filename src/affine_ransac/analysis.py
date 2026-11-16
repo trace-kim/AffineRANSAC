@@ -467,6 +467,9 @@ def _worker_ready():
     would otherwise outlive a MaskReg that crashed or was ended in Task Manager)."""
     global _worker_ready_at
     _worker_ready_at = time.time()
+    # total variation (features.total_variation) would start a thread per logical core in every worker: one worker
+    # per two cores (worker_count) gets two. Read when numba is first imported, which is after this.
+    os.environ.setdefault("NUMBA_NUM_THREADS", str(max(1, (os.cpu_count() or 2) // worker_count())))
     threading.Thread(target=_end_with_parent, daemon=True).start()
 
 

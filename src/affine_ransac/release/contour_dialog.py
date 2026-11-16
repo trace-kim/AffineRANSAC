@@ -69,8 +69,8 @@ def diagnose(image: np.ndarray, s: Settings) -> Diagnosis:
     """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
     mask."""
     log = StepLog()
-    with timed(log, "flatten and denoise"):
-        flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight)
+    flat = prepared_image(image, s.background_px, s.dark_contacts, s.denoise, s.median_px, s.nlm_h, s.tv_weight,
+                          log=log)
     # find_contacts would flatten and denoise the image first: given it so (up to a few s), it need not do it again
     given = replace(s, background_px=0.0, denoise="none")
     if s.pattern == "lines":
@@ -105,6 +105,11 @@ def log_entry(d: Diagnosis, s: Settings, name: str, shape: tuple[int, int], tota
              f"  {total:.2f} s in all:"]
     lines += [f"  {t:8.2f} s {100 * t / max(total, 1e-9):4.0f} %  {step}" + ("   <== the longest" * (step == longest))
               for step, t in seconds.items()]
+    rounds = d.log.counts.get("total variation rounds")
+    if rounds is not None:  # its time: the rounds' count times the time of one round over the whole image
+        each = d.log.seconds["total variation: its rounds"] / rounds
+        lines.append(f"  Total variation: {rounds} rounds (at most 200: it stops once the image hardly changes), "
+                     f"{1e3 * each:.1f} ms each.")
     return "\n".join(lines + ["  " + line for line in count_lines(d, s)]) + "\n"
 
 
