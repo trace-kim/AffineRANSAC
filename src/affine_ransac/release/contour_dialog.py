@@ -8,6 +8,7 @@ D132, and upscaled, D131, if asked), with the contacts the settings find in it, 
 contact). One line says in words how many contacts were found and why the other regions were left out. Every change of
 a setting finds them again, in a background thread, for the newest settings only. Apply to parameters: values() gives
 the settings with those shown, which the app keeps for the next run; Cancel leaves the parameters as they were.
+Original image (D160) shows the image as loaded instead, under the same layers.
 With PATTERN lines (D153) it finds horizontal lines instead (pipeline.find_lines): the contour layers draw their
 detected and refined edges, and the line says how many lines were found, their edge roughness and the noise per column.
 With PATTERN contours (D155) it finds the contours of any pattern (pipeline.find_contours): the contour layers draw
@@ -240,7 +241,8 @@ class ContourDialog(QtWidgets.QDialog):
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint)
         self.settings, self.folder = settings, folder
         self.image = None     # the SEM image loaded (uint8)
-        self.shown = None     # the image shown: the one the contacts are found in
+        self.prepared = None  # the image the contacts are found in, of the last search shown
+        self.shown = None     # the image shown: the prepared one, or the one loaded (Original image, D160)
         self.request = 0      # number of the newest search asked for
         self.running = False  # a search runs in the background thread
         self.name = ""        # the file name of the image loaded
@@ -278,6 +280,11 @@ class ContourDialog(QtWidgets.QDialog):
         self.boxes = {}
         show = QtWidgets.QHBoxLayout()
         show.addWidget(QtWidgets.QLabel("Show:"))
+        self.original_box = QtWidgets.QCheckBox("Original image")  # off at start: the image searched (D160)
+        self.original_box.setToolTip("The image as loaded, before it is flattened, denoised and upscaled "
+                                     "(off: the image the contours are found in)")
+        self.original_box.toggled.connect(self.show_image)
+        show.addWidget(self.original_box)
         for name in LAYERS:
             box = QtWidgets.QCheckBox(name)
             box.setChecked(name != "Threshold mask")  # the mask covers the image: off at start (D76)
@@ -400,9 +407,8 @@ class ContourDialog(QtWidgets.QDialog):
         except (OSError, ValueError) as error:
             QtWidgets.QMessageBox.warning(self, "Contour diagnosis", f"The image could not be read:\n{error}")
             return
-        self.image, self.shown, self.folder, self.name = image, image, str(Path(path).parent), Path(path).name
-        self.image_item.setImage(image, levels=(0, 255))
-        place(self.image_item, image.shape)
+        self.image, self.prepared, self.folder, self.name = image, None, str(Path(path).parent), Path(path).name
+        self.show_image()
         self.name_label.setText(f"{Path(path).name}   ({image.shape[1]} × {image.shape[0]} px)")
         self.plot.setRange(xRange=(-0.5, image.shape[1] - 0.5), yRange=(-0.5, image.shape[0] - 0.5), padding=0.02)
         self.search()
@@ -459,10 +465,18 @@ class ContourDialog(QtWidgets.QDialog):
         self.log_box.appendPlainText(log_entry(found, self.searched_with, self.name, self.image.shape,
                                                time.perf_counter() - self.search_started))
 
-    def show_diagnosis(self, d: Diagnosis):
-        self.shown = d.image
-        self.image_item.setImage(d.image, levels=(0, 255))
+    def show_image(self, *_):
+        """Show the image as loaded if Original image is ticked (or nothing was found in it yet), else the image the
+        contacts are found in; either covers the image's pixel frame, under the same layers."""
+        if self.image is None:
+            return
+        self.shown = self.image if self.original_box.isChecked() or self.prepared is None else self.prepared
+        self.image_item.setImage(self.shown, levels=(0, 255))
         place(self.image_item, self.image.shape)
+
+    def show_diagnosis(self, d: Diagnosis):
+        self.prepared = d.image
+        self.show_image()
         self.layers["Threshold mask"].setImage(d.mask, levels=(0, 1))
         place(self.layers["Threshold mask"], self.image.shape)
         for name, found in (("Detected", d.detected), ("Refined", d.refined)):

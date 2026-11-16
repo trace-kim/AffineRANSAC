@@ -168,6 +168,34 @@ def test_denoised_the_window_shows_the_image_denoised_then_upscaled(tmp_path):
     assert "of the image denoised (median) and upscaled 2×" in dialog.summary.text() and dialog.values() == s
 
 
+def test_original_image_shows_the_image_as_loaded_in_place_of_the_one_searched(tmp_path):
+    """D160: Original image (off at start) shows the image as loaded instead of the denoised and upscaled one, over
+    the same area; a new search keeps it; the grey level under the cursor is of the image shown."""
+    dialog, path = open_dialog(tmp_path)
+    image = load_sem_image(path)
+    assert not dialog.original_box.isChecked()
+    dialog.editors["denoise"].setCurrentText("median")
+    dialog.editors["upscale"].setValue(2)
+    settle(dialog)
+    searched = prepared_image(image, denoise="median", upscale=2)
+    np.testing.assert_array_equal(dialog.image_item.image, searched)
+
+    dialog.original_box.setChecked(True)
+    np.testing.assert_array_equal(dialog.image_item.image, image)
+    covered = QtCore.QRectF(-0.5, -0.5, image.shape[1], image.shape[0])
+    assert dialog.image_item.mapRectToParent(dialog.image_item.boundingRect()) == covered
+    dialog._show_cursor(dialog.plot.vb.mapViewToScene(QtCore.QPointF(10.2, 20.2)))
+    assert dialog.cursor_label.text().endswith(f"grey level {image[20, 10]}")
+    dialog.editors["min_area_px"].setValue(30)
+    settle(dialog)
+    np.testing.assert_array_equal(dialog.image_item.image, image)
+
+    dialog.original_box.setChecked(False)
+    np.testing.assert_array_equal(dialog.image_item.image, searched)
+    dialog._show_cursor(dialog.plot.vb.mapViewToScene(QtCore.QPointF(10.2, 20.2)))
+    assert dialog.cursor_label.text().endswith(f"grey level {searched[41, 21]}")  # its own, smaller pixel
+
+
 def test_with_pattern_lines_the_window_shows_the_edges_of_the_lines(tmp_path):
     """D153: the edges find_lines finds, drawn by the contour layers; the line gives the lines, their roughness and
     noise per column; the centres and the settings lines do not use are greyed out."""
