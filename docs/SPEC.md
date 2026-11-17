@@ -909,8 +909,9 @@ selected candidate rather than retained for all waiting tiles. Moved neighbours 
 neighbours need them; a placed tile's candidate surfaces are released. No GPU or new dependency is required.
 FFT and reduction roundoff can differ; tests compare grid distances with direct sums and batched fits with the
 scalar scores, including empty samples, straight/slanted/rough edges and mask-scale coordinates. These checks
-establish the computation, not real-image stitching quality or a measured speedup on the remote PC. The user
-cancelled further CPU benchmarks after rejecting the earlier estimate that omitted denoising and upscaling.
+establish the computation, not real-image stitching quality or a measured speedup on the remote PC. The later
+requested comparison with TV denoising and 4× upscaling, including timings and output checks, is recorded in
+`docs/notes/2026-11-17-contour-tv4-comparison.md`; the earlier estimate omitting preprocessing remains withdrawn.
 
 So one rule covers the cases: **shapes** fix one position both ways; **straight lines** fix it across them, and
 along them the image stays at its stage position, for lack of anything else (§13 question 14), unless the **edge

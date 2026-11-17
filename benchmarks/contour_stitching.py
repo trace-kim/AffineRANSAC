@@ -9,13 +9,16 @@ generation is timed separately from contour extraction, placement, and the final
 """
 
 import argparse
+import hashlib
 import json
 import os
 import platform
 import subprocess
 import time
 from dataclasses import asdict, replace
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 # Set before NumPy/OpenCV or spawned workers import numerical libraries. All operations below use CPU arrays.
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -26,7 +29,9 @@ import numpy as np
 import scipy
 from scipy.special import ndtr
 
-from affine_ransac.analysis import any_shape_options, check_settings, helper_pool, worker_count
+import affine_ransac
+from affine_ransac.release import analysis as release_analysis
+from affine_ransac.analysis import _worker_ready, any_shape_options, check_settings, helper_pool, worker_count
 from affine_ransac.contour_stitching import overlap_distances, placed_by_contours
 from affine_ransac.release.analysis import DEFAULTS, _edge_tile
 from affine_ransac.step_log import StepLog
@@ -75,22 +80,32 @@ def write_images(folder: Path, count: int, errors: np.ndarray) -> tuple[list[Pat
 
 
 def extract_tile(path, options):
-    """Production extraction, with its CPU time and wall time recorded inside the worker."""
+    """Production extraction and step timings, also usable with revisions predating _edge_tile's log argument."""
     start, cpu = time.perf_counter(), time.process_time()
-    result = _edge_tile(path, (SIZE * PIXEL_NM, SIZE * PIXEL_NM), options)
-    return result, time.perf_counter() - start, time.process_time() - cpu
+    timing, find = StepLog(), release_analysis.find_contours
+
+    def logged_find(*args, **kwargs):
+        kwargs["log"] = timing
+        return find(*args, **kwargs)
+
+    with patch.object(release_analysis, "find_contours", logged_find):
+        result = _edge_tile(path, (SIZE * PIXEL_NM, SIZE * PIXEL_NM), options)
+    return result, time.perf_counter() - start, time.process_time() - cpu, timing.seconds, timing.counts
 
 
-def extract_images(paths, centers, settings, counts):
+def extract_images(paths, centers, settings, counts, workers=None):
     start, edges, records, milestones = time.perf_counter(), [], [], {}
-    with helper_pool() as pool:
+    with (helper_pool() if workers is None else
+          ProcessPoolExecutor(max_workers=workers, initializer=_worker_ready)) as pool:
         futures = [pool.submit(extract_tile, str(path), any_shape_options(settings)) for path in paths]
         last = start
         for k, future in enumerate(futures):
-            (points, closed, opened, pixel_nm), wall, cpu = future.result()
+            (points, closed, opened, pixel_nm), wall, cpu, seconds, work = future.result()
             edges.append(points.moved(centers[k]))
+            digest = hashlib.sha256(points.xy.tobytes() + points.normals.tobytes()).hexdigest()
             records.append(dict(image=k, wall_s=wall, cpu_s=cpu, closed=closed, opened=opened,
-                                edge_points=len(points.xy), pixel_nm=pixel_nm))
+                                edge_points=len(points.xy), pixel_nm=pixel_nm, edge_sha256=digest,
+                                phases_s=seconds, work=work))
             elapsed = time.perf_counter() - start
             if k + 1 in counts:
                 milestones[k + 1] = elapsed
@@ -129,7 +144,11 @@ def stitch_sample(edges, centers, sizes, errors, search_nm, repeat):
                 directions_2=sum(c.directions == 2 for c in choices),
                 overlap_rms_median_nm=float(np.median(paired_rms)) if len(paired_rms) else None,
                 overlap_rms_max_nm=float(paired_rms.max()) if len(paired_rms) else None,
-                phases_s=timing.seconds, work=timing.counts)
+                phases_s=timing.seconds, work=timing.counts,
+                corrections_nm=corrections.tolist(),
+                choices=[dict(tile=int(c.tile), correction_nm=c.correction.tolist(), pairs=int(c.pairs),
+                              rms_nm=float(c.rms_nm), positions=int(c.positions), directions=int(c.directions))
+                         for c in choices])
 
 
 def write_results(path, results):
@@ -145,11 +164,17 @@ def main():
                         help="Required: benchmark the intended preprocessing, not silent no-denoising defaults")
     parser.add_argument("--upscale", required=True, type=int, help="Required: the intended interpolation factor")
     parser.add_argument("--tv-weight", type=float, default=DEFAULTS.tv_weight)
+    parser.add_argument("--workers", type=int, help="Limit workers for both revisions when memory is constrained")
     parser.add_argument("--out", type=Path, default=Path("build/contour-benchmark"))
     args = parser.parse_args()
     counts = sorted(set(args.counts))
     if counts[0] < 2 or args.repeats < 1:
         parser.error("counts must be >= 2 and repeats must be >= 1")
+    if args.workers is not None and args.workers < 1:
+        parser.error("workers must be >= 1")
+    workers = args.workers or worker_count()
+    if args.workers is not None:
+        os.environ["NUMBA_NUM_THREADS"] = str(max(1, (os.cpu_count() or 2) // workers))
     args.out.mkdir(parents=True, exist_ok=True)
     n = counts[-1]
     settings = replace(DEFAULTS, pattern="contours", dark_contacts=False, detection="otsu",
@@ -159,9 +184,11 @@ def main():
     errors = np.column_stack([np.zeros(n), rng.uniform(-3, 3, n)]) * PIXEL_NM
     centers = np.column_stack([np.zeros(n), np.arange(n) * STEP_PX]) * PIXEL_NM
     sizes = np.full((n, 2), SIZE * PIXEL_NM)
-    results = dict(revision=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    library_root = Path(affine_ransac.__file__).resolve().parents[2]
+    results = dict(revision=subprocess.check_output(["git", "-C", str(library_root), "rev-parse", "HEAD"], text=True).strip(),
+                   library_root=str(library_root),
                    machine=dict(platform=platform.platform(), processor=platform.processor(),
-                                logical_cpus=os.cpu_count(), workers=worker_count(), python=platform.python_version(),
+                                logical_cpus=os.cpu_count(), workers=workers, python=platform.python_version(),
                                 numpy=np.__version__, scipy=scipy.__version__, opencv=cv2.__version__),
                    synthetic=dict(size_px=SIZE, periods=PERIODS, step_px=STEP_PX,
                                   overlap_fraction=1 - STEP_PX / SIZE, pixel_nm=PIXEL_NM,
@@ -169,9 +196,9 @@ def main():
                                   background=40, foreground=190, gpu=False),
                    settings=asdict(settings), stitching=[])
     print(json.dumps(dict(counts=counts, repeats=args.repeats, search_nm=args.search_nm,
-                          workers=worker_count(), output=str(args.out))), flush=True)
+                          workers=workers, output=str(args.out))), flush=True)
     paths, results["generation_s"] = write_images(args.out / "images", n, errors)
-    edges, results["extraction"] = extract_images(paths, centers, settings, counts)
+    edges, results["extraction"] = extract_images(paths, centers, settings, counts, args.workers)
     # Retain measured edge points so a larger geometry-only scaling check can avoid regenerating images.
     np.savez_compressed(args.out / "edges.npz", centers=centers, sizes=sizes, errors=errors,
                         **{f"xy_{k}": e.xy for k, e in enumerate(edges)},
@@ -185,7 +212,7 @@ def main():
                                   args.search_nm, repeat)
             results["stitching"].append(found)
             write_results(result_path, results)
-            print(json.dumps(found), flush=True)
+            print(json.dumps({k: v for k, v in found.items() if k not in {"corrections_nm", "choices"}}), flush=True)
     print(f"Saved {result_path}", flush=True)
 
 

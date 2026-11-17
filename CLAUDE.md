@@ -37,10 +37,13 @@ Photomask registration-error measurement: OASIS design vs. stitched SEM images, 
 
 ## Development approach — never overengineer
 - Build the smallest useful version of one feature or fix at a time. New behaviour is an option, off by default, unless the user asked for it to replace the old behaviour.
-- Synthetic data: write the correctness tests the step needs. Benchmarks require the user's explicit request;
-  stop them when cancelled. A requested pipeline benchmark must include preprocessing already known to be
-  required, especially total-variation denoising, and account for the configured upscaling. Never switch those
-  off to make a speed estimate smaller, or present a stage-only measurement as the whole run's time.
+- Synthetic data: write the correctness tests the step needs. When speed measurement is requested, carry it
+  through to a measured before/after result and compare numerical outputs without waiting for separate prompts.
+  Stop benchmarks when cancelled; a later request for the new speed reauthorizes the necessary measurement.
+  A pipeline benchmark must include preprocessing already known to be required, especially total-variation
+  denoising, and account for the configured upscaling. Never switch those off to make a speed estimate smaller,
+  or present a stage-only measurement as the whole run's time. Distinguish measured local speed, extrapolation,
+  intended equivalence and observed output differences explicitly.
 - Build only what the current step needs. The spec describes the full target; don't build ahead of it (no speculative abstractions, options or layers "for later").
 - Write each piece so a human reviewer can quickly read it and understand what it does: short functions, plain names, straightforward logic, brief comments where the intent isn't obvious.
 - Keep changes small and reviewable. Prefer several small steps over one large one.

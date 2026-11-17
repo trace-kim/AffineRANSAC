@@ -2,7 +2,8 @@
 
 **Withdrawn as a whole-run estimate.** The user correctly rejected this benchmark's omission of required
 total-variation denoising and upscaling. Its former 24-minute estimate does not answer the intended workload.
-The user then cancelled the proposed CPU rerun; no replacement benchmark is authorized or reported here.
+The user then cancelled the proposed CPU rerun. After a later request for the new speed, the comparison including
+TV denoising and 4× upscaling is recorded separately in [the 2026-11-17 report](2026-11-17-contour-tv4-comparison.md).
 The measurements below are retained only as historical evidence for the explicitly undenoised, unscaled
 synthetic input and the earlier implementation. They must not be used to forecast the user's remote run.
 
