@@ -11,6 +11,9 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- MaskReg image folders can use the temporary **horizontal L/S** pattern. It closes contours between white
+  bands, stitches SEM and design centre heights independently, and reports vertical registration error after the
+  usual moving-window calibration. Choose it under **Analysis → Parameters → Contour detection → Pattern** (D170).
 - Contour diagnosis previews the Gaussian smoothing applied by `DETECTION_BLUR_PX`, including when equalization is off (D169).
 - Contour diagnosis retrieves contours on **Get contours**. Tick **Auto retrieve** to retrieve them on image load
   and after settings changes. Global and adaptive histogram equalization update the preview as you edit (D168).

@@ -47,11 +47,13 @@ class LineEdges:
 
 def detect_lines(image: np.ndarray, dark_lines: bool = True, blur_sigma: float = 1.5,
                  method: str = "otsu", equalize: str = "none", clahe_clip: float = 2.0,
-                 clahe_tiles: int = 8) -> LineEdges:
+                 clahe_tiles: int = 8, *, connectivity: int | None = None) -> LineEdges:
     """The lines of a grayscale uint8 image, at the pixel rows of the threshold mask (module docstring); equalize,
     clahe_clip, clahe_tiles as for contact_mask (D167)."""
     mask, threshold = contact_mask(image, dark_lines, blur_sigma, method, equalize, clahe_clip, clahe_tiles)
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4 if method == "band" else 8)
+    if connectivity is None:
+        connectivity = 4 if method == "band" else 8
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=connectivity)
     rows, cols = mask.shape
     left, width = stats[:, cv2.CC_STAT_LEFT], stats[:, cv2.CC_STAT_WIDTH]
     across = [label for label in range(1, count) if left[label] == 0 and left[label] + width[label] == cols]
@@ -72,9 +74,13 @@ def detect_lines(image: np.ndarray, dark_lines: bool = True, blur_sigma: float =
 def line_interior(signed: np.ndarray, upper: np.ndarray, lower: np.ndarray) -> float:
     """Median of `signed` over the pixels of one line: in each column from its upper to its lower edge (the image's
     border where an edge is missing)."""
-    rows = np.arange(signed.shape[0])[:, None]
-    inside = (rows >= np.nan_to_num(upper, nan=0)) & (rows <= np.nan_to_num(lower, nan=signed.shape[0] - 1))
-    return float(np.median(signed[inside]))
+    upper = np.nan_to_num(upper, nan=0)
+    lower = np.nan_to_num(lower, nan=signed.shape[0] - 1)
+    first = max(0, int(upper.min()))
+    stop = max(0, min(signed.shape[0], int(lower.max()) + 1))
+    rows = np.arange(first, stop)[:, None]
+    inside = (rows >= upper) & (rows <= lower)
+    return float(np.median(signed[first:stop][inside]))
 
 
 def refine_line_edges(image: np.ndarray, lines: LineEdges, dark_lines: bool = True, search_px: float = 5.0,

@@ -44,8 +44,9 @@ def window_centres(y: np.ndarray, window_nm: float, step_nm: float) -> np.ndarra
     return np.append(np.arange(low, high, step_nm), high)
 
 
-def moving_window_affine(sem: np.ndarray, design: np.ndarray, window_nm: float, step_nm: float) -> MovingWindowResult:
-    """sem, design: (N, 2) matched points in mask nm. Raises if a window holds fewer than 3 contacts."""
+def moving_window_affine(sem: np.ndarray, design: np.ndarray, window_nm: float, step_nm: float, *,
+                         y_only: bool = False) -> MovingWindowResult:
+    """Fit matched points in mask nm. For horizontal L/S only dy is observed, at each strip's stage x."""
     if not 0 < step_nm <= window_nm:
         raise ValueError("need 0 < step_nm <= window_nm (else some contacts lie in no window)")
     y = design[:, 1]
@@ -59,18 +60,27 @@ def moving_window_affine(sem: np.ndarray, design: np.ndarray, window_nm: float, 
         if inside.sum() < 3:
             raise ValueError(f"window {k} at y = {centre / 1000:.3f} um holds {inside.sum()} contacts (need 3)")
         reference = design[inside].mean(axis=0)
-        model = fit_affine(sem[inside] - reference, design[inside] - reference)
+        src = sem[inside] - reference
+        if y_only:
+            # Fit the y correction about the identity. This also works for a stripe sampled at a single x.
+            model = np.eye(3)
+            basis = np.column_stack((src, np.ones(len(src))))
+            model[1] += np.linalg.lstsq(basis, design[inside, 1] - sem[inside, 1], rcond=None)[0]
+        else:
+            model = fit_affine(src, design[inside] - reference)
         mine = nearest == k
         result[mine] = residuals(model, sem[mine] - reference, design[mine] - reference)
         models.append(model)
         references.append(reference)
         counts.append(int(inside.sum()))
 
+    if y_only:
+        result[:, 0] = np.nan  # x is a stage coordinate, not a registration measurement
     return MovingWindowResult(result, nearest, centres, np.array(models), np.array(references), np.array(counts))
 
 
 def moving_window_per_stripe(sem: np.ndarray, design: np.ndarray, stripe: np.ndarray, groups: list[np.ndarray],
-                             window_nm: float, step_nm: float) -> MovingWindowResult:
+                             window_nm: float, step_nm: float, *, y_only: bool = False) -> MovingWindowResult:
     """The moving-window affine of each stripe on its own. sem, design: (N, 2) observations in mask nm, one per
     contact per image; stripe: (N,) stripe of each observation's image; groups: the observations of each of M
     contacts (MergedErrors.members). Each stripe's observations get their own windows along y (moving_window_affine),
@@ -83,7 +93,7 @@ def moving_window_per_stripe(sem: np.ndarray, design: np.ndarray, stripe: np.nda
     for s in np.unique(stripe):
         mine = stripe == s
         try:
-            fit = moving_window_affine(sem[mine], design[mine], window_nm, step_nm)
+            fit = moving_window_affine(sem[mine], design[mine], window_nm, step_nm, y_only=y_only)
         except ValueError as error:
             raise ValueError(f"Stripe {s + 1}: {error}") from None
         residuals[mine] = fit.residuals

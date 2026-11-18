@@ -21,6 +21,7 @@ A run that stitched the tiles but measured too few contacts raises AnalysisFaile
 
 Pattern contours (D155, D156): the images are stitched by their contours (stitch_by_contours) and the run stops
 there, as an AnalysisFailed marked stitched_only: comparing contours with the design is not built yet.
+Horizontal L/S (D170) stitches and calibrates the heights of closed line and space contours.
 """
 
 import re
@@ -36,18 +37,17 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
-from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Settings, any_shape_options,
-                                   check_settings, checked_overlaps, contour_options, detect_layer, helper_pool,
-                                   in_image_map,
-                                   load_image_tiles, merged_contact_sizes, placement_guide, placement_text,
-                                   report_stitching)
+from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, HORIZONTAL_LS, ContactSizes, Settings,
+                                   any_shape_options, check_image_records, check_settings, checked_overlaps,
+                                   contour_options, detect_layer, helper_pool, in_image_map, load_image_tiles,
+                                   merged_contact_sizes, placement_guide, placement_text, report_stitching)
 from affine_ransac.contour_stitching import EdgePoints, edge_points, overlap_distances, placed_by_contours
 from affine_ransac.contour_memory import bounded_results, contour_workers
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
 from affine_ransac.intrafield import IntrafieldMap, correct_points
-from affine_ransac.io.design import contact_outlines, load_layout
+from affine_ransac.io.design import contact_outlines, list_layers, load_layout
 from affine_ransac.io.contour_csv import read_contour_folder
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, find_contours, measurement_pairs,
@@ -56,6 +56,7 @@ from affine_ransac.pipeline import (StitchResult, TileResult, design_outlines, f
                                     tile_boxes_from_points, tile_neighbours, tile_stripes)
 from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors, design_errors_after_stitching,
                                         merge_observations, offset_steps, paired_errors)
+from affine_ransac.release import horizontal_ls
 from affine_ransac.stitching import placement_corrections
 from affine_ransac.step_log import StepLog, timed
 
@@ -124,6 +125,10 @@ class ReleaseResult:
     # the in-image distortion map removed from sem_points (settings.in_image_correction, D141); None: not removed
     intrafield: IntrafieldMap | None = None
 
+    @property
+    def horizontal_ls(self) -> bool:
+        return self.kind == "images" and self.settings.pattern == HORIZONTAL_LS
+
 
 class AnalysisFailed(RuntimeError):
     """A run that stopped after the stitching. result: what was found up to there (tiles, centres, stitchings; no
@@ -156,16 +161,47 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
 
     check_settings(s, kind)
     if kind == "images" and s.pattern == "lines":  # only the contour diagnosis finds them (D153)
-        raise ValueError("Lines can only be tried in the contour diagnosis window. Set PATTERN to contours (any "
-                         "pattern, lines too) or contacts to run.")
+        raise ValueError("Lines can only be tried in the contour diagnosis window. Choose horizontal L/S, "
+                         "contours or contacts to run.")
     if kind == "images" and s.pattern == "contours":  # stitched by their contours; no further yet (D156)
         raise stitch_by_contours(folder, records, s, record, lines, progress, pool)
+    horizontal = kind == "images" and s.pattern == HORIZONTAL_LS
     progress(0.0, "Reading the tiles")
     if kind == "images":
-        progress(0.0, "Detecting the contact layer")
+        if not records:
+            raise ValueError("No images in the folder")
+        layer_name = "L/S" if horizontal else "Contact"
+        progress(0.0, f"Detecting the {layer_name.lower()} layer")
         layer, datatype = detect_layer(records)
         s = replace(s, layer=layer, datatype=datatype)
-        record(f"Contact layer {layer}/{datatype} (the only layer with shapes in the .oas files)")
+        record(f"{layer_name} layer {layer}/{datatype} (the only layer with shapes in the .oas files)")
+        image_paths = [str(r.image_path) for r in records]
+    if horizontal:
+        check_image_records(records, None)  # detect_layer checked the whole folder; a clip can be blank
+        record("Horizontal L/S uses the regions between white bands. Both stitchings match heights in all "
+               "overlaps. X stays at the stage position. Repeating rows need a relative y error smaller than "
+               "half the spacing between consecutive centres.")
+        if s.realign or s.in_image_correction:
+            record("Horizontal L/S uses the paired design clips and moving-window y calibration. "
+                   "The two-dimensional realignment and in-image correction are skipped.")
+        s = replace(horizontal_ls.band_settings(s), realign=False, in_image_correction=False,
+                    stitch_method="all overlaps")
+        tile_ids = [r.tile_id for r in records]
+        centers = np.array([(r.center_x_nm, r.center_y_nm) for r in records], dtype=float)
+        image_centers = oas_centers = centers
+        sizes = np.array([(r.fov_x_nm, r.fov_y_nm) for r in records], dtype=float)
+        stripe, neighbours = tile_stripes(centers), tile_neighbours(centers, sizes)
+        oas_paths = [str(r.oas_path) if r.oas_path is not None else "" for r in records]
+        sem_points, design_points = horizontal_ls.load_centers(
+            records, centers, sizes, s, record,
+            lambda k, n: progress(LOAD_SHARE * k / n, f"L/S centres of tile {k} of {n}"), pool)
+        design_stitch = stitch_tiles(design_points, centers, sizes, s.design_max_match_nm, s.outlier_factor,
+                                     s.min_matched, label="design", y_only=True)
+
+        def errors(points, sem_corrections, design_corrections):
+            return horizontal_ls.paired_rows(points, design_points, sem_corrections, design_corrections,
+                                            centers, neighbours, s)
+    elif kind == "images":
         tile_ids, tiles = load_image_tiles(
             records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"),
             detailed=detailed_log, pool=pool)
@@ -177,7 +213,6 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         design_ok = [t.design.ok for t in tiles]
         neighbours = tile_neighbours(centers, sizes)
         design_stitch = stitch_design(tiles, s.design_max_match_nm, s.outlier_factor, s.min_matched)
-        image_paths = [str(r.image_path) for r in records]
         oas_paths = [str(t.oas_path) if t.oas_path is not None else "" for t in tiles]
         oas_centers = np.array([t.center_nm if t.oas_center_nm is None else t.oas_center_nm for t in tiles])
 
@@ -223,7 +258,12 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         progress(LOAD_SHARE, "In-image distortion map")
         sem_points, intrafield = in_image_corrected(sem_points, nominal_errors(sem_points), image_centers, s, record)
     progress(LOAD_SHARE, "Stitching")
-    stitch, slipped = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
+    if horizontal:
+        stitch = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched, y_only=True)
+        slipped = []
+        report_stitching(record, "SEM", stitch, tile_ids)
+    else:
+        stitch, slipped = stitch_sem(sem_points, centers, sizes, stripe, s, record, tile_ids)
     report_stitching(record, "Design", design_stitch, tile_ids)
 
     progress(LOAD_SHARE + 0.1, "Comparing with the design")
@@ -238,7 +278,8 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                f"neighbouring images (stitched off each other? one side paired on its own): "
                f"{[(tile_ids[i], tile_ids[j]) for i, j in steps[:10]]}{' ...' if len(steps) > 10 else ''}")
     contacts = merge_observations(observations, design_stitch.corrections, s.group_radius_nm)
-    record(f"{len(observations.tile)} observations -> {len(contacts.count)} contacts")
+    features = "L/S centres" if horizontal else "contacts"
+    record(f"{len(observations.tile)} observations -> {len(contacts.count)} {features}")
 
     def result(moving, kept=None):
         return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
@@ -246,21 +287,24 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                              moving, image_paths, lines, oas_paths, oas_centers, tiles=kept, slipped=slipped,
                              intrafield=intrafield)
     if len(contacts.count) < 3:
-        raise AnalysisFailed(f"Only {len(contacts.count)} measured contact(s). The Stitching tab shows the tiles, "
+        unit = "L/S centre(s)" if horizontal else "contact(s)"
+        raise AnalysisFailed(f"Only {len(contacts.count)} measured {unit}. The Stitching tab shows the tiles, "
                              f"their SEM images and design, and why each tile was not measured",
                              result(None), observations.skipped)
 
     progress(LOAD_SHARE + 0.15, "Moving-window affine")
     if s.moving_window_per_stripe:  # every image by its own stripe's windows, on the observations (D123)
         moving = moving_window_per_stripe(observations.sem_nm, observations.design_nm, stripe[observations.tile],
-                                          contacts.members, s.moving_window_um * 1000, s.moving_step_um * 1000)
+                                          contacts.members, s.moving_window_um * 1000, s.moving_step_um * 1000,
+                                          y_only=horizontal)
         record(f"Moving-window affine per stripe: {len(moving.centres_nm)} windows in {len(set(moving.stripe))} "
                f"stripe(s)")
     else:
         moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
-                                      s.moving_step_um * 1000)
+                                      s.moving_step_um * 1000, y_only=horizontal)
     progress(1.0, "Done")
-    return result(moving, LoadedTiles(tiles, observations, contacts) if keep_tiles and kind == "images" else None)
+    keep_contacts = keep_tiles and kind == "images" and not horizontal
+    return result(moving, LoadedTiles(tiles, observations, contacts) if keep_contacts else None)
 
 
 def _edge_tile(image_path, fov_nm, options: dict, log: StepLog | None = None) -> tuple[EdgePoints, int, int, float]:
@@ -517,8 +561,12 @@ def read_design_images(result: ReleaseResult, progress: Callable[[float, str], N
             shape = (max(1, round(fov[1] / pixel_nm)), side)
             mask = np.zeros(shape, np.uint8)
             layout, layer = load_layout(path), (s.layer, s.datatype)
-            outlines = contact_outlines(layout, *layer) if s.realign else \
-                drawn_outlines(layout, layer, fov, result.design_points[k] - result.oas_centers[k])
+            if result.horizontal_ls and layer not in list_layers(layout):
+                outlines = []
+            elif s.realign or result.horizontal_ls:
+                outlines = contact_outlines(layout, *layer)
+            else:
+                outlines = drawn_outlines(layout, layer, fov, result.design_points[k] - result.oas_centers[k])
             polygons = [np.round(tile_nm_to_pixel(o, shape, pixel_nm) * 16).astype(np.int32) for o in outlines]
             if polygons:
                 cv2.fillPoly(mask, polygons, 1, shift=4)  # 4 fractional bits: sub-pixel edges
@@ -578,15 +626,16 @@ def _tile_any_contours(image_path, fov_nm, options: dict) -> tuple[list[np.ndarr
 
 def read_any_contours(result: ReleaseResult, progress, pool: ProcessPoolExecutor | None = None,
                       log=lambda text: None) -> "TileContours":
-    """read_contours of a run with pattern contours (D156): each image's contours of any pattern found again with
-    the run's settings. Its "contacts" are contours, open ones too; their centres are the means of their points,
-    only to tell which are in view."""
+    """Reload general contours (D156) or closed horizontal L/S contours (D170). General contours use mean
+    points to tell which are in view. Horizontal L/S uses the measured area centroids."""
     s = result.settings
     tiles, detected, refined, closed = [], [], [], []
     workers = contour_workers(result.image_paths, s.upscale, log, pool=pool)
-    arguments = ((path, tuple(size), any_shape_options(s)) for path, size in zip(result.image_paths, result.sizes))
+    worker = horizontal_ls.tile_outlines if result.horizontal_ls else _tile_any_contours
+    options = s if result.horizontal_ls else any_shape_options(s)
+    arguments = ((path, tuple(size), options) for path, size in zip(result.image_paths, result.sizes))
     with helper_pool(workers) if pool is None else nullcontext(pool) as pool:
-        with closing(bounded_results(pool, _tile_any_contours, arguments, workers)) as results:
+        with closing(bounded_results(pool, worker, arguments, workers)) as results:
             for k, (found, moved, whole) in enumerate(results):
                 tiles.append(np.full(len(found), k))
                 detected += found
@@ -594,7 +643,14 @@ def read_any_contours(result: ReleaseResult, progress, pool: ProcessPoolExecutor
                 closed += list(whole)
                 progress((k + 1) / len(result.image_paths), f"Contours of tile {k + 1} of {len(result.image_paths)}")
     start = np.concatenate([[0], np.cumsum([len(c) + 2 for c in detected])]).astype(np.int64)
-    centres = [np.array([np.nanmean(c, axis=0) for c in found]).reshape(-1, 2) for found in (detected, refined)]
+    centres = [np.array([polygon_centroid(c) if result.horizontal_ls else np.nanmean(c, axis=0)
+                         for c in found]).reshape(-1, 2) for found in (detected, refined)]
+    if result.horizontal_ls:
+        start_tile = np.cumsum([0] + [len(t) for t in tiles])
+        for k, expected in enumerate(result.sem_points):
+            measured = centres[1][start_tile[k]:start_tile[k + 1]] + result.centers[k]
+            if measured.shape != expected.shape or not np.allclose(measured, expected, atol=0.01, rtol=0):
+                log(f"!! The L/S contours of {result.tile_ids[k]} differ from the centres of the run")
     return TileContours(np.concatenate(tiles) if tiles else np.empty(0, int), start,
                         drawable_outlines(detected, closed), drawable_outlines(refined, closed), *centres)
 
@@ -621,7 +677,7 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     pool: the worker processes to use, left running (high-performance mode, D151); None: new ones. If progress raises
     (MaskReg's Cancel, D152), the tiles not started are dropped."""
     s = result.settings
-    if s.pattern == "contours":
+    if s.pattern == "contours" or result.horizontal_ls:
         return read_any_contours(result, progress, pool, log)
     arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]

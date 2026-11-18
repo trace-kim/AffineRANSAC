@@ -86,7 +86,14 @@ def review(r: ReleaseResult, saved: str = "") -> dict:
              "problems_logged": [line for line in r.log if line.startswith("!!")]}
     if r.moving is not None:  # None: a run that stopped after the stitching
         # + 0.0: no "-0.0"
-        errors = {name: round(value, 3) + 0.0 for name, value in error_summary(r.moving.residuals).items()}
+        if r.horizontal_ls:
+            dy = r.moving.residuals[:, 1]
+            stats = {"count": len(dy), "mean_y_nm": dy.mean(), "3sigma_y_nm": 3 * dy.std(),
+                     "max_abs_y_nm": np.abs(dy).max()}
+            found["measured_axes"] = ["y"]
+        else:
+            stats = error_summary(r.moving.residuals)
+        errors = {name: round(value, 3) + 0.0 for name, value in stats.items()}
         found["registration_error_after_moving_window_nm"] = errors
         found["moving_windows"] = {"count": len(r.moving.counts), "fewest_contacts": int(r.moving.counts.min())}
     return found

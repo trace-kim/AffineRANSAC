@@ -489,7 +489,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
     def show_contours(self, contours):
         self.contours = contours
         self.stitching_view.set_contours(contours)
-        what = "contours" if self.result.settings.pattern == "contours" else "contacts"
+        what = "L/S regions" if self.result.horizontal_ls else (
+            "contours" if self.result.settings.pattern == "contours" else "contacts")
         self.status.set_idle(f"Contours of {len(contours.tile)} {what} loaded (Stitching tab: Detected and Refined "
                              f"contours" + (")" if what == "contours" else " and centres)"))
 
@@ -670,7 +671,8 @@ class MaskRegWindow(QtWidgets.QMainWindow):
         name, drawing = Path(result.folder).name, f"drawing on the {'GPU' if use_opengl else 'CPU'}"
         if failure is None:
             self.setWindowTitle(f"{TITLE} - {name}")
-            self.status.set_idle(f"{name}: {len(result.tile_ids)} tiles, {len(result.design_nm)} contacts "
+            features = "L/S centres" if result.horizontal_ls else "contacts"
+            self.status.set_idle(f"{name}: {len(result.tile_ids)} tiles, {len(result.design_nm)} {features} "
                                  f"({result.kind} folder)  |  {drawing}" + run_note(result))
         elif failure.stitched_only:  # pattern contours: no further yet (D156)
             self.setWindowTitle(f"{TITLE} - {name} - stitched only")

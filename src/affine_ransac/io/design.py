@@ -144,6 +144,33 @@ def read_contacts_tone_reversed(
     return np.array(centers) * nm_per_dbu, np.array(sizes, dtype=np.float64) * nm_per_dbu
 
 
+def _fov_box(frame_nm, nm_per_dbu: float) -> kdb.Box:
+    half_w, half_h = (round(length / (2 * nm_per_dbu)) for length in frame_nm)
+    return kdb.Box(-half_w, -half_h, half_w, half_h)
+
+
+def horizontal_band_centers(layout: kdb.Layout, layer: int, datatype: int, fov_nm) -> np.ndarray:
+    """Area centroids of both drawn and clear horizontal bands clipped to the SEM field, tile-local nm."""
+    if layout.find_layer(layer, datatype) is None:  # a blank clip alongside patterned ones
+        return np.empty((0, 2))
+    unit = layout.dbu * 1000.0
+    box = _fov_box(fov_nm, unit)
+    frame = kdb.Region(box)
+    drawn = kdb.Region(_shape_iterator(layout, layer, datatype, None))
+    centers = []
+    for tone in (frame & drawn, frame - drawn):
+        for band in tone.each_merged():
+            bounds = band.bbox()
+            if bounds.left != box.left or bounds.right != box.right:
+                continue
+            if box.bottom < bounds.bottom and bounds.top < box.top:
+                # A box centre may fall half-way between two database units.
+                center = (np.array([bounds.left + bounds.right, bounds.bottom + bounds.top]) / 2
+                          if band.is_box() else _area_centroid(band))
+                centers.append(center)
+    return np.asarray(centers, dtype=float).reshape(-1, 2) * unit
+
+
 def _reversed_regions(layout: kdb.Layout, layer: int, datatype: int, cell_name: str | None,
                       frame_nm: tuple[float, float] | None, drop_border: bool) -> list[kdb.Polygon]:
     """The contacts of a tone-reversed file: frame minus the drawn shapes, one polygon per contact
@@ -153,9 +180,7 @@ def _reversed_regions(layout: kdb.Layout, layer: int, datatype: int, cell_name: 
     if frame_nm is None:
         frame = drawn.bbox()
     else:
-        half_w = round(frame_nm[0] / 2 / nm_per_dbu)
-        half_h = round(frame_nm[1] / 2 / nm_per_dbu)
-        frame = kdb.Box(-half_w, -half_h, half_w, half_h)
+        frame = _fov_box(frame_nm, nm_per_dbu)
 
     regions = []
     for region in (kdb.Region(frame) - drawn).each():

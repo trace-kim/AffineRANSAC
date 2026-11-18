@@ -178,6 +178,15 @@ def tile_details(r: ReleaseResult, tile: int, not_measured: dict | None = None) 
     return "<br>".join(lines)
 
 
+def overlap_centres(r: ReleaseResult, points: np.ndarray, box) -> np.ndarray:
+    """For horizontal L/S, show the compared heights at the middle of the shared strip."""
+    if r.horizontal_ls:
+        x0, x1, y0, y1 = box
+        heights = points[(points[:, 1] >= y0) & (points[:, 1] <= y1), 1]
+        return np.column_stack((np.full(len(heights), (x0 + x1) / 2), heights))
+    return points[points_in_box(points, box)]
+
+
 def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
     """One overlap in words (HTML, D112): what each stitching made of it (not matched: pairs found and needed, each
     image's contacts in it), how to read the contacts drawn, links back to both tiles (tile:k)."""
@@ -192,7 +201,7 @@ def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
         if isinstance(e, PairResult):
             lines.append(f"<br><b>{name}</b>: used, {len(e.ia)} pairs.")
         elif e is not None and e.failed:
-            count_a, count_b = (len(points_in_box(points(r)[k], e.box)) for k in (i, j))
+            count_a, count_b = (len(overlap_centres(r, points(r)[k], e.box)) for k in (i, j))
             if name == "Measured" and r.settings.stitch_method in BY_IMAGE:  # stitch_image_by_image (D139)
                 why = (f"Where the placement image by image put the two images, {e.matched} of the {e.in_box} "
                        f"contacts both should see pair up; at least half of them and {r.settings.min_matched} "
@@ -206,10 +215,13 @@ def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
         elif e is not None:
             lines.append(f"<br><b>{name}</b>: skipped, only {e.in_box} contact(s) in the overlap.")
     if not_matched_in(r, i, j):
-        lines.append(f"<br><b>On the plot</b>, each one's contacts in the overlap, where they were compared: filled for "
-                     f"{a} (solid outline), hollow for {b} (dashed outline). Filled inside hollow: the contact is in "
-                     f"both. Filled or hollow alone: in one only; next to the other's edge this is normal, as each "
-                     f"leaves out the contacts its own edge cuts.")
+        if r.horizontal_ls:
+            lines.append("<br>The markers show the L/S centre heights at the middle of the overlap.")
+        else:
+            lines.append(f"<br><b>On the plot</b>, each one's contacts in the overlap, where they were compared: filled for "
+                         f"{a} (solid outline), hollow for {b} (dashed outline). Filled inside hollow: the contact is in "
+                         f"both. Filled or hollow alone: in one only; next to the other's edge this is normal, as each "
+                         f"leaves out the contacts its own edge cuts.")
     lines.append(f"<br>Back to <a href='tile:{i}'>{a}</a> or <a href='tile:{j}'>{b}</a>")
     return "<br>".join(lines)
 
@@ -239,11 +251,11 @@ def matrix_of(transform: QtGui.QTransform) -> np.ndarray:
     return np.array([[t.m11(), t.m21(), t.dx()], [t.m12(), t.m22(), t.dy()], [0.0, 0.0, 1.0]])
 
 
-def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape) -> pg.ImageItem:
+def tile_image_item(image: np.ndarray, center_nm, fov_x_nm: float, full_shape, fov_y_nm=None) -> pg.ImageItem:
     """A (possibly downsampled) SEM image covering its tile: pixel size = FOV / image width of the full image
     (full_shape, as the pipeline), image centre at center_nm, image rows downwards (y up on the plot)."""
     pixel_nm = fov_x_nm / full_shape[1]
-    width, height = full_shape[1] * pixel_nm, full_shape[0] * pixel_nm
+    width, height = fov_x_nm, full_shape[0] * pixel_nm if fov_y_nm is None else fov_y_nm
     item = pg.ImageItem(image[::-1], axisOrder="row-major", levels=(0, 255))  # row 0 at the top
     item.setRect(QtCore.QRectF(center_nm[0] - width / 2, center_nm[1] - height / 2, width, height))
     item.setZValue(-10)
@@ -459,7 +471,8 @@ class StitchingView(QtWidgets.QWidget):
             failed = sum(f.failed for f in stitch.rejected)
             parts.append(f"{name}: {n - len(stitch.unplaced)} of {n} tiles stitched, {len(stitch.pairs)} overlaps used, "
                          f"{failed} not matched")
-        text = "<br>".join(stitching_verdict(r)) + "<br>" + "; ".join(parts) + f". Method: {r.settings.stitch_method}."
+        method = "horizontal L/S centre heights, stage x fixed" if r.horizontal_ls else r.settings.stitch_method
+        text = "<br>".join(stitching_verdict(r)) + "<br>" + "; ".join(parts) + f". Method: {method}."
         ticks = [f"<i>{name}</i>" for name, shown in
                  (("Overlaps not matched", any(f.failed for f in r.stitch.rejected + r.design_stitch.rejected)),
                   ("Tiles not stitched", len(r.stitch.unplaced) or len(r.design_stitch.unplaced))) if shown]
@@ -523,7 +536,10 @@ class StitchingView(QtWidgets.QWidget):
         if mode == "nominal":
             end = np.full_like(start, np.nan)
         else:
-            end = start + (r.moving.residuals if mode == "corrected" else r.sem_nm - r.design_nm)
+            delta = r.moving.residuals if mode == "corrected" else r.sem_nm - r.design_nm
+            if r.horizontal_ls:
+                delta = np.column_stack((np.zeros(len(delta)), delta[:, 1]))
+            end = start + delta
         length = np.linalg.norm(end - start, axis=1)
         shown = np.isfinite(length)
         long = shown & (length > self.long_pair_nm)
@@ -654,7 +670,7 @@ class StitchingView(QtWidgets.QWidget):
             self.selection_items.append(rectangles_item([self._local(entry.box)], pg.mkPen(color, width=2.5),
                                                         pg.mkBrush(None)))
             for k, filled in ((i, True), (j, False)):  # where they were compared: nominal, as the box
-                xy = points(r)[k][points_in_box(points(r)[k], entry.box)] - self.origin
+                xy = overlap_centres(r, points(r)[k], entry.box) - self.origin
                 if filled:
                     marks = [pg.PlotDataItem(xy[:, 0], xy[:, 1], pen=None, symbol=symbol, symbolSize=9,
                                              symbolBrush="k", symbolPen=pg.mkPen("w", width=1.5))]
@@ -674,7 +690,8 @@ class StitchingView(QtWidgets.QWidget):
         self.image_items = []
         self.image_bases = []
         for (image, full_shape), center, size in zip(images, self.result.centers, self.result.sizes):
-            item = tile_image_item(image, center - self.origin, size[0], full_shape)
+            item = tile_image_item(image, center - self.origin, size[0], full_shape,
+                                   size[1] if self.result.horizontal_ls else None)
             self.plot.addItem(item)
             self.image_items.append(item)
             self.image_bases.append(matrix_of(item.transform()))  # its pixels to its nominal place (update_positions)
@@ -752,7 +769,7 @@ class StitchingView(QtWidgets.QWidget):
         centres = self._contour_points(c.refined_centres, np.arange(len(c.refined_centres)))
         (x0, x1), (y0, y1) = self.plot.vb.viewRange()
         margin = 0.05 * max(x1 - x0, y1 - y0)
-        if self.result.settings.pattern == "contours":  # a contour can cross its whole image: those of the tiles
+        if self.result.settings.pattern == "contours" or self.result.horizontal_ls:  # contours can span a tile
             tile_in_view = np.array([a < x1 and b > x0 and low < y1 and high > y0  # in view (D156)
                                      for a, b, low, high in self.rectangles])
             inside = np.flatnonzero(tile_in_view[c.tile])
@@ -1256,20 +1273,24 @@ class RegistrationView(QtWidgets.QWidget):
         # the dx and dy colour maps (profiles of their own component, one shared colour bar). Same area in all.
         self.figure = figure(use_opengl)
         grid = self.figure.ci
-        self.arrow_panel = MarginalMap(grid, 0, 0, self.origin, "Δr (nm)", "arrow", self.fit)
-        self.arrow_profiles = [self.arrow_panel.add_profile("dr", style.DR)]
+        self.magnitude = "abs dy" if r.horizontal_ls else "dr"
+        title = "|Δy| (nm)" if r.horizontal_ls else "Δr (nm)"
+        self.arrow_panel = MarginalMap(grid, 0, 0, self.origin, title, "arrow", self.fit)
+        self.arrow_profiles = [self.arrow_panel.add_profile(self.magnitude, style.DR)]
         self.arrows = [pg.PlotCurveItem(connect="pairs", pen=pg.mkPen(QtGui.QColor(*rgb[:3]), width=1), antialias=False)
                        for rgb in JET.getLookupTable(nPts=ARROW_COLOURS)]
         for item in self.arrows:
             self.arrow_panel.map.addItem(item)
-        self.dr_bar = jet_bar((0.0, 1.0), "|measured − design| (nm)")
+        self.dr_bar = jet_bar((0.0, 1.0), title if r.horizontal_ls else "|measured − design| (nm)")
         self.dr_bar.sigLevelsChanged.connect(lambda *_: self.draw_arrows())
         grid.addItem(self.dr_bar, row=0, col=2)
         grid.layout.setColumnSpacing(2, 24)  # room between its axis label and the dx map's
         self.maps = []  # (MarginalMap, image, component)
         self.map_profiles = []
-        for component, (name, color) in enumerate((("Δx", style.DX), ("Δy", style.DY))):
-            panel = MarginalMap(grid, 0, 3 + 2 * component, self.origin, f"{name} (nm)", ("dx", "dy")[component],
+        self.components = (1,) if r.horizontal_ls else (0, 1)
+        for slot, component in enumerate(self.components):
+            name, color = (("Δx", style.DX), ("Δy", style.DY))[component]
+            panel = MarginalMap(grid, 0, 3 + 2 * slot, self.origin, f"{name} (nm)", ("dx", "dy")[component],
                                 self.fit)
             self.map_profiles.append(panel.add_profile(name, color))
             image = pg.ImageItem(axisOrder="row-major")
@@ -1278,7 +1299,7 @@ class RegistrationView(QtWidgets.QWidget):
             self.maps.append((panel, image, component))
         self.color_bar = jet_bar((-1.0, 1.0), "measured − design (nm)")
         self.color_bar.sigLevelsChanged.connect(lambda *_: self.draw_maps())
-        grid.addItem(self.color_bar, row=0, col=7)
+        grid.addItem(self.color_bar, row=0, col=3 + 2 * len(self.components))
         self.panels = [self.arrow_panel] + [panel for panel, _, _ in self.maps]
         link_views([panel.map for panel in self.panels])
         self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
@@ -1299,7 +1320,7 @@ class RegistrationView(QtWidgets.QWidget):
 
         # Every contact, or the mean over the contacts in each cell of a square grid.
         self.values = QtWidgets.QComboBox()
-        self.values.addItems(["Every contact", "Grid average"])
+        self.values.addItems(["Every L/S centre" if r.horizontal_ls else "Every contact", "Grid average"])
         self.values.setToolTip("Grid average: one value per square cell, the mean of the contacts in it; the means "
                                "per row and per column then average the contacts of each row and column of cells")
         area = np.prod(np.maximum(np.ptp(r.design_nm, axis=0) / 1000, 1e-3))  # µm²
@@ -1386,12 +1407,14 @@ class RegistrationView(QtWidgets.QWidget):
         selected = self.stripes.selected()
         shown = self.in_stripe[:, selected].any(axis=1)
         self.design_nm, self.error_nm = r.design_nm[shown], r.moving.residuals[shown]
+        if r.horizontal_ls:
+            self.error_nm[:, 0] = 0  # draw vertical arrows; the run keeps the unmeasured x residual as NaN
         self.position_um = (self.design_nm - self.origin) / 1000
         length = np.linalg.norm(self.error_nm, axis=1)
         self.values_nm = np.column_stack([self.error_nm, length])  # dx, dy, dr of every contact
         self.contact_rows = row_means(self.design_nm[:, 1], self.values_nm, s.row_gap_nm)[:2]  # (y, mean)
         self.contact_columns = row_means(self.design_nm[:, 0], self.values_nm, s.row_gap_nm)[:2]  # (x, mean)
-        limit = float(np.percentile(np.abs(self.error_nm), 99)) or 1.0
+        limit = float(np.percentile(np.abs(self.error_nm[:, self.components]), 99)) or 1.0
         self.color_bar.setLevels((-limit, limit))
         self.dr_bar.setLevels((0.0, float(np.percentile(length, 99)) or 1.0))
 
@@ -1402,9 +1425,17 @@ class RegistrationView(QtWidgets.QWidget):
         total = self.in_stripe.shape[1]
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
-        self.summary.setText(f"<b>{len(self.error_nm)} contacts</b> of {stripes}, {len(self.contact_rows[0])} rows, "
+        features = "L/S centres" if r.horizontal_ls else "contacts"
+        if r.horizontal_ls:
+            fitted = "per stripe" if s.moving_window_per_stripe else "across stripes"
+            dy = self.error_nm[:, 1]
+            summary = (f"mean dy {dy.mean():+.2f} nm, 3σ {3 * dy.std():.2f} nm, max |dy| {np.abs(dy).max():.2f} nm. "
+                       "X is unmeasured")
+        else:
+            summary = summary_text(self.error_nm)
+        self.summary.setText(f"<b>{len(self.error_nm)} {features}</b> of {stripes}, {len(self.contact_rows[0])} rows, "
                              f"{len(self.contact_columns[0])} columns. Error = {measured} − design after the "
-                             f"{window}, {fitted}: {summary_text(self.error_nm)}.")
+                             f"{window}, {fitted}: {summary}.")
         self.fitted = True  # show them all
         self.set_values()
 
@@ -1440,10 +1471,10 @@ class RegistrationView(QtWidgets.QWidget):
         else:
             (self.row_y, self.row_mean), (self.column_x, self.column_mean) = self.contact_rows, self.contact_columns
         row_um, column_um = (self.row_y - self.origin[1]) / 1000, (self.column_x - self.origin[0]) / 1000
-        for k, (row_line, column_line) in enumerate(self.map_profiles + self.arrow_profiles):  # dx, dy, dr
+        for k, (row_line, column_line) in zip((*self.components, 2), self.map_profiles + self.arrow_profiles):
             row_line.setData(self.row_mean[:, k], row_um)
             column_line.setData(column_um, self.column_mean[:, k])
-        for lines, k in zip(self.range_lines, (2, 0, 1)):  # panels: dr, dx, dy
+        for lines, k in zip(self.range_lines, (2, *self.components)):
             lines.set_profile(row_um, self.row_mean[:, k])
 
     def extent(self) -> tuple[np.ndarray, np.ndarray]:
@@ -1503,9 +1534,10 @@ class RegistrationView(QtWidgets.QWidget):
 
     def set_line_width(self, width: int):
         """The lines of the means per row and per column, this many pixels wide (D121)."""
-        for lines, color in zip(self.map_profiles + self.arrow_profiles, (style.DX, style.DY, style.DR)):
+        colors = (style.DX, style.DY, style.DR)
+        for lines, k in zip(self.map_profiles + self.arrow_profiles, (*self.components, 2)):
             for line in lines:
-                line.setPen(pg.mkPen(color, width=width))
+                line.setPen(pg.mkPen(colors[k], width=width))
 
     def draw_arrows(self):
         """The arrows, each coloured by its length (its error's dr) on the dr colour bar."""
@@ -1520,7 +1552,7 @@ class RegistrationView(QtWidgets.QWidget):
 
     def graphs_of(self, panel: MarginalMap) -> list[tuple[pg.PlotItem, list, str]]:
         """(plot, items to render, name) of a panel's graphs; a map comes with its colour bar."""
-        bar, profile = (self.dr_bar, "dr") if panel is self.arrow_panel else (self.color_bar, panel.name)
+        bar, profile = (self.dr_bar, self.magnitude) if panel is self.arrow_panel else (self.color_bar, panel.name)
         return [(panel.map, [panel.map, bar], f"{panel.name} map"),
                 (panel.rows, [panel.rows], f"{profile} mean per row"),
                 (panel.columns, [panel.columns], f"{profile} mean per column")]
@@ -1531,20 +1563,28 @@ class RegistrationView(QtWidgets.QWidget):
         shown = [(plot, items, name) for panel in self.panels for plot, items, name in self.graphs_of(panel)
                  if plot.isVisible()]
         dx_dy = [plot for plot, _, name in shown if name.startswith(("dx", "dy"))]
-        return self.figure, [("dx and dy: maps, profiles, colour bar", [style.Area(dx_dy + [self.color_bar])])] + \
+        axes = [panel.name for panel, _, _ in self.maps]
+        group = "dy map and profiles" if self.result.horizontal_ls else "dx and dy: maps, profiles, colour bar"
+        return self.figure, [(group, [style.Area(dx_dy + [self.color_bar])])] + \
             [(name, items) for _, items, name in shown] + \
-            [("dr colour bar", [self.dr_bar]), ("dx, dy colour bar", [self.color_bar])]
+            [(f"{self.magnitude} colour bar", [self.dr_bar]), (f"{', '.join(axes)} colour bar", [self.color_bar])]
 
     def profiles(self) -> list[list[str]]:
         """Both profiles as shown, as one table: header, then per line a row (y, mask µm; mean dx, dy, dr, nm) and a
         column (x, mask µm; mean dx, dy, dr, nm), blank where one profile has fewer lines. In grid average the rows
         and columns of cells, named so."""
         row, column = ("grid row", "grid column") if self.grid_mode() else ("row", "column")
-        header = [f"{row} y (µm)", f"{row} mean dx (nm)", f"{row} mean dy (nm)", f"{row} mean dr (nm)",
-                  f"{column} x (µm)", f"{column} mean dx (nm)", f"{column} mean dy (nm)", f"{column} mean dr (nm)"]
+        components = (*self.components, 2)
+        names = ("dx", "dy", self.magnitude)
+        header = []
+        for label, axis in ((row, "y"), (column, "x")):
+            header.append(f"{label} {axis} (µm)")
+            header.extend(f"{label} mean {names[i]} (nm)" for i in components)
 
         def cells(position, mean, k):
-            return [f"{position[k] / 1000:.4f}", *(f"{v:.4f}" for v in mean[k])] if k < len(position) else [""] * 4
+            if k >= len(position):
+                return [""] * (1 + len(components))
+            return [f"{position[k] / 1000:.4f}", *(f"{mean[k, i]:.4f}" for i in components)]
         length = max(len(self.row_y), len(self.column_x))
         return [header] + [cells(self.row_y, self.row_mean, k) + cells(self.column_x, self.column_mean, k)
                            for k in range(length)]
@@ -1599,6 +1639,8 @@ class ContactSizeTab(QtWidgets.QWidget):
         self.run_button.setEnabled(r.tiles is not None and not busy)
         if r.kind != "images":
             self.note.setText(NOT_IMAGES)
+        elif r.horizontal_ls:
+            self.note.setText("Horizontal L/S measures the y positions of lines and spaces.")
         elif r.tiles is None:
             self.note.setText(NEEDS_TILES)
         else:

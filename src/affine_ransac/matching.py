@@ -76,9 +76,10 @@ def candidate_shifts(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_n
     pitch away all get many votes, so several candidates are kept and scored by scored_shifts.
     """
     near = cKDTree(b).query_ball_point(a, search_nm)
-    diffs = np.array([b[j] - a[i] for i, js in enumerate(near) for j in js]).reshape(-1, 2)
+    dimensions = a.shape[1]  # horizontal L/S matches heights alone
+    diffs = np.array([b[j] - a[i] for i, js in enumerate(near) for j in js]).reshape(-1, dimensions)
     if len(diffs) == 0:
-        return np.empty((0, 2))
+        return np.empty((0, dimensions))
     tree = cKDTree(diffs)
     votes = tree.query_ball_point(diffs, tolerance_nm, return_length=True)
     taken = np.zeros(len(diffs), bool)
@@ -184,7 +185,7 @@ def match_with_shift(a: np.ndarray, b: np.ndarray, search_nm: float, tolerance_n
     difference. tolerance_nm must stay well below half the pitch."""
     matches = scored_shifts(a, b, search_nm, tolerance_nm)
     if not matches:
-        return ShiftMatch(np.empty(0, int), np.empty(0, int), np.full(2, np.nan), 0, 0, 0), False
+        return ShiftMatch(np.empty(0, int), np.empty(0, int), np.full(a.shape[1], np.nan), 0, 0, 0), False
     k, tied = choose_shift(matches, min_extra)
     return matches[k], tied
 

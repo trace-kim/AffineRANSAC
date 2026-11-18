@@ -120,7 +120,8 @@ class Settings:
                                        "measured across the lines (its height) in every column. contours: any "
                                        "pattern, the outline of every region, of any shape, open where the region "
                                        "runs out of the image; a run stitches the images by them and stops "
-                                       "there. Lines only in the contour diagnosis window")
+                                       "there. Lines only in the contour diagnosis window. Horizontal L/S: measure "
+                                       "the centres between white bands crossing the image and stitch in y only")
     layer: int = setting(100, "Layer of the contacts in the .oas")
     datatype: int = setting(0, "Datatype of the contacts in the .oas")
     background_px: float = setting(0.0, "Flatten the background first, so that one threshold fits the whole image "
@@ -227,8 +228,11 @@ LINE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS
 # The contour settings that find the contours of any pattern (pipeline.find_contours, D155): not the solidity limit
 # and the contrast check of the contacts
 ANY_SHAPE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS if name not in ("min_solidity", "min_contrast"))
-PATTERNS = ("contacts", "lines", "contours")  # settings.pattern (D153, D155)
-PATTERN_SETTINGS = {"contacts": CONTOUR_SETTINGS, "lines": LINE_SETTINGS, "contours": ANY_SHAPE_SETTINGS}
+HORIZONTAL_LS = "horizontal L/S"
+PATTERNS = ("contacts", "lines", "contours", HORIZONTAL_LS)
+PATTERN_SETTINGS = {"contacts": CONTOUR_SETTINGS, "lines": LINE_SETTINGS, "contours": ANY_SHAPE_SETTINGS,
+                    HORIZONTAL_LS: tuple(n for n in LINE_SETTINGS if n not in ("dark_contacts", "detection"))
+                    + ("min_area_px", "max_area_px")}
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
 BY_IMAGE = ("image by image", "fingerprint")  # stitched image by image after a placement (D133, D144)
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
@@ -318,9 +322,9 @@ def any_shape_options(s: Settings) -> dict:
     return {name: getattr(s, name) for name in ANY_SHAPE_SETTINGS}
 
 
-def check_image_records(records: list, layer: tuple[int, int]):
+def check_image_records(records: list, layer: tuple[int, int] | None):
     """ValueError if the image folder cannot be analysed: no records, image or .oas files missing, no image
-    with an .oas, or the contact layer missing from the (first) .oas."""
+    with an .oas, or the requested layer missing from the first .oas. Pass None if already checked across clips."""
     if not records:
         raise ValueError("The metadata CSV lists no images")
     missing = [r.tile_id for r in records if not Path(r.image_path).is_file()]
@@ -336,10 +340,11 @@ def check_image_records(records: list, layer: tuple[int, int]):
     if same:
         raise ValueError(f"{len(same)} pair(s) of images at the same position (the same point measured twice?), "
                          f"e.g. {same[:3]}: the metadata reader must keep one image per measure point (task T007)")
-    layers = list_layers(load_layout(with_oas[0].oas_path))
-    if tuple(layer) not in layers:
-        raise ValueError(f"Layer {layer[0]}/{layer[1]} is not in {Path(with_oas[0].oas_path).name}; "
-                         f"its layers: {layers}")
+    if layer is not None:
+        layers = list_layers(load_layout(with_oas[0].oas_path))
+        if tuple(layer) not in layers:
+            raise ValueError(f"Layer {layer[0]}/{layer[1]} is not in {Path(with_oas[0].oas_path).name}; "
+                             f"its layers: {layers}")
 
 
 def same_position_records(records: list, tolerance_nm: float = 1.0) -> list[tuple[str, str]]:

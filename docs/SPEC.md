@@ -408,7 +408,7 @@ reason that applies (`DetectedContacts.left_out`: touching the image border, sma
 robust σ + 0.5 px), the contrast check's 3 px ring, the three classes of otsu3 and band.
 
 **Lines (D153; step 1 of the line & space plan, `docs/notes/2026-11-08-line-space-plan.md`).** Setting `pattern`
-(contacts, the default | lines | contours, D155 below; MaskReg only, `analysis.RELEASE_ONLY`, in the *Contour detection* parameters and the
+(contacts, the default | lines | contours | horizontal L/S, D155 and D170 below; MaskReg only, `analysis.RELEASE_ONLY`, in the *Contour detection* parameters and the
 contour diagnosis window's *Pattern* group, not one of `CONTOUR_SETTINGS`). With lines, `pipeline.find_lines` finds
 the **horizontal lines** of one image (`features/lines.py`, `LineEdges`): the same pre-processing (flattening,
 denoising, upscaling) and threshold mask as for contacts (`dark_contacts`: lines darker than the spaces; off:
@@ -431,13 +431,23 @@ columns / √2; an upper bound where the roughness varies within a few columns; 
 image, whose neighbouring columns share noise, and the line says so), in px: the window has no pixel size. Upscaled,
 the edges are given at the image's own columns (`in_image_lines`: the upscaled column at f·x + (f − 1)/2, or the
 mean of the two beside it for even f). **Only the contour diagnosis window uses lines so far:** a run with `pattern`
-lines is refused (`release/analysis.analyse_folder`), and *Load contours* reads runs, which are all of contacts.
+lines is refused (`release/analysis.analyse_folder`).
 Synthetic (`tests/test_lines.py`, bright lines, edges at known sub-pixel heights): mid-level within 0.05 px in every
 column, also upscaled ×2 and ×3; the threshold rule at the Otsu level (not half-way where the lines cover a third of
 the image, up to 0.3 px off) and the steepest gradient on the steepest pixel step (up to 0.63 px off: down a column
 the sampled profile is linear between pixels, so its gradient is flat within a pixel); two images of the same lines
 with their own noise (12 grey levels, contrast 120) differ per column by 0.188 px of noise, and `column_noise_px` of
 one of them gives 0.189 px.
+
+**Temporary horizontal L/S (D170).** In MaskReg image folders, `pattern` **horizontal L/S** uses the white SEM
+bands as separators. Two-class Otsu on the prepared image selects the interiors between them in one pass.
+Four-connected interior pixels keep a thin separator intact where it steps diagonally.
+Each region crossing the field with a visible upper and lower edge yields one closed polygon. The edges follow
+the selected refinement and join at the left and right sides of the image. Its area centroid supplies the
+measured height. The existing area limits apply in native pixels. Regions clipped at the top or bottom lack
+a reliable centre height. *Contour diagnosis* and *Load contours* show the same outlines and centres as the run.
+For each OASIS clip, intersect the merged drawing with the field and subtract it from the field to get the
+other tone. Keep the area centroids of complete horizontal bands in both tones.
 
 **Contours of any pattern (D155).** `pattern` **contours** (MaskReg only, as lines): `pipeline.find_contours` finds
 the contours of one image with **nothing assumed about the pattern**: no shape, size or direction, and a region need
@@ -888,6 +898,19 @@ Output: `T_i` for each tile, per-tile diagnostics (number of ties, RMS tie resid
 number) and the stitched coordinates of every SEM feature. When a feature appears in multiple
 tiles, keep **all** observations. For comparison with the design, use their mean, and report
 the spread as a stitching-quality metric.
+
+**Horizontal L/S centre stitching (D170).** Find neighbours by their full tile rectangles. Within each shared
+y interval, pair mutually nearest centre heights using the SEM or design match distance. The usual minimum
+pair count, robust overlap translation and weighted tile solve apply independently to each stitching. The x
+correction is fixed at zero. On repeating rows this assumes the relative stage error is less than half the
+spacing between adjacent measured centres, including space centres.
+
+Pair the stitched SEM and design heights with the release's neighbour-following matcher (D143). Record each
+measurement at its tile's stage x and merge repeated observations at the same sampled position. Use the usual
+moving windows, optionally per stripe. Each window fits the vertical SEM-to-design displacement against x and
+y by least squares. The horizontal transform remains the identity and its registration residual is unmeasured
+(NaN in the run file). The Registration tab, profiles and command-line review report y. This temporary path
+uses the paired design clips directly and omits the contact-specific realignment and in-image correction.
 
 **Stitching by contours (D156; MaskReg, `pattern` contours).** `contour_stitching.py`. An edge point knows where it
 is across its edge only, so two images are compared by how far their edges lie apart **across the edges**, edges

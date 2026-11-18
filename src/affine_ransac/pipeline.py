@@ -294,6 +294,7 @@ def find_lines(
     search_px: float = 5.0,
     edge_step_px: float = 0.25,
     edge_blur_px: float = 1.0,
+    connectivity: int | None = None,
 ) -> tuple[LineEdges, LineEdges]:
     """The horizontal lines of one SEM image (uint8), as find_contacts finds contacts (D153): (detected, refined),
     each edge at every column of the image, in its own pixels (features.lines). The options are the contour settings
@@ -303,7 +304,8 @@ def find_lines(
     image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
     f = upscale
     big = upscaled_image(image, f)
-    detected = detect_lines(big, dark_contacts, detection_blur_px * f, detection, equalize, clahe_clip, clahe_tiles)
+    detected = detect_lines(big, dark_contacts, detection_blur_px * f, detection, equalize, clahe_clip, clahe_tiles,
+                            connectivity=connectivity)
     refined = detected if refinement == "none" else refine_line_edges(
         big, detected, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement)
     return in_image_lines(detected, f), in_image_lines(refined, f)
@@ -471,6 +473,7 @@ def stitch_tiles(
     label: str = "SEM",
     only_pairs: set | None = None,
     guide: np.ndarray | None = None,
+    *, y_only: bool = False,
 ) -> StitchResult:
     """Pairwise overlap fits and the per-tile translation corrections.
 
@@ -487,19 +490,25 @@ def stitch_tiles(
     offset of about one pitch (drift between images taken far apart in time) cannot pair them one contact
     row off; the shift is then fitted on the paired contacts as they are. A pair with a tile the guide
     did not place is paired as without a guide.
+    y_only: horizontal bands span the overlap in x. Compare their heights and fit only a y shift.
     Warns if a pair failed to match or a tile could not be stitched (see StitchResult).
     """
     pairs, rejected = [], []
+    if y_only:
+        points = [p * [0.0, 1.0] for p in points]
+        if guide is not None:
+            guide = guide * [0.0, 1.0]
     for i, j, box in overlapping_pairs(centers, fovs):
         if only_pairs is not None and (i, j) not in only_pairs:
             continue
         predicted = predicted_shift(guide, i, j)
-        ia, ib = match_overlap(points[i], points[j] - predicted, box, max_match_nm)
+        match_box = (-np.inf, np.inf, *box[2:]) if y_only else box
+        ia, ib = match_overlap(points[i], points[j] - predicted, match_box, max_match_nm)
         if len(ia) >= min_matched:
             fit = fit_overlap(points[i][ia], points[j][ib], outlier_factor=outlier_factor)
             pairs.append(PairResult(i, j, box, ia, ib, fit))
         else:
-            in_box = min(len(points_in_box(points[i], box)), len(points_in_box(points[j], box)))
+            in_box = min(len(points_in_box(points[i], match_box)), len(points_in_box(points[j], match_box)))
             rejected.append(RejectedPair(i, j, box, in_box, len(ia), failed=in_box >= min_matched))
     return solved_stitching(len(centers), pairs, rejected, label)
 

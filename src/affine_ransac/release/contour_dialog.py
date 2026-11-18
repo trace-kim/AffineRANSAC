@@ -28,7 +28,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import (CHOICES, PATTERN_SETTINGS, Settings, any_shape_options, check_settings,
+from affine_ransac.analysis import (CHOICES, HORIZONTAL_LS, PATTERN_SETTINGS, Settings, any_shape_options, check_settings,
                                     contour_options, line_options)
 from affine_ransac.app import editor, editor_value
 from affine_ransac.features.contact import DetectedContacts, contact_mask_and_image, threshold_image, upscaled_image
@@ -37,7 +37,7 @@ from affine_ransac.features.lines import LineEdges, column_noise_px, roughness_p
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import find_contacts, find_contours, find_lines, prepared_image
 from affine_ransac.step_log import StepLog, timed
-from affine_ransac.release import style
+from affine_ransac.release import horizontal_ls, style
 from affine_ransac.release.analysis import drawable_outlines
 from affine_ransac.release.views import figure
 
@@ -113,6 +113,8 @@ def preview_image(image: np.ndarray, s: Settings, preparation: PreparedImageCach
 def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | None = None) -> Diagnosis:
     """The preview image, the contacts the settings find, as a run finds them, and the threshold
     mask. preparation: the window's single-image cache; omitted, preprocessing runs afresh."""
+    if s.pattern == HORIZONTAL_LS:
+        s = horizontal_ls.band_settings(s)
     log = StepLog()
     flat = (preparation if preparation is not None else PreparedImageCache()).prepare(image, s, log)
     # find_contacts would flatten and denoise the image first: given it so (up to a few s), it need not do it again
@@ -122,6 +124,9 @@ def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | N
             (detected, refined), low_contrast = find_lines(flat, **line_options(given)), 0
     elif s.pattern == "contours":
         (detected, refined), low_contrast = find_contours(flat, **any_shape_options(given), log=log), 0
+    elif s.pattern == HORIZONTAL_LS:
+        with timed(log, "close the horizontal line and space contours"):
+            (detected, refined), low_contrast = horizontal_ls.find_bands(flat, given), 0
     else:
         seconds = {}
         detected, refined, low_contrast = find_contacts(flat, **contour_options(given), seconds=seconds)
@@ -163,6 +168,8 @@ def count_lines(d: Diagnosis, s: Settings) -> list[str]:
     pixels = f"{d.image.size:,} pixels searched"
     if s.pattern == "lines":
         return [f"{pixels}. {len(d.refined.upper):,} lines."]
+    if s.pattern == HORIZONTAL_LS:
+        return [f"{pixels}. {len(d.refined.centers):,} closed L/S contours. Regions left out: {d.detected.left_out}."]
     if s.pattern == "contacts":
         return [f"{pixels}. {len(d.refined.centers):,} contacts. Regions left out: {d.detected.left_out}."]
     found, c, left = d.refined, d.log.counts, d.detected.left_out
@@ -185,6 +192,9 @@ def summary(d: Diagnosis, s: Settings) -> str:
     """How many contacts were found and why the other regions were left out, in words (HTML)."""
     if s.pattern == "lines":
         return lines_summary(d, s)
+    if s.pattern == HORIZONTAL_LS:
+        return (f"<b>{len(d.refined.centers)} closed L/S contours</b> between white bands "
+                f"({threshold_text(d, horizontal_ls.band_settings(s))}).")
     reasons = {"border": "touching the image border", "small": f"smaller than {s.min_area_px} px",
                "large": f"larger than {s.max_area_px} px", "not solid": f"less solid than {s.min_solidity:g}"}
     left_out = [f"{count} {reasons[why]}" for why, count in d.detected.left_out.items() if count]
@@ -443,7 +453,8 @@ class ContourDialog(QtWidgets.QDialog):
 
     def values(self) -> Settings:
         """The settings given, with the contour settings shown."""
-        return replace(self.settings, **{name: editor_value(widget) for name, widget in self.editors.items()})
+        s = replace(self.settings, **{name: editor_value(widget) for name, widget in self.editors.items()})
+        return horizontal_ls.band_settings(s) if s.pattern == HORIZONTAL_LS else s
 
     def changed(self, *_):
         """Invalidate the old contours and refresh the preview once editing pauses."""
@@ -460,7 +471,7 @@ class ContourDialog(QtWidgets.QDialog):
             widget.setEnabled(applies(name, s))
         for name, box in self.boxes.items():
             box.setText(layer_name(name, s))
-            no_centres = s.pattern != "contacts" and name.endswith("centres")  # only contacts have a centre
+            no_centres = s.pattern in ("lines", "contours") and name.endswith("centres")
             detected = s.refinement == "none" and name.startswith("Refined")  # with none, the detected ones (D124)
             box.setEnabled(not (no_centres or detected))
         self.update_visibility()

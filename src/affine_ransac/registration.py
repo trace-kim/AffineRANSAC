@@ -240,7 +240,8 @@ def design_errors_after_stitching(
     contacts = np.array([min(len(s), len(d)) for s, d in zip(sem_points, design_points)])
     support = np.zeros(n)              # neighbour pairs inside each tile's stitched image ...
     evidence = [[] for _ in range(n)]  # ... and their SEM − design differences
-    found, shifts = {}, np.full((n, 2), np.nan)
+    dimensions = sem_points[0].shape[1] if n else 2
+    found, shifts = {}, np.full((n, dimensions), np.nan)
 
     while waiting.any():
         first = not (support[waiting] > 0).any()  # no waiting tile has a paired neighbour: a new group starts
