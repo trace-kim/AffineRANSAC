@@ -1352,7 +1352,15 @@ tabs need: tiles (`analysis.load_image_tiles` with per-tile progress, or the con
 request (below), SEM stitching
 (`stitch_method`, slipped-pair check), design stitching, the errors at the stitched ("mean") placement, merging,
 the moving window (per stripe with `moving_window_per_stripe`, D123): no drift corrections, no RANSAC. A common shift of all contacts does not
-change the moving-window residual, so the placement is not a parameter. **In-image correction (D141):** with
+change the moving-window residual, so the placement is not a parameter.
+
+**Release: Map data (D172).** The Registration tab's *Map data* menu copies CSV or TSV to the clipboard and
+exports either format to a file. The header is `x, y, dx, dy` (with the chosen delimiter). Each row gives a measured
+point's stitched design position in mask µm (y up) and its moving-window `SEM − design` residual in nm. It uses
+the full run at point resolution, including all stripes and points outside the viewport in either *Values* mode.
+Horizontal L/S rows have a blank `dx` field because only the vertical error is measured.
+
+**In-image correction (D141):** with
 `in_image_correction` (off by default; a parameter of both kinds of folder, release only: `RELEASE_ONLY`) the
 distortion shared by all images (D53) is removed from every tile's SEM centres before the stitching
 (`release/analysis.in_image_corrected`): every tile's contacts paired with its design at the nominal placement, the

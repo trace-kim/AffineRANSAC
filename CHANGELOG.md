@@ -11,6 +11,8 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- The Registration tab's **Map data** menu copies or exports all measured points as CSV or TSV with columns
+  `x`, `y`, `dx`, `dy` (mask µm and residual nm). Horizontal L/S leaves `dx` blank (D172).
 - **Analysis 10.** Horizontal L/S measures each complete line and space in ten x slices in the SEM and design.
   A local break can leave the other slices measurable. Moving-window calibration uses their positions across
   the image and fits tilt and vertical scale only where the measurements support them. Rerun an older L/S

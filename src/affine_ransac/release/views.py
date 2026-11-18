@@ -39,6 +39,9 @@ Everything is drawn relative to an origin in whole µm (OpenGL works in float32)
 import csv
 import io
 from collections import Counter
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import TextIO
 
 import numpy as np
 import pyqtgraph as pg
@@ -1372,6 +1375,15 @@ class RegistrationView(QtWidgets.QWidget):
         copy_profiles.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.profiles_text("\t")))
         export_profiles = QtWidgets.QPushButton("Export profiles CSV...")
         export_profiles.clicked.connect(self.export_profiles)
+        map_data = QtWidgets.QPushButton("Map data")
+        map_data.setToolTip("All measured points across the run. x and y are mask coordinates in µm, "
+                            "dx and dy are registration errors in nm.")
+        map_menu = QtWidgets.QMenu(map_data)
+        map_menu.addAction("Copy TSV", lambda: self.copy_map_data("\t"))
+        map_menu.addAction("Copy CSV", lambda: self.copy_map_data(","))
+        map_menu.addAction("Export CSV...", lambda: self.export_map_data("csv", ","))
+        map_menu.addAction("Export TSV...", lambda: self.export_map_data("tsv", "\t"))
+        map_data.setMenu(map_menu)
         self.copy_buttons = []  # one over every graph (D120)
         for panel in self.panels:
             for plot, items, name in self.graphs_of(panel):
@@ -1392,6 +1404,7 @@ class RegistrationView(QtWidgets.QWidget):
                        self.wiggle):
             row_controls.addWidget(widget)
         row_controls.addStretch(1)
+        row_controls.addWidget(map_data)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.summary)
         layout.addLayout(controls)
@@ -1604,6 +1617,39 @@ class RegistrationView(QtWidgets.QWidget):
         if path:
             with open(path, "w", encoding="utf-8-sig", newline="") as f:  # BOM: Excel reads the µ
                 f.write(self.profiles_text(","))
+
+    def write_map_data(self, out: TextIO, delimiter: str):
+        """Write the full-resolution run in mask µm and residual nm, independent of the view controls."""
+        writer = csv.writer(out, delimiter=delimiter, lineterminator="\n")
+        writer.writerow(("x", "y", "dx", "dy"))
+        positions_um = self.result.design_nm / 1000
+        errors_nm = self.result.moving.residuals
+        unmeasured_x = self.result.horizontal_ls
+        writer.writerows((x, y, None if unmeasured_x else dx, dy)
+                         for (x, y), (dx, dy) in zip(positions_um, errors_nm, strict=True))
+
+    def copy_map_data(self, delimiter: str):
+        out = io.StringIO()
+        self.write_map_data(out, delimiter)
+        QtWidgets.QApplication.clipboard().setText(out.getvalue())
+
+    def export_map_data(self, suffix: str, delimiter: str):
+        dialog = QtWidgets.QFileDialog(self, "Export map data")
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setNameFilter(f"{suffix.upper()} (*.{suffix})")
+        dialog.setDefaultSuffix(suffix)
+        dialog.selectFile(f"map-data.{suffix}")
+        if not dialog.exec():
+            return
+        path = Path(dialog.selectedFiles()[0])
+        try:
+            with TemporaryDirectory(dir=path.parent) as directory:
+                temporary = Path(directory) / path.name
+                with temporary.open("w", encoding="utf-8", newline="") as out:
+                    self.write_map_data(out, delimiter)
+                temporary.replace(path)
+        except OSError as error:
+            QtWidgets.QMessageBox.warning(self, "Export map data", f"Could not save the map data.\n{error}")
 
 
 NOT_IMAGES = ("N/A: contour CSVs hold contact centres only. Area, xCD and yCD are measured on the SEM contours and "

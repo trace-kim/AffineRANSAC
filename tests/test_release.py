@@ -1,5 +1,6 @@
 """The released analyzer (affine_ransac.release), on synthetic folders, without a display."""
 
+import csv
 import os
 import re
 import signal
@@ -15,7 +16,7 @@ import pyqtgraph as pg
 import pytest
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from affine_ransac.analysis import ContactSizes, Settings, contrast_summary, settings_for
+from affine_ransac.analysis import HORIZONTAL_LS, ContactSizes, Settings, contrast_summary, settings_for
 from affine_ransac.io.sem_image import load_sem_image
 from affine_ransac.pipeline import process_tile
 from affine_ransac.registration import largest_ramp, noise_sigma, row_means
@@ -1454,6 +1455,65 @@ def test_the_registration_tab_shows_the_stripes_ticked(tmp_path):
     assert view.stripes.selected() == [1]
     view.stripes.set_selected(range(2))
     assert len(view.error_nm) == len(result.design_nm)
+    view.close()
+
+
+def test_registration_map_data_copies_and_exports_every_point(tmp_path, monkeypatch):
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.stripes.set_selected([1])
+    view.values.setCurrentIndex(1)  # grid average
+    view.arrow_panel.map.vb.setRange(xRange=(0, 0.1), yRange=(0, 0.1), padding=0)
+    expected = np.column_stack([result.design_nm / 1000, result.moving.residuals])
+    assert np.any(view.origin != 0) and len(view.design_nm) < len(expected)
+
+    def save(dialog):
+        assert dialog.acceptMode() == QtWidgets.QFileDialog.AcceptMode.AcceptSave
+        suffix = dialog.defaultSuffix()
+        assert dialog.nameFilters() == [f"{suffix.upper()} (*.{suffix})"]
+        dialog.selectFile(str(tmp_path / "registration"))  # a filename entered without an extension
+        return True
+
+    monkeypatch.setattr(QtWidgets.QFileDialog, "exec", save)
+    menu, = (button.menu() for button in view.findChildren(QtWidgets.QPushButton) if button.text() == "Map data")
+    actions = {action.text(): action for action in menu.actions()}
+    for suffix, delimiter in (("csv", ","), ("tsv", "\t")):
+        actions[f"Copy {suffix.upper()}"].trigger()
+        copied = QtWidgets.QApplication.clipboard().text()
+        header, *rows = csv.reader(copied.splitlines(), delimiter=delimiter)
+        assert header == ["x", "y", "dx", "dy"]
+        np.testing.assert_array_equal(np.asarray(rows, dtype=float), expected)
+        actions[f"Export {suffix.upper()}..."].trigger()
+        assert (tmp_path / f"registration.{suffix}").read_text(encoding="utf-8") == copied
+
+    def fail_write(out, _delimiter):
+        out.write("partial")
+        raise OSError("disk full")
+
+    csv_path = tmp_path / "registration.csv"
+    previous = csv_path.read_bytes()
+    warnings = []
+    monkeypatch.setattr(view, "write_map_data", fail_write)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda parent, title, message: warnings.append(message))
+    actions["Export CSV..."].trigger()
+    assert warnings and "disk full" in warnings[0]
+    assert csv_path.read_bytes() == previous
+    view.close()
+
+    # Horizontal L/S has a vertical residual only. Its drawing uses zero dx for the arrows.
+    residuals = result.moving.residuals.copy()
+    residuals[:, 0] = np.nan
+    result = replace(result, kind="images", settings=replace(result.settings, pattern=HORIZONTAL_LS),
+                     moving=replace(result.moving, residuals=residuals))
+    view = RegistrationView(result, use_opengl=False)
+    view.copy_map_data("\t")
+    _, *rows = csv.reader(QtWidgets.QApplication.clipboard().text().splitlines(), delimiter="\t")
+    assert all(row[2] == "" for row in rows)
+    np.testing.assert_array_equal(np.asarray(rows)[:, [0, 1, 3]].astype(float), expected[:, [0, 1, 3]])
     view.close()
 
 
