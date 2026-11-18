@@ -11,6 +11,12 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- Reduce contour-refinement memory: reuse one float image for smoothing/sign reversal, fill profiles with bounded
+  coordinate maps, and release consumed worker results. Contour extraction and *Load contours* now limit active
+  workers using image dimensions and available RAM/commit capacity, including on kept pools. Denoising,
+  upscaling and measured values are preserved; memory errors name the refinement step and working image size.
+  Synthetic 8192×8192-working-image and full-run equality checks: [memory check](docs/notes/2026-11-18-contour-memory.md).
+  No new dependency or saved-run version change (D166).
 - Further contour CPU work reductions: bounded edge neighbourhoods replace full distance transforms; compact
   point runs use interval sums instead of FFTs; overlap counts use the small shift grid; only the next selected
   candidate is refined. Region medians use grouped selection instead of sorting all upscaled pixels.

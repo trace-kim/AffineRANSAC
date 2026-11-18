@@ -26,7 +26,7 @@ there, as an AnalysisFailed marked stitched_only: comparing contours with the de
 import re
 import time
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -42,6 +42,7 @@ from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, ContactSizes, Se
                                    load_image_tiles, merged_contact_sizes, placement_guide, placement_text,
                                    report_stitching)
 from affine_ransac.contour_stitching import EdgePoints, edge_points, overlap_distances, placed_by_contours
+from affine_ransac.contour_memory import bounded_results, contour_workers
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine, moving_window_per_stripe
 from affine_ransac.geometry.frames import pixel_to_tile_nm, tile_nm_to_pixel
 from affine_ransac.geometry.polygon import polygon_centroid
@@ -297,24 +298,22 @@ def stitch_by_contours(folder, records: list, s: Settings, record, lines: list[s
     record("Pattern contours: the images are stitched by their contours; not compared with the design yet")
     edges, pixels, closed, opened = [], [], 0, 0
     extraction_started, extraction_work, tv_rounds = time.perf_counter(), StepLog(), []
-    with helper_pool() if pool is None else nullcontext(pool) as pool:  # a pool given is left running
-        futures = [pool.submit(_timed_edge_tile, str(r.image_path), tuple(size), any_shape_options(s))
-                   for r, size in zip(records, sizes)]
-        try:
-            for k, future in enumerate(futures):
-                (points, n_closed, n_open, pixel), seconds, counts = future.result()
+    workers = contour_workers([r.image_path for r in records], s.upscale, record, pool=pool)
+    arguments = ((str(r.image_path), tuple(size), any_shape_options(s)) for r, size in zip(records, sizes))
+    with helper_pool(workers) if pool is None else nullcontext(pool) as pool:  # a pool given is left running
+        with closing(bounded_results(pool, _timed_edge_tile, arguments, workers)) as results:
+            for k, ((points, n_closed, n_open, pixel), seconds, counts) in enumerate(results):
                 for name, elapsed in seconds.items():
                     extraction_work.add(name, elapsed)
                 if "total variation rounds" in counts:
                     tv_rounds.append(counts["total variation rounds"])
-                edges.append(points.moved(centers[k]))
+                points.xy += centers[k]  # this worker result is owned here; do not keep a second coordinate array
+                edges.append(points)
                 pixels.append(pixel)
                 closed, opened = closed + n_closed, opened + n_open
                 progress(LOAD_SHARE * (k + 1) / n, f"Contours of image {k + 1} of {n}")
-        finally:
-            for future in futures:
-                future.cancel()  # after an error or a cancel (D152), the images not started are not read
     record(f"{n} images: {closed} closed and {opened} open contours, {sum(len(e.xy) for e in edges)} edge points")
+    record(f"Contour edge arrays retained: {sum(e.xy.nbytes + e.normals.nbytes for e in edges) / 2 ** 30:.3f} GiB")
     record(f"Contour extraction: {time.perf_counter() - extraction_started:.3f} s elapsed; "
            f"denoise={s.denoise}, upscale={s.upscale}")
     for name, elapsed in extraction_work.seconds.items():
@@ -577,26 +576,23 @@ def _tile_any_contours(image_path, fov_nm, options: dict) -> tuple[list[np.ndarr
     return [local(c) for c in detected.points], [local(c) for c in refined.points], detected.closed
 
 
-def read_any_contours(result: ReleaseResult, progress, pool: ProcessPoolExecutor | None = None) -> "TileContours":
+def read_any_contours(result: ReleaseResult, progress, pool: ProcessPoolExecutor | None = None,
+                      log=lambda text: None) -> "TileContours":
     """read_contours of a run with pattern contours (D156): each image's contours of any pattern found again with
     the run's settings. Its "contacts" are contours, open ones too; their centres are the means of their points,
     only to tell which are in view."""
     s = result.settings
     tiles, detected, refined, closed = [], [], [], []
-    with helper_pool() if pool is None else nullcontext(pool) as pool:
-        futures = [pool.submit(_tile_any_contours, path, tuple(size), any_shape_options(s))
-                   for path, size in zip(result.image_paths, result.sizes)]
-        try:
-            for k, future in enumerate(futures):
-                found, moved, whole = future.result()
+    workers = contour_workers(result.image_paths, s.upscale, log, pool=pool)
+    arguments = ((path, tuple(size), any_shape_options(s)) for path, size in zip(result.image_paths, result.sizes))
+    with helper_pool(workers) if pool is None else nullcontext(pool) as pool:
+        with closing(bounded_results(pool, _tile_any_contours, arguments, workers)) as results:
+            for k, (found, moved, whole) in enumerate(results):
                 tiles.append(np.full(len(found), k))
                 detected += found
                 refined += moved
                 closed += list(whole)
-                progress((k + 1) / len(futures), f"Contours of tile {k + 1} of {len(futures)}")
-        finally:
-            for future in futures:
-                future.cancel()
+                progress((k + 1) / len(result.image_paths), f"Contours of tile {k + 1} of {len(result.image_paths)}")
     start = np.concatenate([[0], np.cumsum([len(c) + 2 for c in detected])]).astype(np.int64)
     centres = [np.array([np.nanmean(c, axis=0) for c in found]).reshape(-1, 2) for found in (detected, refined)]
     return TileContours(np.concatenate(tiles) if tiles else np.empty(0, int), start,
@@ -626,7 +622,7 @@ def read_contours(result: ReleaseResult, progress: Callable[[float, str], None] 
     (MaskReg's Cancel, D152), the tiles not started are dropped."""
     s = result.settings
     if s.pattern == "contours":
-        return read_any_contours(result, progress, pool)
+        return read_any_contours(result, progress, pool, log)
     arguments = [(path, None, center, size, (s.layer, s.datatype))
                  for path, center, size in zip(result.image_paths, result.centers, result.sizes)]
     tiles, detected, refined, detected_centres, refined_centres, differ = [], [], [], [], [], []

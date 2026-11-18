@@ -1,5 +1,8 @@
 # Contour CPU speed and output comparison, 2026-11-17
 
+These measurements describe production revision `0fdac5f`. D166 later reduces refinement memory and selects
+the production worker count from available memory; its concurrency can differ from the fixed two-worker test here.
+
 The user asked for the speed of the latest changes and whether they change the results. This renews the request
 for measurement after the earlier cancelled benchmark. These measurements include total-variation denoising
 and 4× upscaling. They do not reuse the withdrawn no-denoising/no-upscaling estimate.

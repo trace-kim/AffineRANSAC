@@ -33,6 +33,51 @@ def vertical_lines(x, y):
     return ((x > 60.3) & (x < 85.7)) | ((x > 180.0) & (x < 201.4))
 
 
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("blur", [0.0, 1.3])
+def test_refinement_reuses_one_float_image_and_preserves_values(monkeypatch, dark, blur):
+    import affine_ransac.features.contours as module
+
+    image = shape_image(vertical_lines)
+    detected, labels = module.detect_contours(image, dark=dark)
+    expected_image = image.astype(np.float32)
+    if blur:
+        expected_image = cv2.GaussianBlur(expected_image, (0, 0), blur)
+    expected_image = (1.0 if dark else -1.0) * expected_image
+    before, sampled = image.copy(), []
+    original_blur, original_sample = cv2.GaussianBlur, module.sample_profiles
+
+    def in_place_blur(src, kernel, sigma, *, dst):
+        assert src is dst
+        return original_blur(src, kernel, sigma, dst=dst)
+
+    def sample(signed, *args):
+        np.testing.assert_array_equal(signed, expected_image)
+        sampled.append(1)
+        return original_sample(signed, *args)
+
+    monkeypatch.setattr(cv2, "GaussianBlur", in_place_blur)
+    monkeypatch.setattr(module, "sample_profiles", sample)
+    module.refine_contours(image, detected, labels, dark=dark, blur_sigma=blur)
+    assert sampled
+    np.testing.assert_array_equal(image, before)
+
+
+def test_refinement_memory_error_names_working_size_and_failed_step(monkeypatch):
+    import affine_ransac.pipeline as pipeline
+    from affine_ransac.step_log import StepLog, timed
+
+    def fail(*args, **kwargs):
+        with timed(args[-1], "smooth the image for the edges"):
+            raise MemoryError("unable to allocate test array")
+
+    monkeypatch.setattr(pipeline, "refine_contours", fail)
+    log = StepLog()
+    with pytest.raises(MemoryError, match="smooth the image for the edges; working image 1200 x 800, upscale=4"):
+        find_contours(shape_image(vertical_lines), upscale=4, log=log, **BRIGHT)
+    assert log.failed_step == "smooth the image for the edges"
+
+
 def diagonal_line(x, y):
     """A line 24 px wide, 30 degrees off the x axis, across the whole image: its middle through (150, 100)."""
     return np.abs(across_diagonal(x, y)) < 12

@@ -10,6 +10,7 @@ class StepLog:
     def __init__(self):
         self.seconds: dict[str, float] = {}
         self.counts: dict[str, int] = {}
+        self.failed_step: str | None = None
 
     def add(self, step: str, seconds: float):
         """Add to a step's time (a step run several times adds up)."""
@@ -22,6 +23,10 @@ def timed(log: StepLog | None, step: str):
     start = time.perf_counter()
     try:
         yield
+    except Exception:
+        if log is not None and log.failed_step is None:
+            log.failed_step = step
+        raise
     finally:
         if log is not None:
             log.add(step, time.perf_counter() - start)

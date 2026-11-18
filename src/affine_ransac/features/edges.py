@@ -53,14 +53,16 @@ def outward_normals(contour: np.ndarray, span: int = 3) -> np.ndarray:
 
 def sample_profiles(image: np.ndarray, points: np.ndarray, directions: np.ndarray, offsets: np.ndarray) -> np.ndarray:
     """Bilinearly sampled intensity at points[m] + offsets[t] * directions[m], shape (M, T)."""
-    x = (points[:, :1] + directions[:, :1] * offsets).astype(np.float32)
-    y = (points[:, 1:] + directions[:, 1:] * offsets).astype(np.float32)
     image = image.astype(np.float32, copy=False)  # no second copy of a smoothed (upscaled) image
-    chunk = 30000  # cv2.remap allows at most 32767 output rows per call
-    return np.concatenate([
-        cv2.remap(image, x[i:i + chunk], y[i:i + chunk], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-        for i in range(0, len(x), chunk)
-    ]).reshape(len(x), len(offsets))
+    # Bound the coordinate maps as well as cv2.remap's 32767 output-row limit, even with finely sampled profiles.
+    chunk = min(30000, max(1, 2 ** 20 // max(1, len(offsets))))
+    profiles = np.empty((len(points), len(offsets)), np.float32)
+    for start in range(0, len(points), chunk):
+        p, n = points[start:start + chunk], directions[start:start + chunk]
+        x = (p[:, :1] + n[:, :1] * offsets).astype(np.float32)
+        y = (p[:, 1:] + n[:, 1:] * offsets).astype(np.float32)
+        cv2.remap(image, x, y, cv2.INTER_LINEAR, dst=profiles[start:start + chunk], borderMode=cv2.BORDER_REPLICATE)
+    return profiles
 
 
 def edge_offsets(profiles: np.ndarray, offsets: np.ndarray, rising: bool = True) -> np.ndarray:

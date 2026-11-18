@@ -455,21 +455,23 @@ HEARTBEAT_S = 10.0  # detailed loading log: a status line after every this long 
 _worker_ready_at = None  # in a worker process: when it was ready for its first tile (time.time())
 
 
-def helper_pool() -> ProcessPoolExecutor:
+def helper_pool(workers: int | None = None) -> ProcessPoolExecutor:
     """The worker processes for the tile work (load_image_tiles, release.analysis.read_contours): worker_count() of
-    them, started as the first tiles are handed to them; each ends itself if the process that started it ends (D151)."""
-    return ProcessPoolExecutor(max_workers=worker_count(), initializer=_worker_ready)
+    them unless workers is given for a memory limit, started as the first tiles are handed to them; each ends
+    itself if the process that started it ends (D151)."""
+    workers = worker_count() if workers is None else workers
+    return ProcessPoolExecutor(max_workers=workers, initializer=_worker_ready, initargs=(workers,))
 
 
-def _worker_ready():
+def _worker_ready(workers: int | None = None):
     """Run by each tile-loading worker once it has started, before its first tile: when it was ready; and a thread
     that ends the worker once the process that started it has ended (D151: a worker MaskReg keeps for later runs
     would otherwise outlive a MaskReg that crashed or was ended in Task Manager)."""
     global _worker_ready_at
     _worker_ready_at = time.time()
-    # total variation (features.total_variation) would start a thread per logical core in every worker: one worker
-    # per two cores (worker_count) gets two. Read when numba is first imported, which is after this.
-    os.environ.setdefault("NUMBA_NUM_THREADS", str(max(1, (os.cpu_count() or 2) // worker_count())))
+    # Divide total-variation threads between the active workers: the default pool gets two each; a memory-limited
+    # pool can use more per worker. Read when numba is first imported, which is after this.
+    os.environ.setdefault("NUMBA_NUM_THREADS", str(max(1, (os.cpu_count() or 2) // (workers or worker_count()))))
     threading.Thread(target=_end_with_parent, daemon=True).start()
 
 

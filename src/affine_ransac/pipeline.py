@@ -34,6 +34,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -332,8 +333,15 @@ def find_contours(
         big = upscaled_image(image, f)
     detected, labels = detect_contours(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
                                        max_area_px * f ** 2 or None, detection, normal_span * f, log)
-    refined = detected if refinement == "none" else refine_contours(
-        big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement, log)
+    try:
+        refined = detected if refinement == "none" else refine_contours(
+            big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement, log)
+    except (MemoryError, cv2.error) as error:
+        if isinstance(error, cv2.error) and error.code != cv2.Error.StsNoMem:
+            raise
+        step = log.failed_step if log is not None and log.failed_step else "refine contours"
+        raise MemoryError(f"Contour refinement: {step}; working image {big.shape[1]} x {big.shape[0]}, "
+                          f"upscale={f}, denoise={denoise}. {error}") from error
     with timed(log, "back to the image's own pixels"):
         return in_image_contours(detected, f), in_image_contours(refined, f)
 

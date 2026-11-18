@@ -142,8 +142,11 @@ def refine_contours(image: np.ndarray, contours: Contours, labels: np.ndarray, d
         return contours
     sign = 1.0 if dark else -1.0  # bright regions: the rules on the negative image, as for contacts
     with timed(log, "smooth the image for the edges"):
-        image = image.astype(np.float32)
-        signed = sign * (cv2.GaussianBlur(image, (0, 0), blur_sigma) if blur_sigma > 0 else image)
+        signed = image.astype(np.float32)
+        if blur_sigma > 0:
+            cv2.GaussianBlur(signed, (0, 0), blur_sigma, dst=signed)
+        if sign < 0:
+            np.negative(signed, out=signed)
     offsets = np.arange(-search_px, search_px + step_px / 2, step_px)
     all_points, all_normals = np.concatenate(contours.points), np.concatenate(contours.normals)
     with timed(log, "sample the image across the edge at every point"):

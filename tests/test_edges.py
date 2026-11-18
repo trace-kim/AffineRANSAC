@@ -120,6 +120,32 @@ def test_sample_profiles_handles_more_points_than_one_remap_call():
     np.testing.assert_allclose(profiles[[0, -1]], [[43, 45], [43, 45]])
 
 
+def test_profile_sampling_uses_bounded_maps_and_matches_the_previous_calculation(monkeypatch):
+    rng = np.random.default_rng(166)
+    image = rng.normal(90, 20, (64, 67)).astype(np.float32)
+    points = rng.uniform(-3, 68, (70001, 2))
+    normals = rng.normal(size=points.shape)
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    offsets = np.linspace(-5, 5, 41)
+    x = (points[:, :1] + normals[:, :1] * offsets).astype(np.float32)
+    y = (points[:, 1:] + normals[:, 1:] * offsets).astype(np.float32)
+    original = cv2.remap
+    expected = np.concatenate([original(image, x[i:i + 30000], y[i:i + 30000], cv2.INTER_LINEAR,
+                                       borderMode=cv2.BORDER_REPLICATE) for i in range(0, len(points), 30000)])
+    destinations = []
+
+    def remap(image, x, y, interpolation, *, dst, borderMode):
+        assert len(x) <= 30000 and len(y) <= 30000
+        assert x.size <= 2 ** 20 and y.size <= 2 ** 20
+        destinations.append(dst)
+        return original(image, x, y, interpolation, dst=dst, borderMode=borderMode)
+
+    monkeypatch.setattr(cv2, "remap", remap)
+    found = sample_profiles(image, points, normals, offsets)
+    np.testing.assert_array_equal(found, expected)
+    assert len(destinations) == 3 and all(np.shares_memory(dst, found) for dst in destinations)
+
+
 def banded_image(centres, radii, size, shading=0.0, noise=0.0, seed=0, oversample=4):
     """Contacts as an SEM shows them (D122): a dark interior (radius px, sub-pixel coverage) and a bright band just
     outside its edge, the band's brightness x (1 + shading cos(angle)) (detector shading), on a grey background;

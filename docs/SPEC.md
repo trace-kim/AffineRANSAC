@@ -454,6 +454,13 @@ the same float32/float64 arithmetic, including even-sized groups. Tests compare 
 refined contours with total-variation denoising and 4× upscaling enabled. The preprocessing, TV solver and
 upscaling settings are unchanged; no pixels are dropped from any requested region.
 
+**Refinement memory (D166).** Convert to one owned float32 image, blur into that same buffer and reverse its sign
+in place for bright regions. Do not retain separate conversion, blur and signed images. `sample_profiles`
+allocates the final profile array once and fills it directly: each remap builds only its own coordinate maps,
+with at most 30,000 rows and about 2²⁰ samples per map. The output profiles and smoothed pixel values are unchanged.
+A memory failure during refinement names the working-image dimensions, preprocessing settings and failed timed
+step when available. Denoising, upscaling, edge samples and precision are not reduced to avoid allocation errors.
+
 No radius or centre is assumed, so either rule works for any shape (circles, ellipses, rectangles).
 The refined centre is the area centroid of the refined contour. A point without a tangent (its ±3
 neighbours coincide, at the tip of a 1 px wide spur) is not moved (D69). Known limit: at sharply curved
@@ -937,6 +944,22 @@ stage errors, noise 0.3 nm): circles, both ways within 0.2 nm; straight lines, a
 unchanged; lines a pitch apart with a stage error above half a pitch, the nearest position, a whole pitch off,
 flagged; lines with their own roughness of 1.5 nm, the true row and the position along within a pixel, not flagged.
 `tests/test_release.py`: a folder of three images of rendered bright lines, across within 0.3 nm.
+
+**Extraction scheduling (D166).** `contour_memory.contour_workers` reads image dimensions from their headers
+using the existing Qt dependency and budgets for the largest upscaled image. Per active task the planning
+allowance is `max(1 GiB, 32 × working pixels + 256 MiB)`; the floor covers numerical-library imports and thread
+buffers. Active tasks use at most 60% of the smaller of free RAM and free commit capacity (`machine.memory_gb`),
+limited further by the CPU/pool capacity and tile count, with at least one task. Unknown memory or an unreadable
+header permits one task at a time; decoding still reports an invalid image normally. This is a conservative
+planning estimate, not a bound on arbitrary contour geometry or a guarantee that one image fits.
+
+An owned pool is created with that count, and its TV threads are divided among those workers. A borrowed pool
+is left open and retains its thread configuration, but the same active-task limit applies. `bounded_results`
+submits at most that many jobs and yields them in input order, dropping each consumed Future before yielding its
+result and cancelling pending work on error/cancel. The run shifts owned worker coordinates in place, so it does
+not retain both local and translated copies through stitching. *Load contours* for pattern contours uses the
+same admission and bounded submission. The log names the worker limit, memory headroom and estimated allowance;
+after extraction it gives the retained edge-array size. No algorithm thresholds or saved-run versions change.
 
 The timing log (`StepLog`) lists overlap discovery/counting, grid search, sample/tree preparation, exact candidate
 comparison, refinement and the final overlap check, in seconds. Counts give images, overlaps, edge points, grid
