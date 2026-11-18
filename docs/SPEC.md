@@ -1560,10 +1560,9 @@ tab. No SEM images or design behind the maps.
 
 **Release: Contour diagnosis (D129).** *Analysis → Contour diagnosis...* (Ctrl+D; `release/contour_dialog.ContourDialog`,
 a window of its own, modal like *Parameters*). **Load image...** opens one SEM image (any file the loader reads; it
-starts in the open folder), shown in the pixel frame (x, y px, y down; no grid over the image) as the contacts are found
-in it (`pipeline.prepared_image`: with `background_px`, the flattened image, D130; with `upscale`, the upscaled image,
-stretched over the image's pixel frame so that the axes and contours stay in pixels of the image as loaded, D131;
-denoised before that with `denoise`, D132; see below for the equalized preview). **Original image** (a check
+starts in the open folder). The preview shows the input to thresholding in the pixel frame (x, y px, y down; no grid
+over the image). Preparation can flatten the background (D130), denoise (D132) and upscale (D131). The upscaled
+image covers the same area so the axes and contours stay in pixels of the loaded image. **Original image** (a check
 box at the start of the layers' row, off at start, D160) shows the image as loaded instead, over the same pixel
 frame and under the same layers; the grey level under the cursor is then of that image. Beside it the contour
 settings (D128) in
@@ -1577,10 +1576,10 @@ method and the rule): *Threshold mask* (the pixels the threshold takes as contac
 D76), *Detected contours* and *centres* (magenta), *Refined contours* and *centres* (cyan; not offered with refinement
 none, D124), shown once contours are retrieved, as after *Load contours* (D113). One line in words: how many contacts were
 found, the method and the threshold's grey level, and the regions left out per reason (`DetectedContacts.left_out`, then
-the contrast check); invalid settings are named there instead, in red (`check_settings`), and cannot be applied. With
-`equalize` (D167, in *Detection*; `clahe_clip` and `clahe_tiles` greyed unless adaptive), the preview shows the blurred
-and equalized input to thresholding (D168). The image preview updates with image settings even in manual mode. The
-mask uses the same input, and edge refinement uses the prepared image's grey levels. The summary gives the global
+the contrast check); invalid settings are named there instead, in red (`check_settings`), and cannot be applied.
+The preview includes Gaussian smoothing at `detection_blur_px` (0 disables it, D169) and any `equalize` selected
+(D167, in *Detection*; `clahe_clip` and `clahe_tiles` greyed unless adaptive). Image settings refresh it in manual
+mode too (D168). The mask uses the same input, and edge refinement uses the prepared image's grey levels. The summary gives the global
 threshold in grey levels before equalization and the adaptive threshold in grey levels of the equalized image.
 Below the image, the cursor shows x, y and the grey level of the displayed pixel. *Copy image* / *Save image...* as every figure.
 **Apply to parameters** keeps the settings for the next run, as *Parameters* does (`MaskRegWindow.apply_parameters`: the

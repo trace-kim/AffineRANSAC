@@ -1,8 +1,7 @@
 """Contour diagnosis (docs/SPEC.md D129): try the contour settings (analysis.CONTOUR_SETTINGS, D128) on one SEM image
 before a run uses them.
 
-ContourDialog shows a loaded image, as the contacts are found in it (with the background flattened, D130, denoised,
-D132, and upscaled, D131, if asked), with the contacts the settings find in it, exactly as a run finds them
+ContourDialog previews the image used for thresholding, with the contacts the settings find in it, exactly as a run finds them
 (pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
 (after edge refinement: what the run measures) and, on request, the threshold mask (the pixels the threshold takes as
 contact). One line says how many contacts were found and why the other regions were left out. Get contours starts a
@@ -13,8 +12,8 @@ With PATTERN lines (D153) it finds horizontal lines instead (pipeline.find_lines
 detected and refined edges, and the line says how many lines were found, their edge roughness and the noise per column.
 With PATTERN contours (D155) it finds the contours of any pattern (pipeline.find_contours): the contour layers draw
 them, closed or open, and the line says how many were found and how many of them are open.
-With EQUALIZE (D167) the preview shows the equalized image used to choose the threshold. Image previews update
-independently of contour retrieval (D168).
+The preview includes detection blur (D169) and EQUALIZE (D167). Image previews update independently of contour
+retrieval (D168).
 
 Coordinates are the pixel frame: (x, y) px, y down, pixel centres at whole numbers (docs/SPEC.md §3).
 """
@@ -62,7 +61,7 @@ READY = "Click <i>Get contours</i> to retrieve contours for these settings."
 @dataclass
 class Diagnosis:
     """What the window shows of one image with one set of settings."""
-    image: np.ndarray           # the prepared image or, with equalization, the threshold input
+    image: np.ndarray           # the detection blur and equalization result passed to thresholding
     detected: DetectedContacts | LineEdges | Contours  # after the contrast check (lines, contours: none)
     refined: DetectedContacts | LineEdges | Contours   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
@@ -81,10 +80,8 @@ def threshold_image_options(s: Settings) -> tuple:
 
 def preview_key(s: Settings) -> tuple:
     blur, method, clip, tiles = threshold_image_options(s)
-    equalization = () if method == "none" else (method, blur)
-    if method == "adaptive":
-        equalization += (clip, tiles)
-    return preparation_key(s), s.upscale, equalization
+    adaptive_options = (clip, tiles) if method == "adaptive" else ()
+    return preparation_key(s), s.upscale, blur, method, adaptive_options
 
 
 class PreparedImageCache:
@@ -110,9 +107,7 @@ class PreparedImageCache:
 
 def preview_image(image: np.ndarray, s: Settings, preparation: PreparedImageCache) -> np.ndarray:
     prepared = upscaled_image(preparation.prepare(image, s, StepLog()), s.upscale)
-    if s.equalize != "none":
-        return threshold_image(prepared, *threshold_image_options(s))[0]
-    return prepared
+    return threshold_image(prepared, *threshold_image_options(s))[0]
 
 
 def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | None = None) -> Diagnosis:
@@ -134,10 +129,8 @@ def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | N
         log.add("refine their edges", seconds["refine"])
     with timed(log, "upscale and threshold mask again, for the display"):
         blur, equalize, clip, tiles = threshold_image_options(s)
-        shown = upscaled_image(flat, s.upscale)
-        mask, _, pixels = contact_mask_and_image(shown, s.dark_contacts, blur, s.detection, equalize, clip, tiles)
-        if equalize != "none":
-            shown = pixels
+        upscaled = upscaled_image(flat, s.upscale)
+        mask, _, shown = contact_mask_and_image(upscaled, s.dark_contacts, blur, s.detection, equalize, clip, tiles)
     return Diagnosis(shown, detected, refined, low_contrast, mask, log)
 
 
@@ -346,7 +339,7 @@ class ContourDialog(QtWidgets.QDialog):
         show = QtWidgets.QHBoxLayout()
         show.addWidget(QtWidgets.QLabel("Show:"))
         self.original_box = QtWidgets.QCheckBox("Original image")
-        self.original_box.setToolTip("Show the image as loaded, before preprocessing and equalization")
+        self.original_box.setToolTip("Show the image as loaded, before preprocessing, smoothing and equalization")
         self.original_box.toggled.connect(self.show_image)
         show.addWidget(self.original_box)
         for name in LAYERS:

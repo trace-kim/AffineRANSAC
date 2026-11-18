@@ -11,6 +11,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- Contour diagnosis previews the Gaussian smoothing applied by `DETECTION_BLUR_PX`, including when equalization is off (D169).
 - Contour diagnosis retrieves contours on **Get contours**. Tick **Auto retrieve** to retrieve them on image load
   and after settings changes. Global and adaptive histogram equalization update the preview as you edit (D168).
 - Detection setting `equalize` (none by default; global, adaptive with `clahe_clip` and `clahe_tiles`): the

@@ -254,6 +254,30 @@ def test_settings_that_change_nothing_are_greyed_out(tmp_path):
     assert not dialog.boxes["Refined contours"].isEnabled() and not dialog.layers["Refined contours"].isVisible()
 
 
+def test_gaussian_smoothing_updates_the_preview_without_retrieving_contours(tmp_path):
+    dialog, path = open_dialog(tmp_path, replace(SETTINGS, detection_blur_px=0), automatic=False)
+    image = load_sem_image(path)
+    np.testing.assert_array_equal(dialog.image_item.image, image)
+
+    dialog.editors["detection_blur_px"].setValue(3.0)
+    settle(dialog)
+    smoothed = cv2.GaussianBlur(image, (0, 0), sigmaX=3.0)
+    np.testing.assert_array_equal(dialog.image_item.image, smoothed)
+    assert not dialog.log_box.toPlainText()
+
+    dialog.search_button.click()
+    settle(dialog)
+    np.testing.assert_array_equal(dialog.image_item.image, smoothed)
+    _, mask = cv2.threshold(smoothed, 0, 1, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, mask)
+
+    searches = dialog.log_box.toPlainText()
+    dialog.editors["detection_blur_px"].setValue(0)
+    settle(dialog)
+    np.testing.assert_array_equal(dialog.image_item.image, image)
+    assert dialog.log_box.toPlainText() == searches
+
+
 def test_with_equalization_the_mask_and_the_line_are_those_of_the_equalized_threshold(tmp_path):
     """D167: the threshold mask is that of the run's equalized threshold, the contacts those a run finds, and the line
     names the equalization; adaptive with the threshold edge rule is refused, in red."""
@@ -301,23 +325,22 @@ def test_with_equalization_the_mask_and_the_line_are_those_of_the_equalized_thre
 
     dialog.editors["equalize"].setCurrentText("none")
     settle(dialog)
-    np.testing.assert_array_equal(dialog.image_item.image, prepared_image(image, upscale=2))
+    np.testing.assert_array_equal(dialog.image_item.image, blurred)
     assert dialog.log_box.toPlainText() == past_searches
 
 
 def test_with_the_background_flattened_the_window_shows_the_image_the_contacts_are_found_in(tmp_path):
-    """D130: the image shown, its threshold mask and the grey level under the cursor are those the contacts are found
-    in; the threshold edge rule is a choice."""
+    """D130: the preview and threshold mask use the flattened image; the threshold edge rule is a choice."""
     dialog, path = open_dialog(tmp_path)
     image = load_sem_image(path)
-    np.testing.assert_array_equal(dialog.image_item.image, image)  # flattening off: the image as loaded
+    np.testing.assert_array_equal(dialog.image_item.image, cv2.GaussianBlur(image, (0, 0), sigmaX=1.5))
 
     dialog.editors["background_px"].setValue(40)
     dialog.editors["refinement"].setCurrentText("threshold")
     settle(dialog)
     flattened = prepared_image(image, 40.0)
     s = replace(SETTINGS, background_px=40.0, refinement="threshold")
-    np.testing.assert_array_equal(dialog.image_item.image, flattened)
+    np.testing.assert_array_equal(dialog.image_item.image, cv2.GaussianBlur(flattened, (0, 0), sigmaX=1.5))
     np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, contact_mask(flattened, method="otsu")[0])
     x, y = dialog.layers["Refined centres"].getData()
     np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
@@ -333,7 +356,7 @@ def test_upscaled_the_window_shows_the_upscaled_image_over_the_image_as_loaded(t
     settle(dialog)
     s = replace(SETTINGS, upscale=2)
     big = prepared_image(image, upscale=2)
-    np.testing.assert_array_equal(dialog.image_item.image, big)
+    np.testing.assert_array_equal(dialog.image_item.image, cv2.GaussianBlur(big, (0, 0), sigmaX=3.0))
     np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, contact_mask(big, method="otsu",
                                                                                        blur_sigma=1.5 * 2)[0])
     covered = QtCore.QRectF(-0.5, -0.5, image.shape[1], image.shape[0])
@@ -353,8 +376,8 @@ def test_denoised_the_window_shows_the_image_denoised_then_upscaled(tmp_path):
     dialog.editors["upscale"].setValue(2)
     settle(dialog)
     s = replace(SETTINGS, denoise="median", median_px=5, upscale=2)
-    np.testing.assert_array_equal(dialog.image_item.image, prepared_image(image, denoise="median", median_px=5,
-                                                                          upscale=2))
+    denoised = prepared_image(image, denoise="median", median_px=5, upscale=2)
+    np.testing.assert_array_equal(dialog.image_item.image, cv2.GaussianBlur(denoised, (0, 0), sigmaX=3.0))
     x, y = dialog.layers["Refined centres"].getData()
     np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
     assert "of the image denoised (median) and upscaled 2×" in dialog.summary.text() and dialog.values() == s
@@ -369,7 +392,7 @@ def test_original_image_shows_the_image_as_loaded_in_place_of_the_one_searched(t
     dialog.editors["denoise"].setCurrentText("median")
     dialog.editors["upscale"].setValue(2)
     settle(dialog)
-    searched = prepared_image(image, denoise="median", upscale=2)
+    searched = cv2.GaussianBlur(prepared_image(image, denoise="median", upscale=2), (0, 0), sigmaX=3.0)
     np.testing.assert_array_equal(dialog.image_item.image, searched)
 
     dialog.original_box.setChecked(True)
