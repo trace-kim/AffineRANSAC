@@ -31,14 +31,16 @@ from test_release import make_window
 SETTINGS = replace(DEFAULTS, detection="otsu")  # the synthetic tiles are found with otsu (test_release_versions)
 
 
-def open_dialog(tmp_path, settings=SETTINGS, image=None):
-    """The window with a synthetic tile (or this image) loaded and its contacts found; and the tile's path."""
+def open_dialog(tmp_path, settings=SETTINGS, image=None, *, automatic=True):
+    """The window with a synthetic tile (or this image) loaded; and the tile's path."""
     style.setup()
     pg.mkQApp()
     path = tmp_path / "tile.png"
     image = render_tile(LATTICE, (0.0, 0.0), FOV, SIZE, seed=1) if image is None else image
     cv2.imencode(".png", image)[1].tofile(str(path))
     dialog = ContourDialog(settings, str(tmp_path))
+    if automatic:
+        dialog.auto_box.setChecked(True)
     dialog.load_image(str(path))
     settle(dialog)
     return dialog, path
@@ -73,6 +75,38 @@ def test_the_window_shows_the_contacts_a_run_finds(tmp_path):
     assert [name for name, box in dialog.boxes.items() if box.isChecked()] == \
         ["Detected contours", "Detected centres", "Refined contours", "Refined centres"]
     assert not dialog.layers["Threshold mask"].isVisible() and dialog.layers["Refined contours"].isVisible()
+
+
+def test_contours_require_a_click_until_automatic_retrieval_is_enabled(tmp_path):
+    dialog, path = open_dialog(tmp_path, automatic=False)
+    assert not dialog.auto_box.isChecked()
+    assert dialog.search_button.isEnabled()
+    assert not dialog.log_box.toPlainText()
+    assert not dialog.layers["Refined contours"].isVisible()
+
+    dialog.search_button.click()
+    settle(dialog)
+    assert dialog.layers["Refined contours"].isVisible()
+    assert "contacts found" in dialog.summary.text()
+    first = dialog.log_box.toPlainText()
+
+    dialog.editors["max_area_px"].setValue(1)
+    settle(dialog)
+    assert "Get contours" in dialog.summary.text()
+    assert not dialog.layers["Refined contours"].isVisible()
+    assert dialog.log_box.toPlainText() == first
+
+    dialog.auto_box.setChecked(True)
+    settle(dialog)
+    assert "0 contacts found" in dialog.summary.text()
+    second = dialog.log_box.toPlainText()
+    assert second != first
+
+    dialog.auto_box.setChecked(False)
+    dialog.load_image(str(path))
+    settle(dialog)
+    assert dialog.log_box.toPlainText() == second
+    assert not dialog.layers["Refined contours"].isVisible()
 
 
 def test_a_change_finds_the_contacts_again_with_the_newest_settings(tmp_path):
@@ -166,12 +200,15 @@ def test_new_image_during_search_does_not_reuse_old_preparation(tmp_path, monkey
     dialog = ContourDialog(SETTINGS)
     try:
         dialog.load_image(str(first))
+        dialog.search_button.click()
         assert entered.wait(10)
         old_cache = dialog.preparation
         dialog.load_image(str(second))
         assert dialog.preparation is not old_cache
         finish.set()
         settle(dialog)
+        assert not dialog.log_box.toPlainText()  # the old search must not start another in manual mode
+        assert not dialog.layers["Refined contours"].isVisible()
         np.testing.assert_array_equal(dialog.prepared, np.full((80, 90), 140, np.uint8))
         assert dialog.preparation.image is dialog.image
         # A later downstream change should reuse the second image, with no further preparation.
@@ -179,8 +216,9 @@ def test_new_image_during_search_does_not_reuse_old_preparation(tmp_path, monkey
             raise AssertionError("preprocessing ran again")
         monkeypatch.setattr(contour_dialog, "prepared_image", unexpected)
         dialog.editors["min_area_px"].setValue(50)
+        dialog.search_button.click()
         settle(dialog)
-        assert "could not be found" not in dialog.summary.text()
+        assert "contacts found" in dialog.summary.text()
         assert "reuse flattened and denoised image" in dialog.log_box.toPlainText().strip().split("\n\n")[-1]
     finally:
         finish.set()
@@ -219,26 +257,52 @@ def test_settings_that_change_nothing_are_greyed_out(tmp_path):
 def test_with_equalization_the_mask_and_the_line_are_those_of_the_equalized_threshold(tmp_path):
     """D167: the threshold mask is that of the run's equalized threshold, the contacts those a run finds, and the line
     names the equalization; adaptive with the threshold edge rule is refused, in red."""
-    dialog, path = open_dialog(tmp_path)
+    dialog, path = open_dialog(tmp_path, automatic=False)
     image = load_sem_image(path)
-    for method, words in (("global", "otsu on the equalized histogram, threshold at grey level"),
-                          ("adaptive", "otsu after adaptive equalization, threshold at grey level")):
+    blurred = cv2.GaussianBlur(prepared_image(image, upscale=2), (0, 0), sigmaX=3.0)
+    dialog.editors["upscale"].setValue(2)
+    dialog.editors["clahe_tiles"].setValue(4)
+    past_searches = ""
+    for method, expected, words in (
+        ("global", cv2.equalizeHist(blurred), "otsu on the equalized histogram, threshold at grey level"),
+        ("adaptive", cv2.createCLAHE(2.0, (4, 4)).apply(blurred),
+         "otsu after adaptive equalization, threshold at grey level"),
+    ):
         dialog.editors["equalize"].setCurrentText(method)
-        dialog.editors["clahe_tiles"].setValue(4)
         settle(dialog)
-        s = replace(SETTINGS, equalize=method, clahe_tiles=4)
+        assert dialog.log_box.toPlainText() == past_searches
+        np.testing.assert_array_equal(dialog.image_item.image, expected)
+
+        dialog.search_button.click()
+        settle(dialog)
+        np.testing.assert_array_equal(dialog.image_item.image, expected)
+        s = replace(SETTINGS, equalize=method, clahe_tiles=4, upscale=2)
         assert dialog.values() == s
-        mask, threshold = contact_mask(image, method="otsu", equalize=method, clahe_tiles=4)
+        mask, threshold = contact_mask(prepared_image(image, upscale=2), blur_sigma=3.0, method="otsu",
+                                       equalize=method, clahe_tiles=4)
         np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, mask)
         x, y = dialog.layers["Refined centres"].getData()
         np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
         assert f"({words} {threshold:.0f}" in dialog.summary.text()
-    assert "of the equalized image" in dialog.summary.text()  # adaptive: not a grey level of the image
+        frame = "before equalization" if method == "global" else "of the equalized image"
+        assert frame in dialog.summary.text()
+        past_searches = dialog.log_box.toPlainText()
+
+    dialog.original_box.setChecked(True)
+    np.testing.assert_array_equal(dialog.image_item.image, image)
+    dialog.original_box.setChecked(False)
+    np.testing.assert_array_equal(dialog.image_item.image, expected)
 
     dialog.editors["refinement"].setCurrentText("threshold")
     settle(dialog)
     assert "adaptive cannot go with refinement threshold" in dialog.summary.text()
     assert not dialog.apply_button.isEnabled()
+    assert not dialog.search_button.isEnabled()
+
+    dialog.editors["equalize"].setCurrentText("none")
+    settle(dialog)
+    np.testing.assert_array_equal(dialog.image_item.image, prepared_image(image, upscale=2))
+    assert dialog.log_box.toPlainText() == past_searches
 
 
 def test_with_the_background_flattened_the_window_shows_the_image_the_contacts_are_found_in(tmp_path):

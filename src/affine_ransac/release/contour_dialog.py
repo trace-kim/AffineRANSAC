@@ -5,16 +5,16 @@ ContourDialog shows a loaded image, as the contacts are found in it (with the ba
 D132, and upscaled, D131, if asked), with the contacts the settings find in it, exactly as a run finds them
 (pipeline.find_contacts): the detected contours and centres (the detection method's), the refined contours and centres
 (after edge refinement: what the run measures) and, on request, the threshold mask (the pixels the threshold takes as
-contact). One line says in words how many contacts were found and why the other regions were left out. Every change of
-a setting finds them again, in a background thread, for the newest settings only. Apply to parameters: values() gives
+contact). One line says how many contacts were found and why the other regions were left out. Get contours starts a
+background search. Auto retrieve also searches after settings changes and image loads. Apply to parameters: values() gives
 the settings with those shown, which the app keeps for the next run; Cancel leaves the parameters as they were.
 Original image (D160) shows the image as loaded instead, under the same layers.
 With PATTERN lines (D153) it finds horizontal lines instead (pipeline.find_lines): the contour layers draw their
 detected and refined edges, and the line says how many lines were found, their edge roughness and the noise per column.
 With PATTERN contours (D155) it finds the contours of any pattern (pipeline.find_contours): the contour layers draw
 them, closed or open, and the line says how many were found and how many of them are open.
-With EQUALIZE (D167) the threshold is chosen on equalized grey levels: the threshold mask shows the result, the line
-names the equalization, and the image shown stays the one the edges are refined on.
+With EQUALIZE (D167) the preview shows the equalized image used to choose the threshold. Image previews update
+independently of contour retrieval (D168).
 
 Coordinates are the pixel frame: (x, y) px, y down, pixel centres at whole numbers (docs/SPEC.md §3).
 """
@@ -32,7 +32,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from affine_ransac.analysis import (CHOICES, PATTERN_SETTINGS, Settings, any_shape_options, check_settings,
                                     contour_options, line_options)
 from affine_ransac.app import editor, editor_value
-from affine_ransac.features.contact import DetectedContacts, contact_mask, upscaled_image
+from affine_ransac.features.contact import DetectedContacts, contact_mask_and_image, threshold_image, upscaled_image
 from affine_ransac.features.contours import Contours
 from affine_ransac.features.lines import LineEdges, column_noise_px, roughness_px
 from affine_ransac.io.sem_image import load_sem_image
@@ -55,18 +55,36 @@ STEPS = {"background_px": 5, "median_px": 2, "tv_weight": 0.01, "detection_blur_
          "edge_step_px": 0.05, "edge_blur_px": 0.1}  # spin box steps (the others: 1)
 LAYERS = ("Threshold mask", "Detected contours", "Detected centres", "Refined contours", "Refined centres")
 IMAGE_FILES = "SEM images (*.jpg *.jpeg *.png *.tif *.tiff *.bmp);;All files (*)"
-NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these settings find in it."
+NO_IMAGE = "Load an SEM image to try the contour settings."
+READY = "Click <i>Get contours</i> to retrieve contours for these settings."
 
 
 @dataclass
 class Diagnosis:
     """What the window shows of one image with one set of settings."""
-    image: np.ndarray           # the image the contacts are found in (pipeline.prepared_image; upscaled: more pixels)
+    image: np.ndarray           # the prepared image or, with equalization, the threshold input
     detected: DetectedContacts | LineEdges | Contours  # after the contrast check (lines, contours: none)
     refined: DetectedContacts | LineEdges | Contours   # what the run measures (refinement none: the detected ones)
     low_contrast: int           # detected contacts the contrast check dropped
     mask: np.ndarray            # uint8, the pixels of `image`: 1 = taken as contact by the threshold
     log: StepLog = field(default_factory=StepLog)  # the time of each step of the search (log_entry, D157)
+
+
+def preparation_key(s: Settings) -> tuple:
+    return (s.background_px, s.dark_contacts if s.background_px > 0 else None, s.denoise,
+            next((getattr(s, name) for name, method in DENOISE_OPTIONS.items() if s.denoise == method), None))
+
+
+def threshold_image_options(s: Settings) -> tuple:
+    return s.detection_blur_px * s.upscale, s.equalize, s.clahe_clip, s.clahe_tiles
+
+
+def preview_key(s: Settings) -> tuple:
+    blur, method, clip, tiles = threshold_image_options(s)
+    equalization = () if method == "none" else (method, blur)
+    if method == "adaptive":
+        equalization += (clip, tiles)
+    return preparation_key(s), s.upscale, equalization
 
 
 class PreparedImageCache:
@@ -80,9 +98,7 @@ class PreparedImageCache:
         self.image = self.key = self.flat = None
 
     def prepare(self, image: np.ndarray, s: Settings, log: StepLog) -> np.ndarray:
-        strength = {"median": s.median_px, "non-local means": s.nlm_h,
-                    "total variation": s.tv_weight}.get(s.denoise)
-        key = (s.background_px, s.dark_contacts if s.background_px > 0 else None, s.denoise, strength)
+        key = preparation_key(s)
         if self.image is image and self.key == key:
             with timed(log, "reuse flattened and denoised image"):
                 return self.flat
@@ -92,8 +108,15 @@ class PreparedImageCache:
         return flat
 
 
+def preview_image(image: np.ndarray, s: Settings, preparation: PreparedImageCache) -> np.ndarray:
+    prepared = upscaled_image(preparation.prepare(image, s, StepLog()), s.upscale)
+    if s.equalize != "none":
+        return threshold_image(prepared, *threshold_image_options(s))[0]
+    return prepared
+
+
 def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | None = None) -> Diagnosis:
-    """The image the contacts are found in, the contacts the settings find, as a run finds them, and the threshold
+    """The preview image, the contacts the settings find, as a run finds them, and the threshold
     mask. preparation: the window's single-image cache; omitted, preprocessing runs afresh."""
     log = StepLog()
     flat = (preparation if preparation is not None else PreparedImageCache()).prepare(image, s, log)
@@ -110,9 +133,11 @@ def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | N
         log.add("detect the contacts (upscale, threshold mask, regions, contrast check)", seconds["detect"])
         log.add("refine their edges", seconds["refine"])
     with timed(log, "upscale and threshold mask again, for the display"):
-        shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
-        mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection, s.equalize,
-                               s.clahe_clip, s.clahe_tiles)
+        blur, equalize, clip, tiles = threshold_image_options(s)
+        shown = upscaled_image(flat, s.upscale)
+        mask, _, pixels = contact_mask_and_image(shown, s.dark_contacts, blur, s.detection, equalize, clip, tiles)
+        if equalize != "none":
+            shown = pixels
     return Diagnosis(shown, detected, refined, low_contrast, mask, log)
 
 
@@ -188,8 +213,9 @@ def threshold_text(d: Diagnosis, s: Settings) -> str:
     level = f"threshold at grey level {d.detected.threshold:.0f}"
     if s.equalize == "adaptive":
         return f"{s.detection} after adaptive equalization, {level} of the equalized image"
-    method = f"{s.detection} on the equalized histogram" if s.equalize == "global" else s.detection
-    return f"{method}, {level}{of_the_image(s)}"
+    if s.equalize == "global":
+        return f"{s.detection} on the equalized histogram, {level} before equalization"
+    return f"{s.detection}, {level}{of_the_image(s)}"
 
 
 def lines_summary(d: Diagnosis, s: Settings) -> str:
@@ -269,7 +295,7 @@ def place(item: pg.ImageItem, shape):
 
 
 class ContourDialog(QtWidgets.QDialog):
-    searched = QtCore.Signal(int, object)  # (search number, Diagnosis or the exception), from the background thread
+    searched = QtCore.Signal(int, bool, object)  # revision, retrieve contours, result or exception
 
     def __init__(self, settings: Settings, folder: str = "", use_opengl: bool = False, parent=None):
         """settings: the parameters to start from (values() keeps the others); folder: where Load image starts."""
@@ -279,16 +305,17 @@ class ContourDialog(QtWidgets.QDialog):
         self.settings, self.folder = settings, folder
         self.image = None     # the SEM image loaded (uint8)
         self.preparation = PreparedImageCache()
-        self.prepared = None  # the image the contacts are found in, of the last search shown
-        self.shown = None     # the image shown: the prepared one, or the one loaded (Original image, D160)
-        self.request = 0      # number of the newest search asked for
-        self.running = False  # a search runs in the background thread
+        self.prepared = self.previewed = self.shown = None
+        self.has_result = False
+        self.revision = 0  # changes to settings or to the loaded image invalidate earlier work
+        self.pending_search = None  # True for auto, False for a click, None if no extraction is queued
+        self.running = False
         self.name = ""        # the file name of the image loaded
         self.search_started = 0.0   # when the search running (or the last one) began (time.perf_counter)
         self.searched_with = settings  # its settings
         self.searched.connect(self._searched)
-        self.timer = QtCore.QTimer(self, singleShot=True, interval=150)  # a search once the typing pauses
-        self.timer.timeout.connect(self.search)
+        self.timer = QtCore.QTimer(self, singleShot=True, interval=150)  # wait for a pause in editing
+        self.timer.timeout.connect(self._refresh)
 
         # The figure: the image, the threshold mask over it, the contours and centres on top.
         self.graphics = figure(use_opengl)
@@ -318,9 +345,8 @@ class ContourDialog(QtWidgets.QDialog):
         self.boxes = {}
         show = QtWidgets.QHBoxLayout()
         show.addWidget(QtWidgets.QLabel("Show:"))
-        self.original_box = QtWidgets.QCheckBox("Original image")  # off at start: the image searched (D160)
-        self.original_box.setToolTip("The image as loaded, before it is flattened, denoised and upscaled "
-                                     "(off: the image the contours are found in)")
+        self.original_box = QtWidgets.QCheckBox("Original image")
+        self.original_box.setToolTip("Show the image as loaded, before preprocessing and equalization")
         self.original_box.toggled.connect(self.show_image)
         show.addWidget(self.original_box)
         for name in LAYERS:
@@ -360,6 +386,11 @@ class ContourDialog(QtWidgets.QDialog):
         self.load_button = QtWidgets.QPushButton("Load image...")
         self.load_button.setToolTip("Open one SEM image to try the settings on")
         self.load_button.clicked.connect(self.choose_image)
+        self.search_button = QtWidgets.QPushButton("Get contours", autoDefault=False)
+        self.search_button.clicked.connect(self.search)
+        self.auto_box = QtWidgets.QCheckBox("Auto retrieve")
+        self.auto_box.setToolTip("Retrieve contours whenever you load an image or change the settings")
+        self.auto_box.toggled.connect(self._automatic_changed)
         self.name_label = QtWidgets.QLabel("")
         self.summary = QtWidgets.QLabel(NO_IMAGE, wordWrap=True)
         self.busy_label = QtWidgets.QLabel("")
@@ -388,6 +419,8 @@ class ContourDialog(QtWidgets.QDialog):
         top.addWidget(self.load_button)
         top.addWidget(self.name_label)
         top.addStretch(1)
+        top.addWidget(self.search_button)
+        top.addWidget(self.auto_box)
         for button in style.image_buttons(lambda: self.graphics, "contour diagnosis"):
             top.addWidget(button)
         status = QtWidgets.QHBoxLayout()
@@ -420,8 +453,15 @@ class ContourDialog(QtWidgets.QDialog):
         return replace(self.settings, **{name: editor_value(widget) for name, widget in self.editors.items()})
 
     def changed(self, *_):
-        """A setting changed: grey out the settings that change nothing now, then search again once the typing
-        pauses."""
+        """Invalidate the old contours and refresh the preview once editing pauses."""
+        self.revision += 1
+        self.pending_search = None
+        self.timer.stop()
+        if self.has_result:
+            self.has_result = False
+            self.layers["Threshold mask"].clear()
+            for name in LAYERS[1:]:
+                self.layers[name].setData([], [])
         s = self.values()
         for name, widget in self.editors.items():
             widget.setEnabled(applies(name, s))
@@ -431,7 +471,18 @@ class ContourDialog(QtWidgets.QDialog):
             detected = s.refinement == "none" and name.startswith("Refined")  # with none, the detected ones (D124)
             box.setEnabled(not (no_centres or detected))
         self.update_visibility()
-        self.timer.start()
+        self.summary.setText(READY if self.image is not None else NO_IMAGE)
+        try:
+            check_settings(s, "images")
+        except ValueError as error:
+            self.summary.setText(f"<span style='color:{style.FAILURE}'>{html.escape(str(error))}</span>")
+            valid = False
+        else:
+            valid = True
+        self.apply_button.setEnabled(valid)
+        self.search_button.setEnabled(valid and self.image is not None)
+        if self.search_button.isEnabled():
+            self.timer.start()
 
     def choose_image(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "SEM image", self.folder, IMAGE_FILES)
@@ -439,64 +490,88 @@ class ContourDialog(QtWidgets.QDialog):
             self.load_image(path)
 
     def load_image(self, path: str):
-        """Show the image, whole, and find its contacts."""
+        """Show the new image and discard the results of the previous one."""
         try:
             image = load_sem_image(path)
         except (OSError, ValueError) as error:
             QtWidgets.QMessageBox.warning(self, "Contour diagnosis", f"The image could not be read:\n{error}")
             return
         self.image, self.prepared, self.folder, self.name = image, None, str(Path(path).parent), Path(path).name
+        self.previewed = None
         self.preparation = PreparedImageCache()
         self.show_image()
         self.name_label.setText(f"{Path(path).name}   ({image.shape[1]} × {image.shape[0]} px)")
         self.plot.setRange(xRange=(-0.5, image.shape[1] - 0.5), yRange=(-0.5, image.shape[0] - 0.5), padding=0.02)
-        self.search()
+        self.changed()
+
+    def _automatic_changed(self, enabled):
+        if enabled and self.search_button.isEnabled() and not self.has_result:
+            self.timer.start()
+        if not enabled and self.pending_search is True:
+            self.pending_search = None
+
+    def _refresh(self):
+        if self.auto_box.isChecked() and not self.has_result and self.pending_search is None:
+            self.pending_search = True
+        self._start_if_ready()
 
     def search(self):
-        """Find the contacts with the settings shown, in the background. While a search runs, the newest settings
-        wait for it (_searched starts them)."""
-        if self.image is None:
-            return
-        self.request += 1  # the result of any earlier search is out of date now
-        try:
-            check_settings(self.values(), "images")
-        except ValueError as error:
-            self.summary.setText(f"<span style='color:{style.FAILURE}'>{html.escape(str(error))}</span>")
-            self.apply_button.setEnabled(False)
-            return
-        self.apply_button.setEnabled(True)
-        if not self.running:
-            self._start()
+        """Retrieve contours for the current settings, after any work already running."""
+        self.timer.stop()
+        self.pending_search = False
+        self._start_if_ready()
 
-    def _start(self):
+    def _start_if_ready(self):
+        if self.running or self.timer.isActive() or not self.search_button.isEnabled():
+            return
+        s = self.values()
+        retrieve = self.pending_search is not None
+        self.pending_search = None
+        if retrieve or preview_key(s) != self.previewed:
+            self._start(s, retrieve)
+
+    def _start(self, s: Settings, retrieve: bool):
         self.running = True
-        self.busy_label.setText(f"Finding the {self.values().pattern}...")
-        number, image, s = self.request, self.image, self.values()
+        self.busy_label.setText(f"Finding the {s.pattern}..." if retrieve else "Updating the image...")
+        if retrieve and not self.has_result:
+            self.summary.clear()
+        revision, image = self.revision, self.image
         preparation = self.preparation  # a newly loaded image gets its own, while this search finishes
         self.search_started, self.searched_with = time.perf_counter(), s
 
         def work():
             try:
-                found = diagnose(image, s, preparation)
+                found = diagnose(image, s, preparation) if retrieve else preview_image(image, s, preparation)
             except Exception as error:
                 found = error
             try:
-                self.searched.emit(number, found)
+                self.searched.emit(revision, retrieve, found)
             except RuntimeError:  # the window was closed meanwhile
                 pass
         threading.Thread(target=work, daemon=True).start()
 
-    def _searched(self, number: int, found):
+    def _searched(self, revision: int, retrieve: bool, found):
         self.running = False
-        if number != self.request:  # the settings changed meanwhile
-            self.search()
-            return
         self.busy_label.setText("")
+        if revision == self.revision:
+            self._show_result(retrieve, found)
+        self._start_if_ready()
+
+    def _show_result(self, retrieve: bool, found):
+        if not retrieve or not isinstance(found, Exception):
+            self.previewed = preview_key(self.searched_with)
         if isinstance(found, Exception):
-            self.summary.setText(f"<span style='color:{style.FAILURE}'>The {self.values().pattern} could not be "
-                                 f"found: {html.escape(str(found))}</span>")
+            task = f"Find the {self.searched_with.pattern}" if retrieve else "Update the image"
+            self.summary.setText(f"<span style='color:{style.FAILURE}'>{task} failed: {html.escape(str(found))}</span>")
+            return
+        if not retrieve:
+            self.prepared = found
+            self.show_image()
             return
         back = time.perf_counter()
+        self.has_result = True
+        if self.pending_search is True:
+            self.pending_search = None  # an in-flight retrieval just supplied the current result
         self.show_diagnosis(found)
         shown = time.perf_counter()
         self.graphics.viewport().repaint()  # drawn now, not when the window next gets to it, so that it is timed
@@ -506,8 +581,7 @@ class ContourDialog(QtWidgets.QDialog):
                                                time.perf_counter() - self.search_started))
 
     def show_image(self, *_):
-        """Show the image as loaded if Original image is ticked (or nothing was found in it yet), else the image the
-        contacts are found in; either covers the image's pixel frame, under the same layers."""
+        """Show the latest preview or the original image, both in the original pixel frame."""
         if self.image is None:
             return
         self.shown = self.image if self.original_box.isChecked() or self.prepared is None else self.prepared
@@ -535,7 +609,7 @@ class ContourDialog(QtWidgets.QDialog):
         or rule it comes from."""
         s = self.values()
         for name, item in self.layers.items():
-            item.setVisible(self.boxes[name].isChecked() and self.boxes[name].isEnabled())
+            item.setVisible(self.has_result and self.boxes[name].isChecked() and self.boxes[name].isEnabled())
         self.plot.legend.clear()
         for name in LAYERS[1:]:
             if self.layers[name].isVisible():

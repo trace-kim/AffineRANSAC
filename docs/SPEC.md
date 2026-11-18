@@ -1563,27 +1563,26 @@ a window of its own, modal like *Parameters*). **Load image...** opens one SEM i
 starts in the open folder), shown in the pixel frame (x, y px, y down; no grid over the image) as the contacts are found
 in it (`pipeline.prepared_image`: with `background_px`, the flattened image, D130; with `upscale`, the upscaled image,
 stretched over the image's pixel frame so that the axes and contours stay in pixels of the image as loaded, D131;
-denoised before that with `denoise`, D132; the
-threshold mask and the grey level under the cursor are of that image too). **Original image** (a check
+denoised before that with `denoise`, D132; see below for the equalized preview). **Original image** (a check
 box at the start of the layers' row, off at start, D160) shows the image as loaded instead, over the same pixel
 frame and under the same layers; the grey level under the cursor is then of that image. Beside it the contour
 settings (D128) in
 groups, *Pre-processing*, *Detection (thresholding)* and *Edge refinement*, named as in *Parameters*, what each does in
 its tooltip; those that change nothing given the others are greyed (`min_solidity` unless band, the refinement's options
-with refinement none). Every change finds the contacts again in a background thread, 150 ms after the typing pauses, for
-the newest settings only (a search that finishes for older settings is not shown; the newest are searched then):
-`contour_dialog.diagnose` calls `pipeline.find_contacts`, the run's own function, and `contact_mask` for the threshold
-mask; about 0.2 s for a 2048² tile with 441 contacts. Layers (check boxes; the legend lists those shown, named after the
+with refinement none). **Get contours** retrieves contours in a background thread. **Auto retrieve** (unchecked each
+time the window opens) also retrieves them on image load and after a 150 ms pause in editing. Loading an image or
+changing settings clears the overlays and discards any outdated result (D168). `contour_dialog.diagnose` calls the
+run's own extraction functions and uses the same thresholding code for the mask. Layers (check boxes; the legend lists those shown, named after the
 method and the rule): *Threshold mask* (the pixels the threshold takes as contact, translucent amber; off at start,
 D76), *Detected contours* and *centres* (magenta), *Refined contours* and *centres* (cyan; not offered with refinement
-none, D124), on once an image is loaded, as after *Load contours* (D113). One line in words: how many contacts were
+none, D124), shown once contours are retrieved, as after *Load contours* (D113). One line in words: how many contacts were
 found, the method and the threshold's grey level, and the regions left out per reason (`DetectedContacts.left_out`, then
 the contrast check); invalid settings are named there instead, in red (`check_settings`), and cannot be applied. With
-`equalize` (D167, in *Detection*; `clahe_clip` and `clahe_tiles` greyed unless adaptive) the threshold mask is that
-of the equalized threshold, the image shown stays the one the edges are refined on, and the line names the
-equalization (global: "on the equalized histogram", the grey level of the image searched; adaptive: "after adaptive
-equalization", a grey level of the equalized image, not comparable with the one under the cursor). Below
-the image: the cursor's x, y and the grey level of the pixel under it. *Copy image* / *Save image...* as every figure.
+`equalize` (D167, in *Detection*; `clahe_clip` and `clahe_tiles` greyed unless adaptive), the preview shows the blurred
+and equalized input to thresholding (D168). The image preview updates with image settings even in manual mode. The
+mask uses the same input, and edge refinement uses the prepared image's grey levels. The summary gives the global
+threshold in grey levels before equalization and the adaptive threshold in grey levels of the equalized image.
+Below the image, the cursor shows x, y and the grey level of the displayed pixel. *Copy image* / *Save image...* as every figure.
 **Apply to parameters** keeps the settings for the next run, as *Parameters* does (`MaskRegWindow.apply_parameters`: the
 remembered parameters, and a restart offered when they differ from those of the analysis shown); **Cancel** leaves them.
 Enter in a setting closes nothing (no default button).

@@ -15,8 +15,8 @@ Start it with:  python -m affine_ransac.release.app [folder]   (or maskreg [fold
   not measured with the reason. Nothing is saved; change the parameters and restart.
 - Analysis > Parameters: the parameters (hidden from the main window); after a change, offers a restart. Sets of
   parameters can be saved under a name and loaded again (parameters_dialog.py).
-- Analysis > Contour diagnosis: load one SEM image and try the contour settings on it, the contours and centres shown
-  as they change (contour_dialog.py); Apply to parameters keeps them for the next run, as Parameters does.
+- Analysis > Contour diagnosis: load one SEM image, try the contour settings and retrieve contours on request
+  (contour_dialog.py). Apply to parameters keeps the settings for the next run.
 - Analysis > High-performance mode (off by default; remembered; a warning when turned on): the worker processes that
   load the tiles are started at the first run and kept for the next runs and Load contours, until MaskReg closes or
   the mode is turned off, instead of started for every run (D151). Kept workers that stopped working are replaced at

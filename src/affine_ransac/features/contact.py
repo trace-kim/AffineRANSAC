@@ -143,18 +143,32 @@ def contact_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: floa
     "adaptive": the threshold is chosen and applied on the image equalized tile by tile (CLAHE, cv2.createCLAHE:
     clahe_tiles x clahe_tiles tiles, contrast limit clahe_clip), so the grey level that divides the blurred image
     varies across it; the threshold returned is a grey level of the equalized image, not of the image."""
+    mask, level, _ = contact_mask_and_image(image, dark_contacts, blur_sigma, method, equalize, clahe_clip, clahe_tiles)
+    return mask, level
+
+
+def contact_mask_and_image(image, dark_contacts, blur_sigma, method, equalize, clahe_clip, clahe_tiles):
+    """The contact mask, its threshold level, and the image passed to the threshold (for diagnosis)."""
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}, not {method!r}")
+    pixels, lut = threshold_image(image, blur_sigma, equalize, clahe_clip, clahe_tiles)
+    mask, level = threshold_mask(pixels, dark_contacts, method)
+    if lut is not None:  # the brightest grey level the mapping puts on the dark side
+        level = float(np.flatnonzero(lut <= level).max())
+    return mask, level, pixels
+
+
+def threshold_image(image, blur_sigma, equalize, clahe_clip, clahe_tiles):
+    """The blurred, optionally equalized threshold input, and the global mapping if used."""
     if equalize not in EQUALIZERS:
         raise ValueError(f"equalize must be one of {EQUALIZERS}, not {equalize!r}")
     blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=blur_sigma) if blur_sigma > 0 else image
     if equalize == "adaptive":
-        blurred = cv2.createCLAHE(clahe_clip, (clahe_tiles, clahe_tiles)).apply(blurred)
-    if equalize != "global":
-        return threshold_mask(blurred, dark_contacts, method)
-    lut = equalization_lut(blurred)
-    mask, level = threshold_mask(cv2.LUT(blurred, lut), dark_contacts, method)
-    return mask, float(np.flatnonzero(lut <= level).max())  # the brightest grey level lut puts on the dark side
+        return cv2.createCLAHE(clahe_clip, (clahe_tiles, clahe_tiles)).apply(blurred), None
+    if equalize == "global":
+        lut = equalization_lut(blurred)
+        return cv2.LUT(blurred, lut), lut
+    return blurred, None
 
 
 def equalization_lut(image: np.ndarray) -> np.ndarray:
