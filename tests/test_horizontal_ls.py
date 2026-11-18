@@ -10,13 +10,17 @@ import numpy as np
 import pytest
 
 from affine_ransac.analysis import HORIZONTAL_LS
+from affine_ransac.fitting.moving_window import moving_window_affine
+from affine_ransac.io.design import horizontal_band_outlines
 from affine_ransac.release import app as release_app
+from affine_ransac.release import horizontal_ls
 from affine_ransac.release.agent import review
 from affine_ransac.release.analysis import (DEFAULTS, AnalysisFailed, analyse_folder, read_contours,
                                            read_design_images, read_display_images, tile_affines)
 from affine_ransac.release.cache import load_cache
-from affine_ransac.release.contour_dialog import diagnose
-from affine_ransac.release.horizontal_ls import find_bands
+from affine_ransac.release.contour_dialog import count_lines, diagnose
+from affine_ransac.release.horizontal_ls import find_bands, paired_rows, stitch_bands
+from affine_ransac.release.views import matrix_of
 from test_release import make_window, wait
 
 
@@ -32,10 +36,13 @@ def test_white_separators_give_both_interiors_and_close_at_the_sides():
     s = replace(SETTINGS, detection="otsu3", dark_contacts=False, upscale=2)
     d = diagnose(image, s)
     for found in (d.detected, d.refined):
-        np.testing.assert_allclose(found.centers, [[39.5, 14], [39.5, 28], [39.5, 42]], atol=0.15)
-        for c in found.contours:
-            # The upper and lower edges meet via vertical segments on the right and left.
-            np.testing.assert_array_equal(c[[0, 79, 80, -1], 0], [0, 79, 79, 0])
+        expected = [[x, y] for x in np.arange(3.5, 80, 8) for y in (14, 28, 42)]
+        np.testing.assert_allclose(found.centers, expected, atol=0.15)
+        for c, (x, _) in zip(found.contours, expected):
+            # Vertical closures at adjoining pixel faces, including both outer image edges.
+            np.testing.assert_array_equal(c[[0, len(c) // 2 - 1, len(c) // 2, -1], 0],
+                                          [x - 4, x + 4, x + 4, x - 4])
+    assert "[3, 3, 3, 3, 3, 3, 3, 3, 3, 3]" in count_lines(d, s)[0]
     assert d.mask[28, 80] and not d.mask[42, 80]
     assert len(find_bands(np.full_like(image, 50), s)[1].centers) == 0
 
@@ -46,8 +53,57 @@ def test_a_thin_white_band_can_step_diagonally_without_joining_its_two_interiors
     for y in [8, 20, 32, 44]:
         image[y + x // 20, x] = 220
     detected, _ = find_bands(image, replace(SETTINGS, refinement="none"))
-    np.testing.assert_allclose(detected.centers[:, 1], [15.5, 27.5, 39.5])
-    np.testing.assert_array_equal(detected.contours[0][:80, 1], 9 + x // 20)
+    centres = detected.centers.reshape(10, 3, 2)
+    np.testing.assert_allclose(centres[:, :, 1], (14 + (x // 20).reshape(10, 8).mean(axis=1))[:, None]
+                               + [0, 12, 24])
+    for k, c in enumerate(detected.contours[::3]):
+        np.testing.assert_array_equal(c[1:9, 1], 8.5 + x[k * 8:k * 8 + 8] // 20)
+
+
+def test_different_interior_levels_and_a_broken_separator_only_cost_local_slices():
+    image = np.full((77, 103), 40, np.uint8)
+    image[21:41] = 140  # a two-class threshold would put this interior with the white separators
+    image[61:] = 140
+    image[[1, 21, 41, 61]] = 240
+    image[41, 36] = 80  # joins two regions in slice 4
+    image[52, 85] = 240  # an isolated bright speck inside a different slice
+    s = replace(SETTINGS, refinement="none", min_area_px=1500, max_area_px=2200)
+    d = diagnose(image, s)
+    assert d.mask[30, 5] and not d.mask[41, 5]
+    for k in range(10):
+        x = (k + 0.5) * 10.3 - 0.5
+        y = d.refined.centers[np.isclose(d.refined.centers[:, 0], x), 1]
+        np.testing.assert_allclose(y, [11] if k == 3 else [11, 31, 51])
+    assert d.detected.left_out["not crossing or joined"] >= 1
+
+
+def test_crossed_refinement_keeps_the_detected_edges_at_that_column(monkeypatch):
+    image = np.full((45, 80), 60, np.uint8)
+    image[[5, 20, 35]] = 235
+
+    def crossed(image, lines, *args):
+        upper = lines.upper.copy() - 0.25
+        upper[:, 3] = lines.lower[:, 3] + 1
+        return replace(lines, upper=upper)
+
+    monkeypatch.setattr(horizontal_ls, "refine_line_edges", crossed)
+    found, measured = find_bands(image, SETTINGS)
+    assert len(found.contours) == len(measured.contours) == 20
+    for a, b in zip(found.contours, measured.contours):
+        assert a[4, 1] == b[4, 1]  # column 3, after the slice's left cut
+        assert b[3, 1] == a[3, 1] + 0.25
+
+
+def test_design_is_clipped_before_checking_for_complete_bands():
+    layout = kdb.Layout()
+    layout.dbu = 0.001
+    shapes = layout.create_cell("TOP").shapes(layout.layer(4, 0))
+    shapes.insert(kdb.Box(-50, -20, 50, -10))
+    shapes.insert(kdb.Box(-50, 0, 10, 10))  # line and adjacent space both end within the field
+    outlines = horizontal_band_outlines(layout, 4, 0, (100, 100), 10)
+    xs = [(c[:, 0].min(), c[:, 0].max()) for c in outlines]
+    for left in range(-50, 50, 10):
+        assert xs.count((left, left + 10)) == (3 if left < 10 else 1)
 
 
 def mosaic(folder):
@@ -89,7 +145,8 @@ def test_release_stitches_both_sets_in_y_and_calibrates_the_measured_heights(tmp
     with ThreadPoolExecutor(2) as pool:
         if per_stripe:
             run = analyse_folder(tmp_path, "images", replace(SETTINGS, moving_window_per_stripe=True),
-                                 records, log=messages.append, keep_tiles=True, pool=pool)
+                                 records, log=messages.append, keep_tiles=True, pool=pool, detailed_log=True)
+            assert any("T0 L/S centres per x slice" in line and "design [" in line for line in messages)
         else:
             window = make_window(tmp_path)
             monkeypatch.setattr(release_app, "image_records", lambda folder: records)
@@ -99,9 +156,12 @@ def test_release_stitches_both_sets_in_y_and_calibrates_the_measured_heights(tmp
             wait(window)
             run = window.result
         for stitch, known in ((run.stitch, sem_offsets), (run.design_stitch, design_offsets)):
-            assert len(stitch.pairs) == 20  # includes horizontal and corner overlaps outside both centroid columns
+            assert len(stitch.pairs) == 20  # includes side and corner overlaps on staggered slice grids
             np.testing.assert_array_equal(stitch.corrections[:, 0], 0)
             np.testing.assert_allclose(stitch.corrections[:, 1], known - known.mean(), atol=1e-8)
+            for pair in stitch.pairs:
+                assert len(np.unique(pair.ia)) == len(np.unique(pair.ib)) == len(pair.ia)
+        assert all(len(np.unique(p[:, 0].round(5))) == 10 for p in run.sem_points + run.design_points)
         np.testing.assert_array_equal(run.sem_nm[:, 0], run.design_nm[:, 0])
         height_error = run.sem_nm[:, 1] - run.design_nm[:, 1]
         np.testing.assert_allclose(np.unique(height_error.round(6)), [2, 3])
@@ -119,15 +179,92 @@ def test_release_stitches_both_sets_in_y_and_calibrates_the_measured_heights(tmp
             assert not any("differ from the centres" in line for line in messages)
             np.testing.assert_array_equal(c.refined[c.start[:-1]], c.refined[c.start[1:] - 2])
             assert all(mask.min() == 0 and mask.max() == 1 for mask in read_design_images(reopened))
-            window.stitching_view.set_contours(c)
-            window.stitching_view.set_images(read_display_images(run.image_paths))
-            assert window.stitching_view.image_bases[0][1, 1] == 2.0
+            stitching = window.stitching_view
+            stitching.set_contours(c)
+            stitching.set_images(read_display_images(run.image_paths))
+            stitching.placement.setCurrentText("Stitched + affine")
+            for affine, item in zip(tile_affines(run), stitching.image_items):
+                np.testing.assert_allclose(matrix_of(item.transform())[:2, :2], affine[:2, :2] @ np.diag([1, 2]))
             view = window.registration_view
             assert "X is unmeasured" in view.summary.text()
             assert [panel.name for panel, _, _ in view.maps] == ["dy"]
             view.values.setCurrentIndex(1)  # grid average and its exports also contain only measured errors
             assert "dx" not in view.profiles_text(",") and "mean dy" in view.profiles_text(",")
+            old_points = [np.column_stack((np.full(len(p) // 10, center[0]), p[:len(p) // 10, 1]))
+                          for p, center in zip(run.sem_points, run.centers)]
+            old = read_contours(replace(reopened, analysis=9, sem_points=old_points), log=messages.append, pool=pool)
+            assert len(old.refined_centres) * 10 == len(c.refined_centres)
+            np.testing.assert_allclose(old.refined_centres[:, 0], 0, atol=1e-8)
+            assert not any("differ from the centres" in line for line in messages)
             window.close()
+
+
+def test_tilted_rows_in_a_narrow_overlap_match_at_a_common_x():
+    centers = np.array([[0., 0.], [96., 0.]])
+    sizes = np.full((2, 2), 100.)
+    points = []
+    for cx, dy in ((0, 0), (96, 4)):
+        points.append(np.array([[x, y + 0.2 * x + dy] for x in cx + np.arange(-45, 50, 10)
+                                for y in (-30, -10, 10, 30)]))
+    slopes = [np.full(len(p), 0.2) for p in points]
+    stitch = stitch_bands(points, slopes, centers, sizes, 5, SETTINGS, "SEM")
+    p, = stitch.pairs
+    assert np.all(points[0][p.ia, 0] == 45) and np.all(points[1][p.ib, 0] == 51)
+    np.testing.assert_allclose(p.fit.shift, [0, 4])  # comparing the two raw heights here would give 5.2
+    assert len(p.ia) == 4
+
+
+def test_design_pairs_keep_their_slice_when_other_columns_have_the_same_heights():
+    sem = [np.array([[-45., 2.], [-45., 22.], [-25., 42.]])]
+    design = [np.array([[-45., 0.], [-45., 20.], [-15., 40.]])]
+    zero = np.zeros((1, 2))
+    errors = paired_rows(sem, design, [np.zeros(3)], zero, zero, zero, np.full((1, 2), 100.), [], SETTINGS)
+    np.testing.assert_array_equal(errors.sem_index, [0, 1])
+    np.testing.assert_array_equal(errors.design_nm[:, 0], [-45, -45])
+    np.testing.assert_allclose(errors.error_nm, [[0, 2], [0, 2]])
+
+
+def test_fitting_partial_slices_keeps_only_observable_affine_terms():
+    # Stage scatter within one sampled column must not turn a small height error into a large tilt.
+    x = np.tile([0, 0.001], 5)
+    design = np.column_stack((x, np.repeat(np.arange(5) * 15., 2)))
+    sem = design.copy()
+    sem[:, 1] += 1 + 200 * x
+    fit = moving_window_affine(sem, design, 200, 100, y_only=True, min_span_nm=(5, 2))
+    assert fit.models[0, 1, 0] == 0
+    np.testing.assert_allclose(fit.models[0, 1, 1], np.polyfit(sem[:, 1], design[:, 1], 1)[0])
+    # Ten samples of one slightly sloping design row constrain tilt, but cannot constrain y scale.
+    x = np.arange(10) * 12.
+    design = np.column_stack((x, 0.05 * x))
+    sem = np.column_stack((x, 8 + 0.15 * x + np.tile([0.1, -0.1], 5)))
+    fit = moving_window_affine(sem, design, 200, 100, y_only=True, min_span_nm=(5, 2))
+    assert fit.models[0, 1, 1] == 1
+    assert fit.models[0, 1, 0] == pytest.approx(-0.1, abs=0.001)
+
+
+def test_one_tilted_sem_tile_calibrates_from_its_ten_columns(tmp_path):
+    records, _, _ = mosaic(tmp_path)
+    tile = records[0]
+    tile.fov_x_nm = tile.fov_y_nm = 120
+    image = np.full((120, 120), 55, np.uint8)
+    x = np.arange(120)
+    edges = [15, 35, 55, 75, 95]
+    for row in edges:
+        image[row + x // 12 - 5, x] = 225
+    cv2.imencode(".png", image)[1].tofile(str(tile.image_path))
+    layout = kdb.Layout()
+    layout.dbu = 0.0005
+    shapes = layout.create_cell("TOP").shapes(layout.layer(4, 0))
+    for top, bottom in zip(edges[::2], edges[1::2]):
+        shapes.insert(kdb.Box(-120, 119 - 2 * bottom, 120, 119 - 2 * top))
+    shapes.insert(kdb.Box(-120, -120, 120, 119 - 2 * edges[-1]))
+    layout.write(str(tile.oas_path))
+    s = replace(SETTINGS, refinement="none", design_tolerance_nm=7)
+    with ThreadPoolExecutor(1) as pool:
+        run = analyse_folder(tmp_path, "images", s, [tile], log=lambda line: None, pool=pool)
+    assert len(run.design_nm) == 40
+    np.testing.assert_allclose(tile_affines(run)[0, :2, :2], [[1, 0], [1 / 12, 1]], atol=1e-9)
+    np.testing.assert_allclose(run.moving.residuals[:, 1], 0, atol=1e-8)
 
 
 def test_uniform_sem_stops_with_inspectable_empty_centres(tmp_path):
@@ -144,10 +281,12 @@ def test_missing_and_blank_clips_leave_the_other_rows_measurable(tmp_path):
     empty = kdb.Layout()
     empty.create_cell("TOP")
     empty.write(str(records[0].oas_path))
-    records[1].oas_path = None
+    records[1].oas_path = records[2].oas_path = None  # an entire stripe has no design measurements
     with ThreadPoolExecutor(2) as pool, pytest.warns(UserWarning):
-        run = analyse_folder(tmp_path, "images", SETTINGS, records, log=lambda text: None, pool=pool)
-    np.testing.assert_array_equal(run.design_stitch.unplaced, [0, 1])
+        run = analyse_folder(tmp_path, "images", replace(SETTINGS, moving_window_per_stripe=True),
+                             records, log=lambda text: None, pool=pool)
+    np.testing.assert_array_equal(run.design_stitch.unplaced, [0, 1, 2])
+    np.testing.assert_array_equal(tile_affines(run)[:3], np.tile(np.eye(3), (3, 1, 1)))
     assert not len(run.stitch.unplaced) and np.isfinite(run.moving.residuals[:, 1]).all()
     masks = read_design_images(run)
     assert not masks[0].any() and masks[1] is None

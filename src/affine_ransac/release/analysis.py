@@ -63,11 +63,11 @@ from affine_ransac.step_log import StepLog, timed
 # Raised by one whenever the same folder and parameters would give other numbers than before (docs/SPEC.md,
 # "Versions and run files"; tests/test_release_versions.py holds the results of each number). A saved run of a
 # lower number is shown as outdated.
-ANALYSIS = 9  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
+ANALYSIS = 10  # 4: edge refinement at the mid-level (D122); 5: refinement none (was stitch_refined off) chooses the
               # design tone with the detected centres too (D124); 6: image by image places by agreement (D138); 7:
               # and pairs its overlaps within a quarter of the contact spacing, using those that line up (D139); 8:
               # the design pairs chosen where the stitching put the images (D143); 9: the in-image correction is
-              # always the formula, the node map removed (D146)
+              # always the formula, the node map removed (D146); 10: ten x slices per horizontal L/S band (D171)
 DEFAULTS = Settings(max_match_nm=100.0)  # the release's defaults, where they differ from the research app's
 # The settings a user can change (Parameters dialog), per kind of folder. The others keep their defaults. The
 # contact layer is not one of them: it is detected in the .oas files (detect_layer); nor is first_stripe_upward:
@@ -178,7 +178,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         image_paths = [str(r.image_path) for r in records]
     if horizontal:
         check_image_records(records, None)  # detect_layer checked the whole folder; a clip can be blank
-        record("Horizontal L/S uses the regions between white bands. Both stitchings match heights in all "
+        record("Horizontal L/S measures the regions between white bands in ten x slices. Both stitchings match heights in "
                "overlaps. X stays at the stage position. Repeating rows need a relative y error smaller than "
                "half the spacing between consecutive centres.")
         if s.realign or s.in_image_correction:
@@ -192,15 +192,15 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         sizes = np.array([(r.fov_x_nm, r.fov_y_nm) for r in records], dtype=float)
         stripe, neighbours = tile_stripes(centers), tile_neighbours(centers, sizes)
         oas_paths = [str(r.oas_path) if r.oas_path is not None else "" for r in records]
-        sem_points, design_points = horizontal_ls.load_centers(
+        sem_points, design_points, sem_slopes, design_slopes = horizontal_ls.load_centers(
             records, centers, sizes, s, record,
-            lambda k, n: progress(LOAD_SHARE * k / n, f"L/S centres of tile {k} of {n}"), pool)
-        design_stitch = stitch_tiles(design_points, centers, sizes, s.design_max_match_nm, s.outlier_factor,
-                                     s.min_matched, label="design", y_only=True)
+            lambda k, n: progress(LOAD_SHARE * k / n, f"L/S centres of tile {k} of {n}"), pool, detailed_log)
+        design_stitch = horizontal_ls.stitch_bands(design_points, design_slopes, centers, sizes, s.design_max_match_nm,
+                                                  s, "design")
 
         def errors(points, sem_corrections, design_corrections):
-            return horizontal_ls.paired_rows(points, design_points, sem_corrections, design_corrections,
-                                            centers, neighbours, s)
+            return horizontal_ls.paired_rows(points, design_points, sem_slopes, sem_corrections, design_corrections,
+                                             centers, sizes, neighbours, s)
     elif kind == "images":
         tile_ids, tiles = load_image_tiles(
             records, s, record, lambda done, total: progress(LOAD_SHARE * done / total, f"Loading tile {done} of {total}"),
@@ -259,7 +259,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         sem_points, intrafield = in_image_corrected(sem_points, nominal_errors(sem_points), image_centers, s, record)
     progress(LOAD_SHARE, "Stitching")
     if horizontal:
-        stitch = stitch_tiles(sem_points, centers, sizes, s.max_match_nm, s.outlier_factor, s.min_matched, y_only=True)
+        stitch = horizontal_ls.stitch_bands(sem_points, sem_slopes, centers, sizes, s.max_match_nm, s, "SEM")
         slipped = []
         report_stitching(record, "SEM", stitch, tile_ids)
     else:
@@ -293,15 +293,17 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                              result(None), observations.skipped)
 
     progress(LOAD_SHARE + 0.15, "Moving-window affine")
+    # Ignore sub-slice x scatter and heights indistinguishable within the design matching tolerance.
+    span = (sizes[:, 0].min() / (2 * horizontal_ls.SLICES), s.design_tolerance_nm) if horizontal else (0., 0.)
     if s.moving_window_per_stripe:  # every image by its own stripe's windows, on the observations (D123)
         moving = moving_window_per_stripe(observations.sem_nm, observations.design_nm, stripe[observations.tile],
                                           contacts.members, s.moving_window_um * 1000, s.moving_step_um * 1000,
-                                          y_only=horizontal)
+                                          y_only=horizontal, min_span_nm=span)
         record(f"Moving-window affine per stripe: {len(moving.centres_nm)} windows in {len(set(moving.stripe))} "
                f"stripe(s)")
     else:
         moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
-                                      s.moving_step_um * 1000, y_only=horizontal)
+                                      s.moving_step_um * 1000, y_only=horizontal, min_span_nm=span)
     progress(1.0, "Done")
     keep_contacts = keep_tiles and kind == "images" and not horizontal
     return result(moving, LoadedTiles(tiles, observations, contacts) if keep_contacts else None)
@@ -540,6 +542,9 @@ def tile_affines(r: ReleaseResult) -> np.ndarray:
         windows = np.arange(len(m.centres_nm))
         if len(m.stripe) and (m.stripe == r.stripe[k]).any():
             windows = windows[m.stripe == r.stripe[k]]
+        elif len(m.stripe) and r.horizontal_ls and r.analysis >= 10:
+            affines.append(np.eye(3))  # this stripe has no measured rows to calibrate its images
+            continue
         affines.append(window_affine(m, windows[np.argmin(np.abs(m.centres_nm[windows] - y[k]))]))
     return np.array(affines)
 
@@ -634,6 +639,8 @@ def read_any_contours(result: ReleaseResult, progress, pool: ProcessPoolExecutor
     worker = horizontal_ls.tile_outlines if result.horizontal_ls else _tile_any_contours
     options = s if result.horizontal_ls else any_shape_options(s)
     arguments = ((path, tuple(size), options) for path, size in zip(result.image_paths, result.sizes))
+    if result.horizontal_ls and result.analysis < 10:
+        arguments = ((*args, True) for args in arguments)
     with helper_pool(workers) if pool is None else nullcontext(pool) as pool:
         with closing(bounded_results(pool, worker, arguments, workers)) as results:
             for k, (found, moved, whole) in enumerate(results):

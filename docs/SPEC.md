@@ -439,15 +439,17 @@ the sampled profile is linear between pixels, so its gradient is flat within a p
 with their own noise (12 grey levels, contrast 120) differ per column by 0.188 px of noise, and `column_noise_px` of
 one of them gives 0.189 px.
 
-**Temporary horizontal L/S (D170).** In MaskReg image folders, `pattern` **horizontal L/S** uses the white SEM
-bands as separators. Two-class Otsu on the prepared image selects the interiors between them in one pass.
-Four-connected interior pixels keep a thin separator intact where it steps diagonally.
-Each region crossing the field with a visible upper and lower edge yields one closed polygon. The edges follow
-the selected refinement and join at the left and right sides of the image. Its area centroid supplies the
-measured height. The existing area limits apply in native pixels. Regions clipped at the top or bottom lack
-a reliable centre height. *Contour diagnosis* and *Load contours* show the same outlines and centres as the run.
-For each OASIS clip, intersect the merged drawing with the field and subtract it from the field to get the
-other tone. Keep the area centroids of complete horizontal bands in both tones.
+**Temporary horizontal L/S (D170, D171).** In MaskReg image folders, **horizontal L/S** takes the brightest
+class of the prepared SEM image as the white separators. It uses the upper threshold of three-class Otsu,
+or the brighter level in a two-level image. Four-connected interior pixels keep diagonal separators intact.
+Divide the field into ten equal widths along x. In each slice, close the upper and lower edges of each complete
+interior at the two cuts and measure its area centroid. A region clipped at the top or bottom, or joined to
+another interior at a cut, is excluded locally. Where refinement crosses the two edges or leaves the field,
+use the detected pixel boundaries for that column. The area limits refer to native pixels over a full band
+width, calculated from the mean thickness in the slice. *Contour diagnosis* gives the counts from left to right.
+The detailed run log gives the SEM and design counts for each tile. *Load contours* reproduces the outlines
+of the saved analysis, including the full-width outlines of analysis 9. Clip the drawn and clear OASIS regions at the
+same ten cuts and take the centroids of both tones wherever a complete band crosses a slice.
 
 **Contours of any pattern (D155).** `pattern` **contours** (MaskReg only, as lines): `pipeline.find_contours` finds
 the contours of one image with **nothing assumed about the pattern**: no shape, size or direction, and a region need
@@ -899,16 +901,22 @@ number) and the stitched coordinates of every SEM feature. When a feature appear
 tiles, keep **all** observations. For comparison with the design, use their mean, and report
 the spread as a stitching-quality metric.
 
-**Horizontal L/S centre stitching (D170).** Find neighbours by their full tile rectangles. Within each shared
-y interval, pair mutually nearest centre heights using the SEM or design match distance. The usual minimum
+**Horizontal L/S centre stitching (D170, D171).** Find neighbours by their full tile rectangles. Intersect
+the x slices in each overlap, comparing the widest common intervals first. Evaluate each centroid's height
+at the midpoint of the common interval using the local slope of its filled contour. Pair mutually nearest
+heights using the SEM or design match distance, using each centre at most once per tile pair. The usual minimum
 pair count, robust overlap translation and weighted tile solve apply independently to each stitching. The x
 correction is fixed at zero. On repeating rows this assumes the relative stage error is less than half the
 spacing between adjacent measured centres, including space centres.
 
-Pair the stitched SEM and design heights with the release's neighbour-following matcher (D143). Record each
-measurement at its tile's stage x and merge repeated observations at the same sampled position. Use the usual
-moving windows, optionally per stripe. Each window fits the vertical SEM-to-design displacement against x and
-y by least squares. The horizontal transform remains the identity and its registration residual is unmeasured
+Pair stitched SEM and design heights within each x slice, following a common tile offset from neighbouring
+tiles (D143). Use the tile's own design first, then neighbouring design samples at x positions in that slice.
+Measure SEM height at the paired design centroid's x and merge repeated observations there. Use the usual
+moving windows, optionally per stripe. Each window fits vertical displacement by least squares. A tilt term
+requires an x span greater than half a slice of the narrowest field. A y scale term requires heights at least
+the design matching tolerance apart in both sets after removing their tilt. Otherwise the corresponding
+coefficient stays at its identity value. With per-stripe fitting, a stripe without measurements stays at its
+stitched placement. The horizontal transform is the identity and its residual is unmeasured
 (NaN in the run file). The Registration tab, profiles and command-line review report y. This temporary path
 uses the paired design clips directly and omits the contact-specific realignment and in-image correction.
 

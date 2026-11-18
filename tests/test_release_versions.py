@@ -105,6 +105,9 @@ RESULTS = {
                    6.441456148, 6.821792166, 0.0, 0.0]},
 }
 
+# 10 (D171) changes horizontal L/S only. The contact folders retain their analysis 9 reference results.
+RESULTS[10] = RESULTS[9]
+
 # Per FORMAT: the arrays (without the optional contact_sizes/* and intrafield/*, D141) and the info keys of a run file.
 STITCH = ["corrections", "pairs/box", "pairs/center", "pairs/ia/data", "pairs/ia/lengths", "pairs/ib/data",
           "pairs/ib/lengths", "pairs/ij", "pairs/inliers/data", "pairs/inliers/lengths", "pairs/residuals/data",

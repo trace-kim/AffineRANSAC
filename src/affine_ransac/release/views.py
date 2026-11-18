@@ -51,7 +51,7 @@ from affine_ransac.overlap import points_in_box
 from affine_ransac.pipeline import (PAIRING_GATE, PairResult, RejectedPair, StitchResult, contact_spacing,
                                     contact_stripes, pair_kind, stripe_ranges)
 from affine_ransac.registration import band_means, error_summary, grid_means, largest_ramp, noise_sigma, row_means
-from affine_ransac.release import style
+from affine_ransac.release import horizontal_ls, style
 from affine_ransac.release.analysis import ReleaseResult, tile_affines
 from affine_ransac.stitching import placement_corrections
 from affine_ransac.view_contact_size import QUANTITIES, size_summary, value_levels
@@ -178,12 +178,16 @@ def tile_details(r: ReleaseResult, tile: int, not_measured: dict | None = None) 
     return "<br>".join(lines)
 
 
-def overlap_centres(r: ReleaseResult, points: np.ndarray, box) -> np.ndarray:
-    """For horizontal L/S, show the compared heights at the middle of the shared strip."""
+def overlap_centres(r: ReleaseResult, points: np.ndarray, box, tile: int) -> np.ndarray:
+    """Show horizontal L/S centres at their sampled x, including a slice cut by the overlap edge."""
     if r.horizontal_ls:
         x0, x1, y0, y1 = box
-        heights = points[(points[:, 1] >= y0) & (points[:, 1] <= y1), 1]
-        return np.column_stack((np.full(len(heights), (x0 + x1) / 2), heights))
+        pts = points[(points[:, 1] >= y0) & (points[:, 1] <= y1)]
+        if r.analysis < 10:  # saved full-width contours
+            return np.column_stack((np.full(len(pts), (x0 + x1) / 2), pts[:, 1]))
+        cuts = horizontal_ls.slice_edges(r.centers[tile, 0], r.sizes[tile, 0])
+        rows = np.searchsorted(cuts[1:-1], pts[:, 0])
+        return pts[(cuts[rows] < x1) & (cuts[rows + 1] > x0)]
     return points[points_in_box(points, box)]
 
 
@@ -201,7 +205,7 @@ def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
         if isinstance(e, PairResult):
             lines.append(f"<br><b>{name}</b>: used, {len(e.ia)} pairs.")
         elif e is not None and e.failed:
-            count_a, count_b = (len(overlap_centres(r, points(r)[k], e.box)) for k in (i, j))
+            count_a, count_b = (len(overlap_centres(r, points(r)[k], e.box, k)) for k in (i, j))
             if name == "Measured" and r.settings.stitch_method in BY_IMAGE:  # stitch_image_by_image (D139)
                 why = (f"Where the placement image by image put the two images, {e.matched} of the {e.in_box} "
                        f"contacts both should see pair up; at least half of them and {r.settings.min_matched} "
@@ -216,7 +220,8 @@ def overlap_details(r: ReleaseResult, i: int, j: int) -> str:
             lines.append(f"<br><b>{name}</b>: skipped, only {e.in_box} contact(s) in the overlap.")
     if not_matched_in(r, i, j):
         if r.horizontal_ls:
-            lines.append("<br>The markers show the L/S centre heights at the middle of the overlap.")
+            lines.append("<br>The markers show the L/S centres whose slices reach the overlap." if r.analysis >= 10
+                         else "<br>The markers show the L/S centre heights at the middle of the overlap.")
         else:
             lines.append(f"<br><b>On the plot</b>, each one's contacts in the overlap, where they were compared: filled for "
                          f"{a} (solid outline), hollow for {b} (dashed outline). Filled inside hollow: the contact is in "
@@ -670,7 +675,7 @@ class StitchingView(QtWidgets.QWidget):
             self.selection_items.append(rectangles_item([self._local(entry.box)], pg.mkPen(color, width=2.5),
                                                         pg.mkBrush(None)))
             for k, filled in ((i, True), (j, False)):  # where they were compared: nominal, as the box
-                xy = overlap_centres(r, points(r)[k], entry.box) - self.origin
+                xy = overlap_centres(r, points(r)[k], entry.box, k) - self.origin
                 if filled:
                     marks = [pg.PlotDataItem(xy[:, 0], xy[:, 1], pen=None, symbol=symbol, symbolSize=9,
                                              symbolBrush="k", symbolPen=pg.mkPen("w", width=1.5))]

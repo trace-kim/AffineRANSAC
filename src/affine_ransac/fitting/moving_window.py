@@ -44,8 +44,26 @@ def window_centres(y: np.ndarray, window_nm: float, step_nm: float) -> np.ndarra
     return np.append(np.arange(low, high, step_nm), high)
 
 
+def _height_affine(src, dst, min_span_nm):
+    """Fit dy only along directions sampled by the window. A single sampled row cannot measure y scale."""
+    model = np.eye(3)
+    x = src[:, 0]
+    axes = [2]  # translation is always observable
+    basis = np.column_stack((src, np.ones(len(src))))
+    if np.ptp(x) > max(min_span_nm[0], 1e-9):
+        axes.insert(0, 0)
+    # Check for distinct heights AFTER removing any tilt along x. One sloping row still has only one height.
+    y = np.column_stack((src[:, 1], dst[:, 1]))
+    across = basis[:, axes]
+    remaining = y - across @ np.linalg.lstsq(across, y, rcond=None)[0]
+    if np.all(np.ptp(remaining, axis=0) > max(min_span_nm[1], 1e-9)):
+        axes.insert(0, 1)
+    model[1, axes] += np.linalg.lstsq(basis[:, axes], dst[:, 1] - src[:, 1], rcond=None)[0]
+    return model
+
+
 def moving_window_affine(sem: np.ndarray, design: np.ndarray, window_nm: float, step_nm: float, *,
-                         y_only: bool = False) -> MovingWindowResult:
+                         y_only: bool = False, min_span_nm=(0., 0.)) -> MovingWindowResult:
     """Fit matched points in mask nm. For horizontal L/S only dy is observed, at each strip's stage x."""
     if not 0 < step_nm <= window_nm:
         raise ValueError("need 0 < step_nm <= window_nm (else some contacts lie in no window)")
@@ -62,10 +80,7 @@ def moving_window_affine(sem: np.ndarray, design: np.ndarray, window_nm: float, 
         reference = design[inside].mean(axis=0)
         src = sem[inside] - reference
         if y_only:
-            # Fit the y correction about the identity. This also works for a stripe sampled at a single x.
-            model = np.eye(3)
-            basis = np.column_stack((src, np.ones(len(src))))
-            model[1] += np.linalg.lstsq(basis, design[inside, 1] - sem[inside, 1], rcond=None)[0]
+            model = _height_affine(src, design[inside] - reference, min_span_nm)
         else:
             model = fit_affine(src, design[inside] - reference)
         mine = nearest == k
@@ -80,7 +95,8 @@ def moving_window_affine(sem: np.ndarray, design: np.ndarray, window_nm: float, 
 
 
 def moving_window_per_stripe(sem: np.ndarray, design: np.ndarray, stripe: np.ndarray, groups: list[np.ndarray],
-                             window_nm: float, step_nm: float, *, y_only: bool = False) -> MovingWindowResult:
+                             window_nm: float, step_nm: float, *, y_only: bool = False,
+                             min_span_nm=(0., 0.)) -> MovingWindowResult:
     """The moving-window affine of each stripe on its own. sem, design: (N, 2) observations in mask nm, one per
     contact per image; stripe: (N,) stripe of each observation's image; groups: the observations of each of M
     contacts (MergedErrors.members). Each stripe's observations get their own windows along y (moving_window_affine),
@@ -93,7 +109,8 @@ def moving_window_per_stripe(sem: np.ndarray, design: np.ndarray, stripe: np.nda
     for s in np.unique(stripe):
         mine = stripe == s
         try:
-            fit = moving_window_affine(sem[mine], design[mine], window_nm, step_nm, y_only=y_only)
+            fit = moving_window_affine(sem[mine], design[mine], window_nm, step_nm, y_only=y_only,
+                                      min_span_nm=min_span_nm)
         except ValueError as error:
             raise ValueError(f"Stripe {s + 1}: {error}") from None
         residuals[mine] = fit.residuals

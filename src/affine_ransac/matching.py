@@ -31,10 +31,15 @@ def match_points(a: np.ndarray, b: np.ndarray, max_distance: float) -> tuple[np.
         return np.empty(0, dtype=int), np.empty(0, dtype=int)
 
     distances = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2)  # (N, M)
+    return mutual_nearest(distances, max_distance)
+
+
+def mutual_nearest(distances: np.ndarray, max_distance: float) -> tuple[np.ndarray, np.ndarray]:
+    """Index pairs for a nonempty distance matrix, keeping mutually nearest partners within the gate."""
     nearest_b = distances.argmin(axis=1)  # for each a, its nearest b
     nearest_a = distances.argmin(axis=0)  # for each b, its nearest a
 
-    ia = np.arange(len(a))
+    ia = np.arange(len(distances))
     mutual = nearest_a[nearest_b] == ia
     close = distances[ia, nearest_b] < max_distance
     keep = mutual & close

@@ -149,26 +149,32 @@ def _fov_box(frame_nm, nm_per_dbu: float) -> kdb.Box:
     return kdb.Box(-half_w, -half_h, half_w, half_h)
 
 
-def horizontal_band_centers(layout: kdb.Layout, layer: int, datatype: int, fov_nm) -> np.ndarray:
-    """Area centroids of both drawn and clear horizontal bands clipped to the SEM field, tile-local nm."""
+def horizontal_band_outlines(layout: kdb.Layout, layer: int, datatype: int, fov_nm, slices: int) -> list[np.ndarray]:
+    """Closed drawn and clear bands, clipped independently to each x slice of the SEM field, in tile-local nm."""
     if layout.find_layer(layer, datatype) is None:  # a blank clip alongside patterned ones
-        return np.empty((0, 2))
+        return []
     unit = layout.dbu * 1000.0
     box = _fov_box(fov_nm, unit)
     frame = kdb.Region(box)
     drawn = kdb.Region(_shape_iterator(layout, layer, datatype, None))
-    centers = []
+    cuts = np.rint(np.linspace(box.left, box.right, slices + 1)).astype(int)
+    outlines = []
     for tone in (frame & drawn, frame - drawn):
-        for band in tone.each_merged():
-            bounds = band.bbox()
-            if bounds.left != box.left or bounds.right != box.right:
-                continue
-            if box.bottom < bounds.bottom and bounds.top < box.top:
-                # A box centre may fall half-way between two database units.
-                center = (np.array([bounds.left + bounds.right, bounds.bottom + bounds.top]) / 2
-                          if band.is_box() else _area_centroid(band))
-                centers.append(center)
-    return np.asarray(centers, dtype=float).reshape(-1, 2) * unit
+        for left, right in zip(cuts, cuts[1:]):
+            if right > left:
+                strip = kdb.Box(int(left), box.bottom, int(right), box.top)
+                for band in (tone & kdb.Region(strip)).each_merged():
+                    bounds = band.bbox()
+                    if (bounds.left == left and bounds.right == right and box.bottom < bounds.bottom
+                            and bounds.top < box.top and not band.holes()):
+                        outlines.append(_polygon_vertices(band) * unit)
+    return outlines
+
+
+def horizontal_band_centers(layout: kdb.Layout, layer: int, datatype: int, fov_nm, slices: int = 1) -> np.ndarray:
+    """Area centroids of both design tones, optionally sliced along x."""
+    outlines = horizontal_band_outlines(layout, layer, datatype, fov_nm, slices)
+    return np.asarray([polygon_centroid(c) for c in outlines]).reshape(-1, 2)
 
 
 def _reversed_regions(layout: kdb.Layout, layer: int, datatype: int, cell_name: str | None,

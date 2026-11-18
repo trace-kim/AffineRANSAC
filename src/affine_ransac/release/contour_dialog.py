@@ -125,8 +125,11 @@ def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | N
     elif s.pattern == "contours":
         (detected, refined), low_contrast = find_contours(flat, **any_shape_options(given), log=log), 0
     elif s.pattern == HORIZONTAL_LS:
-        with timed(log, "close the horizontal line and space contours"):
-            (detected, refined), low_contrast = horizontal_ls.find_bands(flat, given), 0
+        with timed(log, "threshold the white bands and close the ten x slices"):
+            big = upscaled_image(flat, s.upscale)
+            mask, level, shown = horizontal_ls.band_mask(big, s)
+            detected, refined = horizontal_ls.bands_from_mask(big, mask, level, s)
+        return Diagnosis(shown, detected, refined, 0, mask, log)
     else:
         seconds = {}
         detected, refined, low_contrast = find_contacts(flat, **contour_options(given), seconds=seconds)
@@ -169,7 +172,10 @@ def count_lines(d: Diagnosis, s: Settings) -> list[str]:
     if s.pattern == "lines":
         return [f"{pixels}. {len(d.refined.upper):,} lines."]
     if s.pattern == HORIZONTAL_LS:
-        return [f"{pixels}. {len(d.refined.centers):,} closed L/S contours. Regions left out: {d.detected.left_out}."]
+        cuts = np.linspace(-0.5, d.image.shape[1] / s.upscale - 0.5, horizontal_ls.SLICES + 1)
+        counts = np.histogram(d.refined.centers[:, 0], bins=cuts)[0]
+        return [f"{pixels}. Closed L/S contours per x slice (left to right): {counts.tolist()}.",
+                f"Regions left out: {d.detected.left_out}."]
     if s.pattern == "contacts":
         return [f"{pixels}. {len(d.refined.centers):,} contacts. Regions left out: {d.detected.left_out}."]
     found, c, left = d.refined, d.log.counts, d.detected.left_out
@@ -193,7 +199,7 @@ def summary(d: Diagnosis, s: Settings) -> str:
     if s.pattern == "lines":
         return lines_summary(d, s)
     if s.pattern == HORIZONTAL_LS:
-        return (f"<b>{len(d.refined.centers)} closed L/S contours</b> between white bands "
+        return (f"<b>{len(d.refined.centers)} closed L/S contours</b> across ten x slices "
                 f"({threshold_text(d, horizontal_ls.band_settings(s))}).")
     reasons = {"border": "touching the image border", "small": f"smaller than {s.min_area_px} px",
                "large": f"larger than {s.max_area_px} px", "not solid": f"less solid than {s.min_solidity:g}"}

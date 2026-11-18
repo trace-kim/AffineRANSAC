@@ -201,6 +201,7 @@ def design_errors_after_stitching(
     search_nm: float = 100.0,
     tolerance_nm: float = 10.0,
     radius_nm: float = 5.0,
+    *, match_slices=None,
 ) -> DesignErrors:
     """design_errors with each tile's pairs chosen AFTER the corrections, on the row its neighbours pair on (D143).
 
@@ -227,6 +228,7 @@ def design_errors_after_stitching(
     Each error is the full stitched SEM − design of a pair; a pair with a neighbour's design contact has
     design_index -1 (no row in the tile's own design). match_shift_nm holds each tile's offset after the corrections
     and neighbour_jump_nm their largest difference between neighbours; ambiguous and match_mismatches are None.
+    Horizontal L/S supplies match_slices to pair heights at a common x within each measured slice.
     """
     n = len(sem_points)
     skipped, stitched = _stitched_tiles(sem_points, design_points, sem_corrections, design_corrections, design_ok)
@@ -243,19 +245,29 @@ def design_errors_after_stitching(
     dimensions = sem_points[0].shape[1] if n else 2
     found, shifts = {}, np.full((n, dimensions), np.nan)
 
+    def pair(k, design, sem, rows, offset):
+        if match_slices is not None:
+            return match_slices(k, design, sem, rows, offset)
+        if offset is None:
+            match, _ = match_with_shift(design, sem, search_nm, tolerance_nm)
+            ia, ib = match.ia, match.ib
+        else:
+            ia, ib = _paired_at(design, sem, offset, tolerance_nm)
+        return ia, ib, sem[ib]
+
     while waiting.any():
         first = not (support[waiting] > 0).any()  # no waiting tile has a paired neighbour: a new group starts
         k = int(np.argmax(np.where(waiting, contacts if first else support, -1)))
         waiting[k] = False
         sem = stitched[k][0]
         if first:  # matched on its own, at the nominal placement
-            match, _ = match_with_shift(design_points[k], sem_points[k], search_nm, tolerance_nm)
-            own = stitched[k][1]
-            offset = np.median(sem[match.ib] - own[match.ia], axis=0) if match.score else None
+            ia, _, measured = pair(k, design_points[k], sem_points[k], None, None)
+            offset = (np.median(apply_correction(measured, sem_corrections[k]) - stitched[k][1][ia], axis=0)
+                      if len(ia) else None)
         else:
             offset = np.median(np.concatenate(evidence[k]), axis=0)
         design, rows = _design_around(k, stitched, adjacent, radius_nm)
-        ia, ib = _paired_at(design, sem, offset, tolerance_nm) if offset is not None else ([], [])
+        ia, ib, measured = pair(k, design, sem, rows, offset) if offset is not None else ([], [], sem[:0])
         if not first and not _followed(sem - offset, design, len(ia)):  # stitched off the neighbours it followed (or
             support[k], evidence[k] = 0, []                               # they off it): again with others' pairs,
             waiting[k] = True                                             # or on its own
@@ -263,27 +275,27 @@ def design_errors_after_stitching(
         if len(ia) == 0:
             skipped[k] = "no SEM contact matched the design"
             continue
-        found[k] = design[ia], rows[ia], ib
-        difference = sem[ib] - design[ia]
+        found[k] = design[ia], rows[ia], ib, measured
+        difference = measured - design[ia]
         shifts[k] = np.median(difference, axis=0)
         for u in adjacent[k]:  # the same contacts, seen by a waiting neighbour: its evidence
             if waiting[u] and u in image:
                 low, high = image[u]
-                inside = np.all((sem[ib] >= low) & (sem[ib] <= high), axis=1)
+                inside = np.all((measured >= low) & (measured <= high), axis=1)
                 if inside.any():
                     evidence[u].append(difference[inside])
                     support[u] += inside.sum()
 
     tiles, designs, nominals, sems, indices = [], [], [], [], []
     for k in sorted(found):
-        design, rows, ib = found[k]
+        design, rows, ib, measured = found[k]
         own = rows >= 0
         nominal = design - design_corrections[k]  # a neighbour's contact: where this tile's design would have it
         nominal[own] = design_points[k][rows[own]]
         tiles.append(np.full(len(ib), k))
         designs.append(design)
         nominals.append(nominal)
-        sems.append(stitched[k][0][ib])
+        sems.append(measured)
         indices.append((ib, rows))
     errors = _collect(tiles, designs, nominals, sems, indices, dict(sorted(skipped.items())))
     errors.match_shift_nm = shifts

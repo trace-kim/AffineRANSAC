@@ -53,6 +53,11 @@ def detect_lines(image: np.ndarray, dark_lines: bool = True, blur_sigma: float =
     mask, threshold = contact_mask(image, dark_lines, blur_sigma, method, equalize, clahe_clip, clahe_tiles)
     if connectivity is None:
         connectivity = 4 if method == "band" else 8
+    return lines_in_mask(mask, threshold, connectivity)
+
+
+def lines_in_mask(mask: np.ndarray, threshold: float, connectivity: int, *, single_at_sides: bool = False) -> LineEdges:
+    """Upper and lower rows of each region spanning the mask. A band slice needs one interval at either cut."""
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=connectivity)
     rows, cols = mask.shape
     left, width = stats[:, cv2.CC_STAT_LEFT], stats[:, cv2.CC_STAT_WIDTH]
@@ -63,12 +68,14 @@ def detect_lines(image: np.ndarray, dark_lines: bool = True, blur_sigma: float =
         region = labels[top:top + height] == label  # a connected region from the left to the right border has
         first = top + region.argmax(axis=0)         # pixels in every column: its topmost
         last = top + height - 1 - region[::-1].argmax(axis=0)  # and bottommost row in each
+        if single_at_sides and np.any(region[:, [0, -1]].sum(axis=0) != (last - first + 1)[[0, -1]]):
+            continue  # a broken separator joined two interiors; an isolated fleck inside a band is harmless
         upper.append(np.where(first > 0, first, np.nan))  # on the image's first or last row: no edge there
         lower.append(np.where(last < rows - 1, last, np.nan))
         middle.append(np.mean(first + last))
     order = np.argsort(middle)  # from the top down
     return LineEdges(np.array(upper, float).reshape(-1, cols)[order], np.array(lower, float).reshape(-1, cols)[order],
-                     float(threshold), count - 1 - len(across))
+                     float(threshold), count - 1 - len(upper))
 
 
 def line_interior(signed: np.ndarray, upper: np.ndarray, lower: np.ndarray) -> float:
