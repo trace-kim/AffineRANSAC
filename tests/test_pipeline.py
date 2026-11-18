@@ -202,6 +202,22 @@ def test_find_contacts_denoises_the_image_before_it_upscales_it(tmp_path):
         assert found[2] == expected[2] and len(found[1].centers) > 40
 
 
+def test_every_pattern_thresholds_the_upscaled_image_with_its_equalization(tmp_path):
+    """D167: find_contacts, find_lines and find_contours hand equalize and its CLAHE options to the threshold mask of
+    the upscaled image (the tiles a count per side, not multiplied by the factor)."""
+    from affine_ransac.features.contact import contact_mask
+    from affine_ransac.pipeline import find_contours, find_lines
+    write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
+    image = load_sem_image(tmp_path / "tile.jpg")
+    big = upscaled_image(image, 2)
+    for equalize in ("global", "adaptive"):
+        options = dict(detection="otsu", upscale=2, equalize=equalize, clahe_clip=3.0, clahe_tiles=4)
+        _, threshold = contact_mask(big, True, 1.5 * 2, "otsu", equalize, 3.0, 4)
+        assert threshold != contact_mask(big, True, 1.5 * 2, "otsu")[1]
+        for find in (find_contacts, find_lines, find_contours):
+            assert find(image, **options)[0].threshold == threshold, (equalize, find.__name__)
+
+
 def test_with_refinement_none_the_design_tone_is_chosen_with_the_detected_centres(tmp_path, monkeypatch):
     write_tile(tmp_path / "tile.jpg", true_center=(0.0, 0.0), seed=1)
     write_design(tmp_path / "tile.oas", visible(LATTICE, margin=0))

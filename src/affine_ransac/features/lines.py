@@ -46,9 +46,11 @@ class LineEdges:
 
 
 def detect_lines(image: np.ndarray, dark_lines: bool = True, blur_sigma: float = 1.5,
-                 method: str = "otsu") -> LineEdges:
-    """The lines of a grayscale uint8 image, at the pixel rows of the threshold mask (module docstring)."""
-    mask, threshold = contact_mask(image, dark_lines, blur_sigma, method)
+                 method: str = "otsu", equalize: str = "none", clahe_clip: float = 2.0,
+                 clahe_tiles: int = 8) -> LineEdges:
+    """The lines of a grayscale uint8 image, at the pixel rows of the threshold mask (module docstring); equalize,
+    clahe_clip, clahe_tiles as for contact_mask (D167)."""
+    mask, threshold = contact_mask(image, dark_lines, blur_sigma, method, equalize, clahe_clip, clahe_tiles)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4 if method == "band" else 8)
     rows, cols = mask.shape
     left, width = stats[:, cv2.CC_STAT_LEFT], stats[:, cv2.CC_STAT_WIDTH]

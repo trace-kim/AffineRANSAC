@@ -45,13 +45,15 @@ class Contours:
 
 def detect_contours(image: np.ndarray, dark: bool = True, blur_sigma: float = 1.5, min_area_px: int = 20,
                     max_area_px: int | None = None, method: str = "otsu",
-                    normal_span: int = 3, log: StepLog | None = None) -> tuple[Contours, np.ndarray]:
+                    normal_span: int = 3, log: StepLog | None = None, equalize: str = "none",
+                    clahe_clip: float = 2.0, clahe_tiles: int = 8) -> tuple[Contours, np.ndarray]:
     """The contours of a grayscale uint8 image at the pixels of the threshold mask (module docstring), and the region
     number of every pixel (0: none), which refine_contours needs. dark: the regions are the darker side.
     log: if given, gets the time of each step and the counts they depend on: the regions of the mask and those kept,
-    the pixels in the kept regions' bounding boxes (each region is traced in its own), the boundaries around holes."""
+    the pixels in the kept regions' bounding boxes (each region is traced in its own), the boundaries around holes.
+    equalize, clahe_clip, clahe_tiles: as for contact_mask (D167); the threshold mask only."""
     with timed(log, "threshold mask"):
-        mask, threshold = contact_mask(image, dark, blur_sigma, method)
+        mask, threshold = contact_mask(image, dark, blur_sigma, method, equalize, clahe_clip, clahe_tiles)
     with timed(log, "regions of the mask"):
         count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4 if method == "band" else 8)
     points, normals, closed, region = [], [], [], []

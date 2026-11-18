@@ -373,10 +373,31 @@ stabilisation (needs the detector's gain and offset). Cost per 2048² image: med
 means 0.9 s; total variation 3.8 s. Not evaluated on synthetic images (the user: they do not represent the real images);
 the user judges the methods on the real images in the diagnosis window.
 
+**Equalization for the threshold (D167).** `equalize` (none, the default; global, adaptive), a detection setting
+for every pattern: after the detection blur, `features.contact.contact_mask` equalizes the grey levels of the
+(upscaled) image, and the detection method chooses and applies its threshold on them. Only the threshold mask sees
+it: the contrast check and the edge refinement work on the image as before, so the edges are still measured on
+grey levels that follow the signal, not on remapped ones. **global**: histogram equalization over the whole image
+(`cv2.equalizeHist`, computed as its table, `equalization_lut`, tested equal to it). The table never decreases, so
+the mask is still the blurred image cut at one grey level, and the threshold returned (used by refinement
+`threshold` and named in the diagnosis line) is that grey level of the blurred image. Otsu on a flat histogram
+divides the pixels into about equal shares (three for otsu3 and band), so global equalization moves the threshold
+towards the median grey level; it cannot follow brightness that changes across the image. **adaptive**:
+contrast-limited adaptive histogram equalization (CLAHE, Zuiderveld 1994; `cv2.createCLAHE`): the image is cut into
+`clahe_tiles` × `clahe_tiles` tiles (8, OpenCV's default; a count per side, so the same when upscaled), each mapped
+by its own histogram in which no grey level counts more than `clahe_clip` times the average (2.0, the value of
+OpenCV's tutorial; OpenCV's own default, 40, hardly limits the noise of a tile without edges), the mappings blended
+between neighbouring tiles. The grey level that divides the image then varies across it, and the threshold returned
+is a grey level of the equalized image: `check_settings` refuses adaptive with refinement `threshold`, which needs one
+grey level of the image. The other way to a threshold that fits varying brightness is to subtract the background
+first (`background_px`, D130). Default none: results, `ANALYSIS` 9 and `FORMAT` 3 unchanged. Not evaluated on
+synthetic images; the user judges it on the real images in the diagnosis window.
+
 **Contour settings (D128).** Every option of the detection and the refinement is a setting
 (`analysis.CONTOUR_SETTINGS`), its default the value the code had before: `background_px` (0 = off, D130),
 `denoise` (none, D132) with `median_px` (3), `nlm_h` (10) and `tv_weight` (0.1), `upscale` (1 = off, D131),
-`detection`, `dark_contacts` (on), `detection_blur_px` (1.5), `min_area_px` (20),
+`detection`, `dark_contacts` (on), `detection_blur_px` (1.5), `equalize` (none, D167) with `clahe_clip` (2.0) and
+`clahe_tiles` (8), `min_area_px` (20),
 `max_area_px` (0 = no limit), `min_solidity` (0.9, band only), `min_contrast`, `refinement`, `search_px`, `edge_step_px`
 (0.25), `edge_blur_px` (1.0), `normal_span` (3). `find_contacts` takes them by name only (keyword arguments).
 `pipeline.find_contacts(image, **analysis.contour_options(settings))` finds an image's contacts with them (detection,
@@ -1557,7 +1578,11 @@ method and the rule): *Threshold mask* (the pixels the threshold takes as contac
 D76), *Detected contours* and *centres* (magenta), *Refined contours* and *centres* (cyan; not offered with refinement
 none, D124), on once an image is loaded, as after *Load contours* (D113). One line in words: how many contacts were
 found, the method and the threshold's grey level, and the regions left out per reason (`DetectedContacts.left_out`, then
-the contrast check); invalid settings are named there instead, in red (`check_settings`), and cannot be applied. Below
+the contrast check); invalid settings are named there instead, in red (`check_settings`), and cannot be applied. With
+`equalize` (D167, in *Detection*; `clahe_clip` and `clahe_tiles` greyed unless adaptive) the threshold mask is that
+of the equalized threshold, the image shown stays the one the edges are refined on, and the line names the
+equalization (global: "on the equalized histogram", the grey level of the image searched; adaptive: "after adaptive
+equalization", a grey level of the equalized image, not comparable with the one under the cursor). Below
 the image: the cursor's x, y and the grey level of the pixel under it. *Copy image* / *Save image...* as every figure.
 **Apply to parameters** keeps the settings for the next run, as *Parameters* does (`MaskRegWindow.apply_parameters`: the
 remembered parameters, and a restart offered when they differ from those of the analysis shown); **Cancel** leaves them.

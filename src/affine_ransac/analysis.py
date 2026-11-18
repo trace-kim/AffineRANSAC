@@ -35,7 +35,7 @@ import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
-from affine_ransac.features.contact import BAND_MIN_SOLIDITY, DENOISERS
+from affine_ransac.features.contact import BAND_MIN_SOLIDITY, DENOISERS, EQUALIZERS
 from affine_ransac.fitting.drift import DriftCurve, StripeDrift, drift_curve, stripe_drift
 from affine_ransac.fitting.moving_window import MovingWindowResult, moving_window_affine
 from affine_ransac.fitting.ransac import RansacResult, ransac_affine
@@ -154,6 +154,21 @@ class Settings:
                                         "refinement")
     detection_blur_px: float = setting(1.5, "Detection: Gaussian blur (sigma, px) of the image before thresholding; "
                                             "0 = none")
+    equalize: str = setting("none", "Detection: equalize the grey levels after the blur, and choose and apply the "
+                                    "threshold on them; the edge refinement still measures the image itself. global: "
+                                    "one mapping for the whole image (histogram equalization): the mask is still the "
+                                    "image cut at one grey level, but chosen on a flat histogram, which puts about as "
+                                    "many pixels on each side (otsu3, band: in each class). adaptive: a mapping per "
+                                    "tile (CLAHE, CLAHE_TILES, CLAHE_CLIP), so the dividing grey level follows "
+                                    "brightness that varies across the image; not with refinement threshold. none: off")
+    clahe_clip: float = setting(2.0, "Equalize adaptive: contrast limit (OpenCV clipLimit): in each tile no grey level "
+                                     "counts more than this many times the average before the mapping, so that the "
+                                     "noise of a tile without edges is not stretched; larger: more local contrast, "
+                                     "more noise")
+    clahe_tiles: int = setting(8, "Equalize adaptive: the image is cut into this many tiles per side (the same when "
+                                  "upscaled), each mapped by its own histogram, blended between tiles. A tile should "
+                                  "hold both sides of the threshold (wider than a contact, line or space) and be "
+                                  "narrower than the brightness changes it is to follow")
     min_area_px: int = setting(20, "Detection: regions of fewer pixels are left out (noise)")
     max_area_px: int = setting(0, "Detection: regions of more pixels are left out; 0 = no limit")
     min_solidity: float = setting(BAND_MIN_SOLIDITY, "Detection, band only: regions less solid than this (area / "
@@ -198,11 +213,13 @@ RELEASE_ONLY = {"moving_window_per_stripe", "in_image_correction",  # used by th
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
-               "normal_span", "background_px", "upscale", "denoise", "median_px", "nlm_h", "tv_weight"}
+               "normal_span", "background_px", "upscale", "denoise", "median_px", "nlm_h", "tv_weight", "equalize",
+               "clahe_clip", "clahe_tiles"}
 # The settings that find the contacts in an SEM image (pipeline.find_contacts takes them by these names; D128)
 CONTOUR_SETTINGS = ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale", "detection",
-                    "dark_contacts", "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
-                    "refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")
+                    "dark_contacts", "detection_blur_px", "equalize", "clahe_clip", "clahe_tiles", "min_area_px",
+                    "max_area_px", "min_solidity", "min_contrast", "refinement", "search_px", "edge_step_px",
+                    "edge_blur_px", "normal_span")
 # The contour settings that find lines (pipeline.find_lines, D153): not the region limits, the contrast check and the
 # contour normals of the contacts
 LINE_SETTINGS = tuple(name for name in CONTOUR_SETTINGS
@@ -215,7 +232,7 @@ PATTERN_SETTINGS = {"contacts": CONTOUR_SETTINGS, "lines": LINE_SETTINGS, "conto
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
 BY_IMAGE = ("image by image", "fingerprint")  # stitched image by image after a placement (D133, D144)
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
-           "stitch_method": STITCH_METHODS, "denoise": DENOISERS, "pattern": PATTERNS}
+           "stitch_method": STITCH_METHODS, "denoise": DENOISERS, "equalize": EQUALIZERS, "pattern": PATTERNS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
 # with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
 BEFORE = {"refinement": "steepest gradient"}  # D122
@@ -267,6 +284,11 @@ def check_settings(s: Settings, kind: str):
               "nlm_h": (s.nlm_h > 0, "must be > 0"),
               "tv_weight": (s.tv_weight > 0, "must be > 0"),
               "detection_blur_px": (s.detection_blur_px >= 0, "must be >= 0"),
+              # adaptive equalization has no grey level of the image for the threshold rule to cross (D167)
+              "equalize": (s.equalize != "adaptive" or s.refinement != "threshold",
+                           "adaptive cannot go with refinement threshold"),
+              "clahe_clip": (s.clahe_clip > 0, "must be > 0"),
+              "clahe_tiles": (s.clahe_tiles >= 1, "must be >= 1"),
               "min_area_px": (s.min_area_px >= 0, "must be >= 0"),
               "max_area_px": (s.max_area_px >= 0, "must be >= 0 (0: no limit)"),
               "min_solidity": (0 <= s.min_solidity <= 1, "must be in [0, 1]"),

@@ -6,7 +6,8 @@ removes pixel noise (median, non-local means or total variation); then (upscale)
 to more pixels, and in_image_pixels() puts the contacts found in it back in the image's pixels.
 
 Steps:
-  1. Blur slightly to suppress pixel noise.
+  1. Blur slightly to suppress pixel noise. On request (equalize, D167), equalize the grey levels for the threshold
+     only: over the whole image ("global") or tile by tile ("adaptive", CLAHE); see contact_mask.
   2. Threshold -> binary mask of candidate contact pixels (dark contacts by default), by method:
      "otsu":  plain Otsu (two grey-level classes).
      "otsu3": three classes (hole interior | background | bright band at the hole edge,
@@ -42,6 +43,7 @@ METHODS = ("otsu", "otsu3", "band")
 BAND_MIN_SOLIDITY = 0.9
 LEFT_OUT = ("border", "small", "large", "not solid")  # why a region is not a contact (step 4)
 DENOISERS = ("none", "median", "non-local means", "total variation")  # denoised_image methods (D132)
+EQUALIZERS = ("none", "global", "adaptive")  # contact_mask's equalize (D167)
 NLM_PATCH_PX, NLM_SEARCH_PX = 7, 21  # non-local means: patch and search window, OpenCV's recommended sizes
 
 
@@ -130,12 +132,46 @@ def in_image_pixels(contacts: DetectedContacts, factor: int) -> DetectedContacts
                             contacts.threshold, contacts.left_out)
 
 
-def contact_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5, method: str = "otsu"):
-    """Blur, then threshold by method (module docstring). Returns (mask, threshold); mask is 1 on
-    candidate contact pixels. Comparisons as in cv2: <= threshold is the dark side."""
+def contact_mask(image: np.ndarray, dark_contacts: bool = True, blur_sigma: float = 1.5, method: str = "otsu",
+                 equalize: str = "none", clahe_clip: float = 2.0, clahe_tiles: int = 8):
+    """Blur, equalize if asked, then threshold by method (module docstring). Returns (mask, threshold); mask is 1 on
+    candidate contact pixels. Comparisons as in cv2: <= threshold is the dark side.
+    equalize (D167), for the threshold only:
+    "global": the threshold is chosen on the grey levels equalized over the whole image (cv2.equalizeHist). That
+    mapping keeps the order of the grey levels, so the mask is still the blurred image cut at one grey level, and
+    the threshold returned is that level of the blurred image.
+    "adaptive": the threshold is chosen and applied on the image equalized tile by tile (CLAHE, cv2.createCLAHE:
+    clahe_tiles x clahe_tiles tiles, contrast limit clahe_clip), so the grey level that divides the blurred image
+    varies across it; the threshold returned is a grey level of the equalized image, not of the image."""
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}, not {method!r}")
+    if equalize not in EQUALIZERS:
+        raise ValueError(f"equalize must be one of {EQUALIZERS}, not {equalize!r}")
     blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=blur_sigma) if blur_sigma > 0 else image
+    if equalize == "adaptive":
+        blurred = cv2.createCLAHE(clahe_clip, (clahe_tiles, clahe_tiles)).apply(blurred)
+    if equalize != "global":
+        return threshold_mask(blurred, dark_contacts, method)
+    lut = equalization_lut(blurred)
+    mask, level = threshold_mask(cv2.LUT(blurred, lut), dark_contacts, method)
+    return mask, float(np.flatnonzero(lut <= level).max())  # the brightest grey level lut puts on the dark side
+
+
+def equalization_lut(image: np.ndarray) -> np.ndarray:
+    """cv2.equalizeHist's mapping of this uint8 image as a table (cv2 does not return it): grey level v goes to 255 x
+    the share of the pixels at v or darker, counted beyond those at the darkest level present (rounded as cv2 does).
+    It never decreases with v. An image of one grey level keeps it."""
+    hist = np.bincount(image.ravel(), minlength=256)
+    darkest = int(np.flatnonzero(hist)[0])
+    if hist[darkest] == image.size:
+        return np.arange(256, dtype=np.uint8)
+    beyond = np.cumsum(hist) - hist[darkest]
+    scale = np.float32(255.0) / np.float32(image.size - hist[darkest])  # in float32, as cv2
+    return np.clip(np.rint(beyond.astype(np.float32) * scale), 0, 255).astype(np.uint8)
+
+
+def threshold_mask(blurred: np.ndarray, dark_contacts: bool, method: str):
+    """contact_mask's step 2 on the blurred (and equalized) image: (mask, threshold)."""
     if method == "otsu":
         mode = cv2.THRESH_BINARY_INV if dark_contacts else cv2.THRESH_BINARY
         threshold, mask = cv2.threshold(blurred, 0, 1, mode + cv2.THRESH_OTSU)
@@ -164,9 +200,13 @@ def detect_contacts(
     max_area_px: int | None = None,
     method: str = "otsu",
     min_solidity: float | None = None,
+    equalize: str = "none",
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
 ) -> DetectedContacts:
-    """Find contacts in a grayscale uint8 image. See the module docstring for the steps."""
-    mask, threshold = contact_mask(image, dark_contacts, blur_sigma, method)
+    """Find contacts in a grayscale uint8 image. See the module docstring for the steps; equalize, clahe_clip and
+    clahe_tiles as for contact_mask."""
+    mask, threshold = contact_mask(image, dark_contacts, blur_sigma, method, equalize, clahe_clip, clahe_tiles)
     if min_solidity is None and method == "band":
         min_solidity = BAND_MIN_SOLIDITY
     connectivity = 4 if method == "band" else 8

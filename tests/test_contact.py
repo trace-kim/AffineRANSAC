@@ -7,8 +7,8 @@ import pytest
 
 from skimage.restoration import denoise_tv_chambolle
 
-from affine_ransac.features.contact import (DetectedContacts, denoised_image, detect_contacts, flatten_background,
-                                            in_image_pixels, upscaled_image)
+from affine_ransac.features.contact import (DetectedContacts, contact_mask, denoised_image, detect_contacts,
+                                            equalization_lut, flatten_background, in_image_pixels, upscaled_image)
 from affine_ransac.features.total_variation import total_variation
 from affine_ransac.io.sem_image import crop_databar, load_sem_image
 from sample_sem import write_sem_like
@@ -286,6 +286,41 @@ def test_solidity_filter_drops_the_pinched_off_background():
     image, truth = wide_band_image(band_px=16)
     unfiltered = detect_contacts(image, method="band", min_solidity=0.0)
     assert len(unfiltered.centers) > len(truth)  # the concave background pieces between the bands
+
+
+def test_the_equalization_table_is_opencvs_histogram_equalization():
+    rng = np.random.default_rng(0)
+    images = [rng.integers(0, 256, (37, 501)), np.clip(rng.normal(150, 9, (300, 200)), 0, 255),
+              rng.choice([3, 90, 91, 250], (64, 64)), np.full((10, 10), 77)]  # wide, narrow, few levels, one level
+    for image in (np.asarray(i, np.uint8) for i in images):
+        np.testing.assert_array_equal(cv2.LUT(image, equalization_lut(image)), cv2.equalizeHist(image))
+        assert (np.diff(equalization_lut(image).astype(int)) >= 0).all()  # keeps the order of the grey levels
+
+
+def test_global_equalization_cuts_the_image_at_one_grey_level():
+    """D167: the threshold is chosen on the equalized grey levels, and it is that grey level of the blurred image:
+    the mask is the blurred image cut there, for every method and either tone."""
+    image, _ = wide_band_image(band_px=16)  # three grey levels: otsu3 and band have their classes
+    blurred = cv2.GaussianBlur(image, (0, 0), 1.5)
+    for method in ("otsu", "otsu3", "band"):
+        for dark in (True, False):
+            mask, threshold = contact_mask(image, dark, 1.5, method, equalize="global")
+            np.testing.assert_array_equal(mask, (blurred <= threshold) if dark else (blurred > threshold))
+            on_equalized, _ = contact_mask(cv2.equalizeHist(blurred), dark, 0, method)
+            np.testing.assert_array_equal(mask, on_equalized)
+    assert contact_mask(image, equalize="global")[1] != contact_mask(image)[1]  # Otsu chose on other grey levels
+
+
+def test_adaptive_equalization_thresholds_the_clahe_image():
+    image, _ = wide_band_image(band_px=3)
+    blurred = cv2.GaussianBlur(image, (0, 0), 1.5)
+    equalized = cv2.createCLAHE(3.0, (4, 4)).apply(blurred)
+    threshold, expected = cv2.threshold(equalized, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    mask, found = contact_mask(image, True, 1.5, "otsu", equalize="adaptive", clahe_clip=3.0, clahe_tiles=4)
+    np.testing.assert_array_equal(mask, expected)
+    assert found == threshold
+    with pytest.raises(ValueError, match="equalize must be one of"):
+        contact_mask(image, equalize="local")
 
 
 def test_contact_contrast_tells_contacts_from_regions_cut_out_of_noise():

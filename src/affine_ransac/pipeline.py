@@ -216,7 +216,7 @@ def prepared_image(image: np.ndarray, background_px: float = 0.0, dark_contacts:
 
 def find_contacts(
     image: np.ndarray,
-    *,  # 19 options: by name only
+    *,  # 22 options: by name only
     background_px: float = 0.0,
     denoise: str = "none",
     median_px: int = 3,
@@ -226,6 +226,9 @@ def find_contacts(
     detection: str = "otsu",
     dark_contacts: bool = True,
     detection_blur_px: float = 1.5,
+    equalize: str = "none",
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
     min_area_px: int = 20,
     max_area_px: int = 0,
     min_solidity: float = BAND_MIN_SOLIDITY,
@@ -244,7 +247,9 @@ def find_contacts(
     denoised, D132; upscale > 1: then upscaled that many times, D131). The options in pixels, and normal_span (contour
     points), are those of the image as given: in the upscaled image they are `upscale` times larger (areas its square),
     and the contacts are returned in the image's own pixels.
-    detected: features.contact.detect_contacts with method `detection` ("otsu", "otsu3" or "band"), blur, area limits
+    detected: features.contact.detect_contacts with method `detection` ("otsu", "otsu3" or "band"), blur, equalization
+    for the threshold only (equalize, clahe_clip, clahe_tiles: contact_mask, D167; the tiles are a count per side, the
+    same upscaled), area limits
     (max_area_px 0: no limit) and, for "band" only, min_solidity; then, if min_contrast > 0, without the contacts whose
     contrast against a ring around them is below this many noise sigma (contact_contrast, on the image not upscaled,
     denoised if asked: its own noise; false contacts in images without pattern). refined: features.edges.refine_edges
@@ -257,7 +262,8 @@ def find_contacts(
     f = upscale
     big = upscaled_image(image, f)
     detected = detect_contacts(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
-                               max_area_px * f ** 2 or None, detection, min_solidity if detection == "band" else None)
+                               max_area_px * f ** 2 or None, detection, min_solidity if detection == "band" else None,
+                               equalize, clahe_clip, clahe_tiles)
     found = len(detected.centers)
     if min_contrast > 0:
         detected = keep_contacts(detected, contact_contrast(image, in_image_pixels(detected, f)) >= min_contrast)
@@ -281,6 +287,9 @@ def find_lines(
     detection: str = "otsu",
     dark_contacts: bool = True,
     detection_blur_px: float = 1.5,
+    equalize: str = "none",
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
     refinement: str = "mid-level",
     search_px: float = 5.0,
     edge_step_px: float = 0.25,
@@ -294,7 +303,7 @@ def find_lines(
     image = prepared_image(image, background_px, dark_contacts, denoise, median_px, nlm_h, tv_weight)
     f = upscale
     big = upscaled_image(image, f)
-    detected = detect_lines(big, dark_contacts, detection_blur_px * f, detection)
+    detected = detect_lines(big, dark_contacts, detection_blur_px * f, detection, equalize, clahe_clip, clahe_tiles)
     refined = detected if refinement == "none" else refine_line_edges(
         big, detected, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement)
     return in_image_lines(detected, f), in_image_lines(refined, f)
@@ -312,6 +321,9 @@ def find_contours(
     detection: str = "otsu",
     dark_contacts: bool = True,
     detection_blur_px: float = 1.5,
+    equalize: str = "none",
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
     min_area_px: int = 20,
     max_area_px: int = 0,
     refinement: str = "mid-level",
@@ -332,7 +344,8 @@ def find_contours(
     with timed(log, "upscale"):
         big = upscaled_image(image, f)
     detected, labels = detect_contours(big, dark_contacts, detection_blur_px * f, min_area_px * f ** 2,
-                                       max_area_px * f ** 2 or None, detection, normal_span * f, log)
+                                       max_area_px * f ** 2 or None, detection, normal_span * f, log,
+                                       equalize, clahe_clip, clahe_tiles)
     try:
         refined = detected if refinement == "none" else refine_contours(
             big, detected, labels, dark_contacts, search_px * f, edge_step_px * f, edge_blur_px * f, refinement, log)

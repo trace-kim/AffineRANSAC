@@ -13,6 +13,8 @@ With PATTERN lines (D153) it finds horizontal lines instead (pipeline.find_lines
 detected and refined edges, and the line says how many lines were found, their edge roughness and the noise per column.
 With PATTERN contours (D155) it finds the contours of any pattern (pipeline.find_contours): the contour layers draw
 them, closed or open, and the line says how many were found and how many of them are open.
+With EQUALIZE (D167) the threshold is chosen on equalized grey levels: the threshold mask shows the result, the line
+names the equalization, and the image shown stays the one the edges are refined on.
 
 Coordinates are the pixel frame: (x, y) px, y down, pixel centres at whole numbers (docs/SPEC.md §3).
 """
@@ -42,14 +44,15 @@ from affine_ransac.release.views import figure
 
 GROUPS = (("Pattern", ("pattern",)),
           ("Pre-processing", ("background_px", "denoise", "median_px", "nlm_h", "tv_weight", "upscale")),
-          ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "min_area_px",
-                                        "max_area_px", "min_solidity", "min_contrast")),
+          ("Detection (thresholding)", ("detection", "dark_contacts", "detection_blur_px", "equalize", "clahe_clip",
+                                        "clahe_tiles", "min_area_px", "max_area_px", "min_solidity", "min_contrast")),
           ("Edge refinement", ("refinement", "search_px", "edge_step_px", "edge_blur_px", "normal_span")))
 REFINEMENT_OPTIONS = ("search_px", "edge_step_px", "edge_blur_px", "normal_span")  # unused with refinement none
 DENOISE_OPTIONS = {"median_px": "median", "nlm_h": "non-local means", "tv_weight": "total variation"}  # each method's
-STEPS = {"background_px": 5, "median_px": 2, "tv_weight": 0.01, "detection_blur_px": 0.1, "min_area_px": 5,
-         "max_area_px": 100, "min_solidity": 0.01, "min_contrast": 0.5, "search_px": 0.5, "edge_step_px": 0.05,
-         "edge_blur_px": 0.1}  # spin box steps (the others: 1)
+EQUALIZE_OPTIONS = ("clahe_clip", "clahe_tiles")  # used by adaptive equalization only
+STEPS = {"background_px": 5, "median_px": 2, "tv_weight": 0.01, "detection_blur_px": 0.1, "clahe_clip": 0.5,
+         "min_area_px": 5, "max_area_px": 100, "min_solidity": 0.01, "min_contrast": 0.5, "search_px": 0.5,
+         "edge_step_px": 0.05, "edge_blur_px": 0.1}  # spin box steps (the others: 1)
 LAYERS = ("Threshold mask", "Detected contours", "Detected centres", "Refined contours", "Refined centres")
 IMAGE_FILES = "SEM images (*.jpg *.jpeg *.png *.tif *.tiff *.bmp);;All files (*)"
 NO_IMAGE = "Load an SEM image (<i>Load image...</i>) to see the contacts these settings find in it."
@@ -108,7 +111,8 @@ def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | N
         log.add("refine their edges", seconds["refine"])
     with timed(log, "upscale and threshold mask again, for the display"):
         shown = upscaled_image(flat, s.upscale)  # as find_contacts upscales it, with its blur in pixels of the image
-        mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection)
+        mask, _ = contact_mask(shown, s.dark_contacts, s.detection_blur_px * s.upscale, s.detection, s.equalize,
+                               s.clahe_clip, s.clahe_tiles)
     return Diagnosis(shown, detected, refined, low_contrast, mask, log)
 
 
@@ -174,8 +178,18 @@ def summary(d: Diagnosis, s: Settings) -> str:
                  f"ending at the image border")
     else:
         found = f"{len(d.refined.centers)} contacts found</b>"
-    text = f"<b>{found} ({s.detection}, threshold at grey level {d.detected.threshold:.0f}{of_the_image(s)}). "
+    text = f"<b>{found} ({threshold_text(d, s)}). "
     return text + (f"Regions left out: {', '.join(left_out)}." if left_out else "")
+
+
+def threshold_text(d: Diagnosis, s: Settings) -> str:
+    """The detection method and its threshold, in words: a grey level of the image searched, or with adaptive
+    equalization of the equalized image (D167)."""
+    level = f"threshold at grey level {d.detected.threshold:.0f}"
+    if s.equalize == "adaptive":
+        return f"{s.detection} after adaptive equalization, {level} of the equalized image"
+    method = f"{s.detection} on the equalized histogram" if s.equalize == "global" else s.detection
+    return f"{method}, {level}{of_the_image(s)}"
 
 
 def lines_summary(d: Diagnosis, s: Settings) -> str:
@@ -183,8 +197,7 @@ def lines_summary(d: Diagnosis, s: Settings) -> str:
     in words (HTML)."""
     lines = d.refined
     upper, lower = (int(np.isfinite(edges).any(axis=1).sum()) for edges in (lines.upper, lines.lower))
-    text = (f"<b>{len(lines.upper)} lines found</b> ({upper} upper and {lower} lower edges; {s.detection}, threshold "
-            f"at grey level {d.detected.threshold:.0f}{of_the_image(s)}). ")
+    text = f"<b>{len(lines.upper)} lines found</b> ({upper} upper and {lower} lower edges; {threshold_text(d, s)}). "
     if upper + lower:
         shared = " (reads low: neighbouring columns share noise in a denoised or upscaled image)" \
             if s.denoise != "none" or s.upscale > 1 else ""
@@ -210,14 +223,16 @@ def layer_name(name: str, s: Settings) -> str:
 
 def applies(name: str, s: Settings) -> bool:
     """Whether a contour setting changes anything, given the others: min_solidity for band only, each denoising
-    method's option for that method only, the refinement's options unless refinement is none; for lines and for
-    contours, only the settings that find them (PATTERN_SETTINGS)."""
+    method's option for that method only, the CLAHE options for adaptive equalization only, the refinement's options
+    unless refinement is none; for lines and for contours, only the settings that find them (PATTERN_SETTINGS)."""
     if name != "pattern" and name not in PATTERN_SETTINGS[s.pattern]:
         return False
     if name == "min_solidity":
         return s.detection == "band"
     if name in DENOISE_OPTIONS:
         return s.denoise == DENOISE_OPTIONS[name]
+    if name in EQUALIZE_OPTIONS:
+        return s.equalize == "adaptive"
     return name not in REFINEMENT_OPTIONS or s.refinement != "none"
 
 

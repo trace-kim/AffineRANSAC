@@ -11,6 +11,10 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 
 ## Unreleased (will be 1.0.0)
 
+- Detection setting `equalize` (none by default; global, adaptive with `clahe_clip` and `clahe_tiles`): the
+  threshold is chosen on histogram-equalized grey levels, over the whole image or tile by tile (CLAHE); only the
+  threshold mask sees it, edges are still refined on the image itself. In the contour diagnosis window's
+  *Detection* group. Results and saved runs unchanged with the default (D167).
 - Reduce contour-refinement memory: reuse one float image for smoothing/sign reversal, fill profiles with bounded
   coordinate maps, and release consumed worker results. Contour extraction and *Load contours* now limit active
   workers using image dimensions and available RAM/commit capacity, including on kept pools. Denoising,

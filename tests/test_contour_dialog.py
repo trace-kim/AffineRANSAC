@@ -205,11 +205,40 @@ def test_settings_that_change_nothing_are_greyed_out(tmp_path):
     assert dialog.editors["min_solidity"].isEnabled()
     dialog.editors["refinement"].setCurrentText("none")
     assert [name for name, widget in dialog.editors.items() if not widget.isEnabled()] == \
-        ["median_px", "nlm_h", "tv_weight", "search_px", "edge_step_px", "edge_blur_px", "normal_span"]
+        ["median_px", "nlm_h", "tv_weight", "clahe_clip", "clahe_tiles", "search_px", "edge_step_px", "edge_blur_px",
+         "normal_span"]
     for method, option in (("median", "median_px"), ("non-local means", "nlm_h"), ("total variation", "tv_weight")):
         dialog.editors["denoise"].setCurrentText(method)  # each method's option only
         assert [name for name in ("median_px", "nlm_h", "tv_weight") if dialog.editors[name].isEnabled()] == [option]
+    for method, enabled in (("global", False), ("adaptive", True), ("none", False)):  # CLAHE's options: adaptive only
+        dialog.editors["equalize"].setCurrentText(method)
+        assert [dialog.editors[name].isEnabled() for name in ("clahe_clip", "clahe_tiles")] == [enabled, enabled]
     assert not dialog.boxes["Refined contours"].isEnabled() and not dialog.layers["Refined contours"].isVisible()
+
+
+def test_with_equalization_the_mask_and_the_line_are_those_of_the_equalized_threshold(tmp_path):
+    """D167: the threshold mask is that of the run's equalized threshold, the contacts those a run finds, and the line
+    names the equalization; adaptive with the threshold edge rule is refused, in red."""
+    dialog, path = open_dialog(tmp_path)
+    image = load_sem_image(path)
+    for method, words in (("global", "otsu on the equalized histogram, threshold at grey level"),
+                          ("adaptive", "otsu after adaptive equalization, threshold at grey level")):
+        dialog.editors["equalize"].setCurrentText(method)
+        dialog.editors["clahe_tiles"].setValue(4)
+        settle(dialog)
+        s = replace(SETTINGS, equalize=method, clahe_tiles=4)
+        assert dialog.values() == s
+        mask, threshold = contact_mask(image, method="otsu", equalize=method, clahe_tiles=4)
+        np.testing.assert_array_equal(dialog.layers["Threshold mask"].image, mask)
+        x, y = dialog.layers["Refined centres"].getData()
+        np.testing.assert_array_equal(np.column_stack([x, y]), find_contacts(image, **contour_options(s))[1].centers)
+        assert f"({words} {threshold:.0f}" in dialog.summary.text()
+    assert "of the equalized image" in dialog.summary.text()  # adaptive: not a grey level of the image
+
+    dialog.editors["refinement"].setCurrentText("threshold")
+    settle(dialog)
+    assert "adaptive cannot go with refinement threshold" in dialog.summary.text()
+    assert not dialog.apply_button.isEnabled()
 
 
 def test_with_the_background_flattened_the_window_shows_the_image_the_contacts_are_found_in(tmp_path):
@@ -312,8 +341,8 @@ def test_with_pattern_lines_the_window_shows_the_edges_of_the_lines(tmp_path):
     assert dialog.boxes["Refined contours"].text() == "Refined edges" and dialog.layers["Refined contours"].isVisible()
     assert not dialog.boxes["Refined centres"].isEnabled() and not dialog.layers["Refined centres"].isVisible()
     greyed = [name for name, widget in dialog.editors.items() if not widget.isEnabled()]
-    assert greyed == ["median_px", "nlm_h", "tv_weight", "min_area_px", "max_area_px", "min_solidity", "min_contrast",
-                      "normal_span"]
+    assert greyed == ["median_px", "nlm_h", "tv_weight", "clahe_clip", "clahe_tiles", "min_area_px", "max_area_px",
+                      "min_solidity", "min_contrast", "normal_span"]
     assert dialog.values() == s
 
     dialog.editors["pattern"].setCurrentText("contacts")  # back: contours and centres again
@@ -340,8 +369,15 @@ def test_with_pattern_contours_the_window_shows_the_contours_of_any_pattern(tmp_
     assert dialog.boxes["Refined contours"].text() == "Refined contours" and dialog.layers["Refined contours"].isVisible()
     assert not dialog.boxes["Refined centres"].isEnabled() and not dialog.layers["Refined centres"].isVisible()
     greyed = [name for name, widget in dialog.editors.items() if not widget.isEnabled()]
-    assert greyed == ["median_px", "nlm_h", "tv_weight", "min_solidity", "min_contrast"]
+    assert greyed == ["median_px", "nlm_h", "tv_weight", "clahe_clip", "clahe_tiles", "min_solidity", "min_contrast"]
     assert dialog.values() == s
+
+    dialog.editors["equalize"].setCurrentText("adaptive")  # D167: the contours a run finds with it
+    settle(dialog)
+    detected, refined = find_contours(load_sem_image(path), **any_shape_options(replace(s, equalize="adaptive")))
+    x, y = dialog.layers["Refined contours"].getData()
+    np.testing.assert_array_equal(np.column_stack([x, y]), drawable_contours(refined))
+    assert "otsu after adaptive equalization" in dialog.summary.text()
 
 
 def test_every_search_adds_the_time_of_each_step_to_the_log(tmp_path):
