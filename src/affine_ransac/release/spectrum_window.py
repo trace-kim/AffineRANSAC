@@ -1,12 +1,14 @@
 """Frequency analysis of one mean per row or per column of the Registration tab, in a window of its own
-(docs/SPEC.md D173).
+(docs/SPEC.md D173, D174).
 
-The profile as the tab showed it when the window opened, along a horizontal axis, and its amplitude spectrum
-(least-squares sines, spectrum.py) in cycles per µm, with the period in nm on the top axis. Markers on the spectrum,
-off at start: the limit of the row spacing (a higher frequency shows folded below it) and the image step with its
-multiples (where an error made inside every image would show). A click on the spectrum picks the peak nearest to it:
-circled, with its period, its amplitude and the shorter periods it may have folded from written beside it. A click on
-a picked peak drops it.
+The profile as the tab showed it when the window opened, along a horizontal axis; below it what is left after
+removing parts of it; then the amplitude spectrum of both (least-squares sines, spectrum.py) in cycles per µm, with
+the period in nm on the top axis. Removed (D174): the slow part on request (Remove slow part, a running median: the
+sawtooth), and the sine of every picked peak, all picked sines fitted together on what the slow part leaves; the part
+removed is drawn over the profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
+frequency shows folded below it) and the image step with its multiples (where an error made inside every image would
+show). A click on the spectrum picks the peak nearest to it in what is left: circled, with its period, its amplitude
+and the shorter periods it may have folded from written beside it. A click on a picked peak drops it.
 """
 
 from contextlib import contextmanager
@@ -20,6 +22,7 @@ from affine_ransac.release import style
 
 MIN_POINTS = 4  # fewer points give no spectrum
 CLICK_PX = 8  # a click on the spectrum picks the highest peak this many screen pixels around it
+WINDOW_ROWS = 20  # the running median's window at start: this many median row spacings
 
 
 @contextmanager
@@ -44,13 +47,21 @@ class PeriodAxis(pg.AxisItem):
 
 
 def marker(frequency_nm: float, pen: QtGui.QPen, label: str = "", side: int = 0) -> pg.InfiniteLine:
-    """A vertical line on the spectrum at this frequency (cycles per nm), named near its top (below the legend), on
-    its right (side 0) or its left (side 1)."""
-    options = {"label": label, "labelOpts": {"position": 0.8, "anchors": [(side, 0), (side, 0)], "color": style.TEXT,
+    """A vertical line on the spectrum at this frequency (cycles per nm), named half-way up (below the legend), on its
+    right (side 0) or its left (side 1)."""
+    options = {"label": label, "labelOpts": {"position": 0.55, "anchors": [(side, 0), (side, 0)], "color": style.TEXT,
                                              "fill": pg.mkBrush(255, 255, 255, 210)}} if label else {}
     line = pg.InfiniteLine(frequency_nm * 1000, angle=90, pen=pen, movable=False, **options)
     line.setVisible(False)
     return line
+
+
+def show_line(plot: pg.PlotItem, line: pg.PlotDataItem, name: str, on: bool):
+    """Show a line and its legend entry, or hide both."""
+    line.setVisible(on)
+    plot.legend.removeItem(line)
+    if on:
+        plot.legend.addItem(line, name)
 
 
 class SpectrumWindow(QtWidgets.QWidget):
@@ -72,27 +83,48 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.picked = []  # the picked peaks' frequencies, cycles per nm
 
         self.figure = pg.GraphicsLayoutWidget()
+        x_label, um = f"{axis} (µm)", self.position / 1000
         self.profile = self.figure.addPlot(row=0, col=0)
-        style.style_plot(self.profile, name, f"{axis} (µm)", "error (nm)")
+        style.style_plot(self.profile, name, x_label, "error (nm)")
         style.legend(self.profile)
         style.zero_line(self.profile)
-        self.profile.plot(self.position / 1000, self.values, pen=pg.mkPen(color, width=2), name="profile")
+        self.profile.plot(um, self.values, pen=pg.mkPen(color, width=2), name="profile")
+        self.removed_line = self.profile.plot(um, np.zeros_like(um),
+                                              pen=pg.mkPen(style.REMOVED, width=1.5, style=QtCore.Qt.PenStyle.DashLine))
+        self.remainder_plot = self.figure.addPlot(row=1, col=0)
+        style.style_plot(self.remainder_plot, "", x_label, "error (nm)")  # its title names its one line
+        style.zero_line(self.remainder_plot)
+        self.remainder_plot.setXLink(self.profile)
+        self.remainder_line = self.remainder_plot.plot(um, self.values, pen=pg.mkPen(style.REMAINDER, width=2))
 
-        self.spectrum = self.figure.addPlot(row=1, col=0, axisItems={"top": PeriodAxis("top")})
+        self.spectrum = self.figure.addPlot(row=2, col=0, axisItems={"top": PeriodAxis("top")})
         style.style_plot(self.spectrum, "", "frequency (cycles per µm)", "amplitude (nm)")
         self.style_top_axis()
         style.legend(self.spectrum)
         self.spectrum.plot(self.frequency * 1000, self.amplitude, pen=pg.mkPen(color, width=2), name="profile")
+        self.remainder_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude,
+                                                     pen=pg.mkPen(style.REMAINDER, width=1.5))
         self.marks = pg.ScatterPlotItem(symbol="o", size=16, pen=pg.mkPen(style.TEXT, width=1.5), brush=None)
         self.spectrum.addItem(self.marks)
         self.labels = []
         self.figure.scene().sigMouseClicked.connect(self.clicked)
 
+        self.slow_box = QtWidgets.QCheckBox("Remove slow part")
+        self.slow_box.setToolTip("Remove a running median of the profile (its sawtooth), leaving the faster signal")
+        self.slow_box.toggled.connect(self.update_removal)
+        self.window = QtWidgets.QDoubleSpinBox(decimals=3, minimum=0.001, maximum=1e4, singleStep=0.1, suffix=" µm",
+                                               keyboardTracking=False)
+        self.window.setValue(round(WINDOW_ROWS * self.spacing / 1000, 3))
+        self.window.setToolTip("Window of the running median. Shorter than a few periods of the signal to keep, it "
+                               "removes part of it; longer, it leaves more of the slow part at its drops")
+        self.window.valueChanged.connect(lambda *_: self.slow_box.isChecked() and self.update_removal())
         self.limit_box, self.image_box = self.marker_boxes(image_step_nm)
         menus = style.image_menus(lambda: (self.figure, [(name, [self.profile]),
+                                                         (f"{name} after removal", [self.remainder_plot]),
                                                          (f"{name} spectrum", [self.spectrum])]))
         controls = QtWidgets.QHBoxLayout()
-        for widget in (self.limit_box, self.image_box):
+        for widget in (self.slow_box, QtWidgets.QLabel("running median over"), self.window, QtWidgets.QLabel("    "),
+                       self.limit_box, self.image_box):
             controls.addWidget(widget)
         controls.addStretch(1)
         for button in menus:
@@ -102,13 +134,14 @@ class SpectrumWindow(QtWidgets.QWidget):
             f"<b>{name}</b>: {about}. {len(self.position)} points over {length_um:.1f} µm, {self.spacing:.1f} nm apart "
             f"(median): periods shorter than {2 * self.spacing:.0f} nm show folded to longer ones, and peaks closer than "
             f"{1000 * spectrum.resolution(self.position):.3g} cycles per µm are not told apart. Click a peak to measure "
-            "it, click it again to drop it.")
+            "it and remove its sine; click it again to put it back.")
         summary.setWordWrap(True)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(summary)
         layout.addLayout(controls)
         layout.addWidget(self.figure, stretch=1)
-        self.resize(1000, 760)
+        self.resize(1000, 900)
+        self.update_removal()
 
     def style_top_axis(self):
         self.spectrum.showAxis("top")
@@ -145,6 +178,30 @@ class SpectrumWindow(QtWidgets.QWidget):
             box.toggled.connect(lambda on, lines=lines: [line.setVisible(on) for line in lines])
         return limit_box, image_box
 
+    def slow_part(self) -> np.ndarray:
+        if not self.slow_box.isChecked():
+            return np.zeros_like(self.values)
+        return spectrum.running_median(self.position, self.values, self.window.value() * 1000)
+
+    def update_removal(self, *_):
+        """What is removed (the slow part if ticked, plus the picked sines fitted together on what it leaves), drawn
+        over the profile; what is left and its spectrum; the picked peaks."""
+        slow = self.slow_part()
+        self.fitted, sines = spectrum.fit_sines(self.position, self.values - slow, self.picked)
+        self.remainder = self.values - slow - sines
+        removing = self.slow_box.isChecked() or bool(self.picked)
+        with busy():
+            self.remainder_amplitude = spectrum.amplitude_spectrum(self.position, self.remainder, self.frequency) \
+                if removing else self.amplitude
+        self.removed_line.setData(self.position / 1000, slow + sines)
+        show_line(self.profile, self.removed_line, "removed", removing)
+        self.remainder_line.setData(self.position / 1000, self.remainder)
+        self.remainder_plot.setTitle("After removal" if removing else "After removal: nothing removed",
+                                     color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
+        self.remainder_spectrum.setData(self.frequency * 1000, self.remainder_amplitude)
+        show_line(self.spectrum, self.remainder_spectrum, "after removal", removing)
+        self.draw_picked()
+
     def clicked(self, event):
         position = event.scenePos()
         if event.button() != QtCore.Qt.MouseButton.LeftButton or \
@@ -155,17 +212,17 @@ class SpectrumWindow(QtWidgets.QWidget):
 
     def pick(self, near: float, within: float):
         """Drop the picked peak nearest to this frequency (cycles per nm) if one is within `within` of it, else pick
-        the top of the peak nearest to it."""
+        the top of the peak nearest to it in what is left."""
         close = [f for f in self.picked if abs(f - near) <= within]
         if close:
             self.picked.remove(min(close, key=lambda f: abs(f - near)))
         else:
-            self.picked.append(spectrum.peak_near(self.position, self.values, self.frequency, self.amplitude, near,
-                                                  within))
-        self.draw_picked()
+            self.picked.append(spectrum.peak_near(self.position, self.remainder, self.frequency,
+                                                  self.remainder_amplitude, near, within))
+        self.update_removal()
 
     def draw_picked(self):
-        """Every picked peak circled on the spectrum, its period and amplitude (all picked sines fitted together) and
+        """Every picked peak circled on the profile's spectrum, its period and amplitude (fitted with the others) and
         the shorter periods it may have folded from beside it."""
         for label in self.labels:
             self.spectrum.removeItem(label)
@@ -174,11 +231,10 @@ class SpectrumWindow(QtWidgets.QWidget):
         if not len(frequency):
             self.marks.setData([], [])
             return
-        amplitude, _ = spectrum.fit_sines(self.position, self.values, frequency)
         height = spectrum.amplitude_spectrum(self.position, self.values, frequency)
         self.marks.setData(frequency * 1000, height)
         middle = np.mean(self.spectrum.vb.viewRange()[0]) / 1000
-        for f, a, h in zip(frequency, amplitude, height):
+        for f, a, h in zip(frequency, self.fitted, height):
             folded = ", ".join(period_text(1 / g) for g in spectrum.folded_from(f, self.spacing))
             # Hanging from the peak's top, on the side with more room: a tall peak's label stays in the graph.
             label = pg.TextItem(f"period {period_text(1 / f)} nm, amplitude {a:.2f} nm\nor folded from {folded} nm",

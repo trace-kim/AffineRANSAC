@@ -1978,3 +1978,51 @@ def test_every_profile_opens_its_frequency_analysis(tmp_path):
     np.testing.assert_allclose(window.values, view.column_mean[np.argsort(view.column_x), 2])
     assert "grid average" in window.findChildren(QtWidgets.QLabel)[0].text()
     view.close()
+
+
+def test_the_spectrum_window_removes_the_slow_part_and_the_picked_sines():
+    """D174: Remove slow part takes the running median out, leaving the sine; a picked peak's sine is removed too,
+    fitted on what the slow part leaves; without the slow part removed, removing the sine leaves the sawtooth. The part
+    removed is drawn over the profile; what is left and its spectrum below, named in the legend."""
+    from affine_ransac import spectrum
+    from affine_ransac.release.spectrum_window import SpectrumWindow
+    style.setup()
+    pg.mkQApp()
+    position = np.arange(0.0, 39_000.0, 50.0)
+    sawtooth = 1.5 * ((position % 13_000) / 13_000 - 0.5)
+    values = sawtooth + 0.3 * np.sin(2 * np.pi * position / 410.0) + np.random.default_rng(0).normal(0, 0.02,
+                                                                                                    len(position))
+    window = SpectrumWindow(None, "dy mean per row", "all stripes, every L/S centre", "y", position, values, style.DY,
+                            None)
+    window.show()
+    settle()
+    legend = lambda plot: [label.text for _, label in plot.legend.items]
+    assert not window.removed_line.isVisible() and not window.remainder_spectrum.isVisible()
+    assert legend(window.spectrum) == ["profile"] and legend(window.profile) == ["profile"]
+    np.testing.assert_allclose(window.remainder_line.getData()[1], values)
+    assert not window.image_box.isEnabled()
+
+    assert window.window.value() == 1.0  # 20 rows of 50 nm
+    window.window.setValue(2.05)  # five periods of the sine: a shorter median takes part of it
+    window.slow_box.setChecked(True)
+    slow = spectrum.running_median(position, values, 2050.0)
+    np.testing.assert_allclose(window.removed_line.getData()[1], slow)
+    np.testing.assert_allclose(window.remainder_line.getData()[1], values - slow)
+    assert window.removed_line.isVisible() and window.remainder_spectrum.isVisible()
+    assert legend(window.spectrum) == ["profile", "after removal"] and legend(window.profile) == ["profile", "removed"]
+    top = window.frequency[np.argmax(window.remainder_amplitude)]  # the sine, once the sawtooth is out
+    window.pick(top, 1e-5)
+    (picked,) = window.picked
+    assert abs(1 / picked - 410) < 1 and window.fitted[0] == pytest.approx(0.3, abs=0.02)
+    sine = spectrum.fit_sines(position, values - slow, [picked])[1]
+    np.testing.assert_allclose(window.removed_line.getData()[1], slow + sine)
+    assert spectrum.amplitude_spectrum(position, window.remainder, picked) < 1e-9  # none of it left
+
+    window.slow_box.setChecked(False)  # the sine alone removed: the sawtooth is left
+    np.testing.assert_allclose(window.remainder, values - spectrum.fit_sines(position, values, [picked])[1])
+    assert np.corrcoef(window.remainder, sawtooth)[0, 1] > 0.99
+    window.window.setValue(2.0)  # changes nothing while the slow part is not removed
+    np.testing.assert_allclose(window.remainder, values - spectrum.fit_sines(position, values, [picked])[1])
+    window.pick(picked, 1e-5)
+    assert window.picked == [] and not window.remainder_spectrum.isVisible()
+    window.close()

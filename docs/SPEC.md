@@ -1379,7 +1379,18 @@ the spectrum** takes its highest point within 8 screen pixels (at least one reso
 of that peak, refined on a grid ten times finer (`spectrum.peak_near`); the peak is circled and its period, its
 amplitude (all picked sines fitted together with the mean, `spectrum.fit_sines`) and the shorter periods it may have
 folded from (k / spacing ± f, k = 1, 2: `spectrum.folded_from`) are written beside it. A click within the same
-distance of a picked peak drops it. Copy / Save image: the window's figure or either graph.
+distance of a picked peak drops it. Copy / Save image: the window's figure or any of its graphs.
+
+**Removal (D174).** Between the profile and the spectrum, *After removal*: the profile minus what is removed, its
+spectrum a second line on the spectrum (*after removal*, shown and in the legend only while something is removed),
+and the part removed drawn dashed over the profile (*removed*). Removed are the **slow part**, when *Remove slow
+part* is ticked (off at start): a running median over a window in µm (`spectrum.running_median`, 20 median row
+spacings at start), which follows ramps and keeps drops sharp, so it takes out a sawtooth; and the **sine of every
+picked peak**, all picked sines fitted together with a mean on the profile minus the slow part (`fit_sines`). A new
+pick is the peak nearest to the click in what is left, so a second sine of a beat can be picked once the first is
+removed; a picked peak stays circled on the profile's spectrum. Untick the slow part to remove only the sines and
+see the sawtooth. A running median shorter than a few periods of a sine takes part of it, and near a drop it lags by
+up to half a window of the ramp (the tooltip says so).
 
 **In-image correction (D141):** with
 `in_image_correction` (off by default; a parameter of both kinds of folder, release only: `RELEASE_ONLY`) the

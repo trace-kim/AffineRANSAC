@@ -22,6 +22,7 @@ THRESHOLD = "#e8b500"  # contour diagnosis: the pixels the threshold takes as co
 STRIPES = ["#2a78d6", "#9b4dca", "#1baf7a", "#c7951a"]  # design pattern: one colour per stripe, in turn
 ALL_ROWS, RAMP, MANUAL = "#7d7d79", "#9b4dca", TEXT  # min and max lines of a mean per row: all rows, ramp, by hand
 LIMIT, IMAGE_STEP = "#c7951a", "#7d7d79"  # spectrum markers: limit of the row spacing, image step and its multiples
+REMOVED, REMAINDER = TEXT, "#9b4dca"  # frequency analysis: the part removed from a profile, what is left
 FONT = "Segoe UI"
 TICK_PT, LABEL_PT, TITLE_PT = 10, 11, 12
 EXPORT_SCALE = 2  # Copy / Save image: pixels per screen pixel

@@ -15,6 +15,9 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
   corner (or *Frequency analysis...* in its right-click menu) opens the profile and its amplitude spectrum in a
   window of its own. Click a peak to see its period, its amplitude and the shorter periods it may have folded from.
   Needs scipy 1.15 or newer: run `pip install -e ".[dev]"` again (D173).
+- Frequency analysis, **removal**: tick *Remove slow part* to take out a running median (the sawtooth), and every
+  picked peak's sine is taken out too. *After removal* shows what is left, and its spectrum is drawn beside the
+  profile's (D174).
 - The Registration tab's **Map data** menu copies or exports all measured points as CSV or TSV with columns
   `x`, `y`, `dx`, `dy` (mask µm and residual nm). Horizontal L/S leaves `dx` blank (D172).
 - **Analysis 10.** Horizontal L/S measures each complete line and space in ten x slices in the SEM and design.

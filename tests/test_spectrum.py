@@ -67,3 +67,25 @@ def test_the_spectrum_is_the_same_computed_a_few_frequencies_at_a_time(monkeypat
     monkeypatch.setattr(spectrum, "CHUNK_CELLS", 3 * len(position) + 1)  # three frequencies a call
     np.testing.assert_allclose(spectrum.amplitude_spectrum(position, values, frequency), whole, rtol=1e-12)
     assert spectrum.amplitude_spectrum(position, values, frequency[5]).shape == ()
+
+
+def test_the_running_median_follows_a_ramp_and_keeps_a_step_sharp():
+    position = np.arange(0.0, 5000.0, 50.0)
+    ramp = 0.002 * position
+    inside = (position >= 500) & (position <= 4450)  # a whole window around them
+    np.testing.assert_allclose(spectrum.running_median(position, ramp, 1000.0)[inside], ramp[inside])
+    step = (position > 2525).astype(float)
+    np.testing.assert_array_equal(spectrum.running_median(position, step, 1000.0), step)
+
+
+def test_removing_the_slow_part_leaves_the_sine_as_the_highest_peak():
+    """A sawtooth with a small sine on it: the profile's highest peak is the sawtooth's; once the running median is
+    removed, the sine's."""
+    position = np.arange(0.0, 39_000.0, 50.0)
+    values = 1.5 * ((position % 13_000) / 13_000 - 0.5) + 0.3 * np.sin(2 * np.pi * position / 410.0)
+    frequency = spectrum.frequency_grid(position)
+    profile = spectrum.amplitude_spectrum(position, values, frequency)
+    remainder = values - spectrum.running_median(position, values, 2050.0)  # five periods of the sine
+    left = spectrum.amplitude_spectrum(position, remainder, frequency)
+    assert abs(1 / frequency[np.argmax(profile)] - 13_000) < 1000
+    assert abs(1 / frequency[np.argmax(left)] - 410) < 2 and left.max() > 0.25

@@ -78,6 +78,15 @@ def peak_near(position_nm, values, frequency: np.ndarray, amplitude: np.ndarray,
     return float(fine[np.argmax(amplitude_spectrum(position_nm, values, fine))])
 
 
+def running_median(position_nm: np.ndarray, values: np.ndarray, window_nm: float) -> np.ndarray:
+    """A profile's slow part: at each position (from the lowest up) the median of the values within half a window of
+    it. It follows a ramp and keeps a step sharp; near a step on a ramp it lags by up to half a window of the ramp. A
+    sine whose period fits in the window a few times hardly moves it; a shorter window follows part of the sine."""
+    low = np.searchsorted(position_nm, position_nm - window_nm / 2, side="left")
+    high = np.searchsorted(position_nm, position_nm + window_nm / 2, side="right")
+    return np.array([np.median(values[a:b]) for a, b in zip(low, high)])
+
+
 def folded_from(frequency: float, spacing_nm: float, multiples: int = 2) -> np.ndarray:
     """The higher frequencies (cycles per nm) that rows every spacing_nm show at this frequency, from the lowest:
     k / spacing ± frequency for k = 1 ... multiples."""
