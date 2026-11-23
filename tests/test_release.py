@@ -2026,3 +2026,49 @@ def test_the_spectrum_window_removes_the_slow_part_and_the_picked_sines():
     window.pick(picked, 1e-5)
     assert window.picked == [] and not window.remainder_spectrum.isVisible()
     window.close()
+
+
+def test_the_spectrum_window_offers_an_fft_and_a_straight_line_per_ramp():
+    """D175: the spectrum by FFT of the profile resampled evenly, for comparison (picked peaks still measured by least
+    squares); the slow part as a straight line per ramp, its wiggle height at start half the profile's range. The
+    tab's Auto (8 x the row-to-row noise) found no ramp here: a sine of four rows per period moves a lot between
+    rows."""
+    from affine_ransac import spectrum
+    from affine_ransac.registration import largest_ramp, noise_sigma
+    from affine_ransac.release.spectrum_window import SpectrumWindow
+    style.setup()
+    pg.mkQApp()
+    position = np.arange(0.0, 39_000.0, 50.0)
+    sawtooth = 1.5 * ((position % 13_000) / 13_000 - 0.5)
+    values = sawtooth + 0.25 * np.sin(2 * np.pi * position / 205.0)
+    assert largest_ramp(values, 8 * noise_sigma(values)) == (0, len(values) - 1)  # Auto: one ramp, no sawtooth
+    window = SpectrumWindow(None, "dy mean per row", "all stripes, every L/S centre", "y", position, values, style.DY,
+                            None)
+    window.show()
+    settle()
+    assert window.method.currentIndex() == 0 and window.window.isEnabled() and not window.wiggle.isEnabled()
+    window.method.setCurrentIndex(1)
+    frequency, amplitude = spectrum.fft_spectrum(position, values)
+    np.testing.assert_allclose(window.profile_spectrum.getData()[1], amplitude)
+    np.testing.assert_allclose(window.profile_spectrum.getData()[0], 1000 * frequency)
+
+    window.slow_method.setCurrentIndex(1)
+    assert window.wiggle.isEnabled() and not window.window.isEnabled()
+    assert window.wiggle.value() == round(np.ptp(values) / 2, 2)
+    window.slow_box.setChecked(True)
+    slow = spectrum.line_per_ramp(position, values, window.wiggle.value())
+    np.testing.assert_allclose(window.removed_line.getData()[1], slow)
+    assert np.corrcoef(slow, sawtooth)[0, 1] > 0.99  # the sawtooth found
+    np.testing.assert_allclose(window.remainder_spectrum.getData()[1], spectrum.fft_spectrum(position, values - slow)[1])
+    window.pick(frequency[np.argmax(spectrum.fft_spectrum(position, values - slow)[1])], 1e-5)
+    (picked,) = window.picked
+    assert abs(1 / picked - 205) < 0.2 and window.fitted[0] == pytest.approx(0.25, abs=0.01)
+    window.wiggle.setValue(0.5)
+    np.testing.assert_allclose(window.removed_line.getData()[1],
+                               spectrum.line_per_ramp(position, values, 0.5)
+                               + spectrum.fit_sines(position, values - spectrum.line_per_ramp(position, values, 0.5),
+                                                    [picked])[1])
+    window.method.setCurrentIndex(0)  # back to Lomb–Scargle: the pick is kept
+    assert window.picked == [picked] and len(window.profile_spectrum.getData()[0]) == len(
+        spectrum.frequency_grid(position))
+    window.close()

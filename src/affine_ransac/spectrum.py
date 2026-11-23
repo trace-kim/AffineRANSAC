@@ -7,6 +7,8 @@ Positions and values in nm, frequencies in cycles per nm (the window shows cycle
 import numpy as np
 from scipy.signal import lombscargle
 
+from affine_ransac.registration import turning_points
+
 OVERSAMPLE = 5  # frequency grid steps per resolution step (one over the profile's length)
 CHUNK_CELLS = 2_000_000  # points x frequencies per call of scipy's periodogram (16 MB per table it builds)
 
@@ -47,6 +49,19 @@ def amplitude_spectrum(position_nm: np.ndarray, values: np.ndarray, frequency: n
     return amplitude.reshape(np.shape(frequency))
 
 
+def fft_spectrum(position_nm: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Amplitude spectrum by FFT, for comparison with the least-squares one (D175): the profile (positions from the
+    lowest up) resampled every median row spacing by straight lines between its points (across a gap too), its mean
+    removed, a Hann window. Returns the frequencies (cycles per nm, from the first above zero to the limit) and the
+    amplitudes (nm: 2 |X| / sum of the window, so a sine on a frequency of the grid shows its amplitude)."""
+    spacing = row_spacing(position_nm)
+    grid = np.arange(position_nm[0], position_nm[-1] + spacing / 2, spacing)
+    resampled = np.interp(grid, position_nm, values)
+    window = np.hanning(len(grid))
+    transform = np.fft.rfft((resampled - resampled.mean()) * window)
+    return np.fft.rfftfreq(len(grid), spacing)[1:], 2 * np.abs(transform[1:]) / window.sum()
+
+
 def fit_sines(position_nm: np.ndarray, values: np.ndarray, frequencies) -> tuple[np.ndarray, np.ndarray]:
     """Least-squares fit of a mean plus one sine at each frequency (cycles per nm), all together.
 
@@ -85,6 +100,39 @@ def running_median(position_nm: np.ndarray, values: np.ndarray, window_nm: float
     low = np.searchsorted(position_nm, position_nm - window_nm / 2, side="left")
     high = np.searchsorted(position_nm, position_nm + window_nm / 2, side="right")
     return np.array([np.median(values[a:b]) for a, b in zip(low, high)])
+
+
+def line_per_ramp(position_nm: np.ndarray, values: np.ndarray, height: float) -> np.ndarray:
+    """A profile's slow part as straight lines (D175): the profile (positions from the lowest up) split into ramps
+    where it turns by more than height (registration.turning_points, as the tab's ramp range), a least-squares line
+    through each ramp's points, its ends included. Each point takes its ramp's line (a turn, the longer ramp's of its
+    two). A turn is found at the highest (lowest) point, which a wiggle can put a few rows from a sawtooth's drop, so
+    the short ramp of a drop holds rows of the slopes beside it: a point of a ramp shorter than a neighbour takes that
+    neighbour's line where it passes within height of the point (the nearer, if both do)."""
+    values = np.asarray(values, dtype=float)
+    x = np.asarray(position_nm, dtype=float) - position_nm[0]
+    turns = turning_points(values, height)
+    ramps = list(zip(turns[:-1], turns[1:]))
+    length = [b - a for a, b in ramps]
+    lines = [np.polyfit(x[a:b + 1], values[a:b + 1], 1) for a, b in ramps]
+    owner = np.empty(len(values), int)  # the ramp each point belongs to
+    for k, (a, b) in enumerate(ramps):
+        owner[a:b + 1] = k
+    for k in range(1, len(ramps)):  # a turn, shared by two ramps
+        owner[ramps[k][0]] = k if length[k] > length[k - 1] else k - 1
+    slow = np.empty_like(values)
+    for k in range(len(ramps)):
+        slow[owner == k] = np.polyval(lines[k], x[owner == k])
+    for k in range(len(ramps)):
+        mine = np.flatnonzero(owner == k)
+        nearest = np.full(len(mine), np.inf)
+        for j in (k - 1, k + 1):
+            if 0 <= j < len(ramps) and length[j] > length[k]:
+                fitted = np.polyval(lines[j], x[mine])
+                miss = np.abs(values[mine] - fitted)
+                take = (miss <= height) & (miss < nearest)
+                slow[mine[take]], nearest[take] = fitted[take], miss[take]
+    return slow
 
 
 def folded_from(frequency: float, spacing_nm: float, multiples: int = 2) -> np.ndarray:

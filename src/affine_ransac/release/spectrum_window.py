@@ -1,11 +1,12 @@
 """Frequency analysis of one mean per row or per column of the Registration tab, in a window of its own
-(docs/SPEC.md D173, D174).
+(docs/SPEC.md D173, D174, D175).
 
 The profile as the tab showed it when the window opened, along a horizontal axis; below it what is left after
-removing parts of it; then the amplitude spectrum of both (least-squares sines, spectrum.py) in cycles per µm, with
-the period in nm on the top axis. Removed (D174): the slow part on request (Remove slow part, a running median: the
-sawtooth), and the sine of every picked peak, all picked sines fitted together on what the slow part leaves; the part
-removed is drawn over the profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
+removing parts of it; then the amplitude spectrum of both in cycles per µm, with the period in nm on the top axis:
+least-squares sines (Lomb–Scargle), or an FFT of the profile resampled evenly (D175). Removed (D174): the slow part
+on request (Remove slow part: a running median, or a straight line per ramp, D175: the sawtooth), and the sine of
+every picked peak, all picked sines fitted together on what the slow part leaves; the part removed is drawn over the
+profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
 frequency shows folded below it) and the image step with its multiples (where an error made inside every image would
 show). A click on the spectrum picks the peak nearest to it in what is left: circled, with its period, its amplitude
 and the shorter periods it may have folded from written beside it. A click on a picked peak drops it.
@@ -77,9 +78,12 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.position = np.asarray(position_nm, float)[order]
         self.values = np.asarray(values_nm, float)[order]
         self.spacing = spectrum.row_spacing(self.position)
-        self.frequency = spectrum.frequency_grid(self.position)  # cycles per nm
-        with busy():
-            self.amplitude = spectrum.amplitude_spectrum(self.position, self.values, self.frequency)
+        self.method = QtWidgets.QComboBox()
+        self.method.addItems(["Lomb–Scargle", "FFT, resampled evenly"])
+        self.method.setToolTip("Lomb–Scargle: a least-squares sine at each frequency, for rows at any spacing. FFT: the "
+                               "profile resampled every median row spacing, straight across gaps, Hann window. Picked "
+                               "peaks are measured by least squares either way")
+        self.frequency, self.amplitude = self.spectrum_of(self.values)  # cycles per nm; nm
         self.picked = []  # the picked peaks' frequencies, cycles per nm
 
         self.figure = pg.GraphicsLayoutWidget()
@@ -101,7 +105,8 @@ class SpectrumWindow(QtWidgets.QWidget):
         style.style_plot(self.spectrum, "", "frequency (cycles per µm)", "amplitude (nm)")
         self.style_top_axis()
         style.legend(self.spectrum)
-        self.spectrum.plot(self.frequency * 1000, self.amplitude, pen=pg.mkPen(color, width=2), name="profile")
+        self.profile_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude, pen=pg.mkPen(color, width=2),
+                                                   name="profile")
         self.remainder_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude,
                                                      pen=pg.mkPen(style.REMAINDER, width=1.5))
         self.marks = pg.ScatterPlotItem(symbol="o", size=16, pen=pg.mkPen(style.TEXT, width=1.5), brush=None)
@@ -109,26 +114,43 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.labels = []
         self.figure.scene().sigMouseClicked.connect(self.clicked)
 
-        self.slow_box = QtWidgets.QCheckBox("Remove slow part")
-        self.slow_box.setToolTip("Remove a running median of the profile (its sawtooth), leaving the faster signal")
+        self.method.currentIndexChanged.connect(self.change_method)
+        self.slow_box = QtWidgets.QCheckBox("Remove slow part:")
+        self.slow_box.setToolTip("Remove the profile's slow part (its sawtooth), leaving the faster signal")
         self.slow_box.toggled.connect(self.update_removal)
+        self.slow_method = QtWidgets.QComboBox()
+        self.slow_method.addItems(["running median over", "straight line per ramp"])
+        self.slow_method.setToolTip("Running median: assumes no shape. Straight line per ramp: the profile split where it "
+                                    "turns by more than the wiggle height, as the tab's ramp range")
         self.window = QtWidgets.QDoubleSpinBox(decimals=3, minimum=0.001, maximum=1e4, singleStep=0.1, suffix=" µm",
                                                keyboardTracking=False)
         self.window.setValue(round(WINDOW_ROWS * self.spacing / 1000, 3))
         self.window.setToolTip("Window of the running median. Shorter than a few periods of the signal to keep, it "
                                "removes part of it; longer, it leaves more of the slow part at its drops")
-        self.window.valueChanged.connect(lambda *_: self.slow_box.isChecked() and self.update_removal())
+        self.wiggle = QtWidgets.QDoubleSpinBox(decimals=2, minimum=0.01, maximum=1e3, singleStep=0.05, suffix=" nm",
+                                               keyboardTracking=False)
+        # Not the tab's Auto (8 x the row-to-row noise): a fast signal that moves a lot from row to row raises that
+        # above the sawtooth, and no ramp is found.
+        self.wiggle.setValue(round(float(np.ptp(self.values)) / 2, 2))
+        self.wiggle.setToolTip("Wiggles up to this height do not end a ramp. At start half the profile's range")
+        for box in (self.slow_method, self.window, self.wiggle):
+            (box.currentIndexChanged if box is self.slow_method else box.valueChanged).connect(self.change_slow_part)
         self.limit_box, self.image_box = self.marker_boxes(image_step_nm)
         menus = style.image_menus(lambda: (self.figure, [(name, [self.profile]),
                                                          (f"{name} after removal", [self.remainder_plot]),
                                                          (f"{name} spectrum", [self.spectrum])]))
         controls = QtWidgets.QHBoxLayout()
-        for widget in (self.slow_box, QtWidgets.QLabel("running median over"), self.window, QtWidgets.QLabel("    "),
-                       self.limit_box, self.image_box):
+        for widget in (QtWidgets.QLabel("Spectrum:"), self.method, QtWidgets.QLabel("    "), self.limit_box,
+                       self.image_box):
             controls.addWidget(widget)
         controls.addStretch(1)
         for button in menus:
             controls.addWidget(button)
+        removal = QtWidgets.QHBoxLayout()
+        for widget in (self.slow_box, self.slow_method, self.window, QtWidgets.QLabel("   wiggles up to"),
+                       self.wiggle):
+            removal.addWidget(widget)
+        removal.addStretch(1)
         length_um = np.ptp(self.position) / 1000
         summary = QtWidgets.QLabel(
             f"<b>{name}</b>: {about}. {len(self.position)} points over {length_um:.1f} µm, {self.spacing:.1f} nm apart "
@@ -139,8 +161,10 @@ class SpectrumWindow(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(summary)
         layout.addLayout(controls)
+        layout.addLayout(removal)
         layout.addWidget(self.figure, stretch=1)
         self.resize(1000, 900)
+        self.change_slow_part()
         self.update_removal()
 
     def style_top_axis(self):
@@ -178,9 +202,32 @@ class SpectrumWindow(QtWidgets.QWidget):
             box.toggled.connect(lambda on, lines=lines: [line.setVisible(on) for line in lines])
         return limit_box, image_box
 
+    def spectrum_of(self, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(frequencies, cycles per nm; amplitudes, nm) of values at the rows, by the method chosen (D175)."""
+        with busy():
+            if self.method.currentIndex() == 1:
+                return spectrum.fft_spectrum(self.position, values)
+            frequency = spectrum.frequency_grid(self.position)
+            return frequency, spectrum.amplitude_spectrum(self.position, values, frequency)
+
+    def change_method(self, *_):
+        self.frequency, self.amplitude = self.spectrum_of(self.values)
+        self.profile_spectrum.setData(self.frequency * 1000, self.amplitude)
+        self.update_removal()
+
+    def change_slow_part(self, *_):
+        """Only the setting of the slow part's method chosen is active; the removal follows while it is ticked."""
+        ramps = self.slow_method.currentIndex() == 1
+        self.window.setEnabled(not ramps)
+        self.wiggle.setEnabled(ramps)
+        if self.slow_box.isChecked():
+            self.update_removal()
+
     def slow_part(self) -> np.ndarray:
         if not self.slow_box.isChecked():
             return np.zeros_like(self.values)
+        if self.slow_method.currentIndex() == 1:
+            return spectrum.line_per_ramp(self.position, self.values, self.wiggle.value())
         return spectrum.running_median(self.position, self.values, self.window.value() * 1000)
 
     def update_removal(self, *_):
@@ -190,9 +237,7 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.fitted, sines = spectrum.fit_sines(self.position, self.values - slow, self.picked)
         self.remainder = self.values - slow - sines
         removing = self.slow_box.isChecked() or bool(self.picked)
-        with busy():
-            self.remainder_amplitude = spectrum.amplitude_spectrum(self.position, self.remainder, self.frequency) \
-                if removing else self.amplitude
+        self.remainder_amplitude = self.spectrum_of(self.remainder)[1] if removing else self.amplitude
         self.removed_line.setData(self.position / 1000, slow + sines)
         show_line(self.profile, self.removed_line, "removed", removing)
         self.remainder_line.setData(self.position / 1000, self.remainder)
@@ -231,7 +276,7 @@ class SpectrumWindow(QtWidgets.QWidget):
         if not len(frequency):
             self.marks.setData([], [])
             return
-        height = spectrum.amplitude_spectrum(self.position, self.values, frequency)
+        height = np.interp(frequency, self.frequency, self.amplitude)  # on the profile's spectrum line
         self.marks.setData(frequency * 1000, height)
         middle = np.mean(self.spectrum.vb.viewRange()[0]) / 1000
         for f, a, h in zip(frequency, self.fitted, height):

@@ -1392,6 +1392,17 @@ removed; a picked peak stays circled on the profile's spectrum. Untick the slow 
 see the sawtooth. A running median shorter than a few periods of a sine takes part of it, and near a drop it lags by
 up to half a window of the ramp (the tooltip says so).
 
+**Options (D175).** *Spectrum*: Lomb–Scargle (at start) or *FFT, resampled evenly* (`spectrum.fft_spectrum`: the
+profile resampled every median row spacing by straight lines, across gaps too, mean removed, Hann window, amplitude
+2|X| / Σ window, frequencies from the first FFT bin above zero to the limit), for comparison; both lines and the
+peaks follow the choice, and picked peaks are measured by least squares either way. *Remove slow part*: *running
+median over* a window (at start) or *straight line per ramp* (`spectrum.line_per_ramp`): the profile split where it
+turns by more than *wiggles up to* (`registration.turning_points`, as the tab's ramp range; at start half the
+profile's range, not the tab's Auto, which a fast signal moving a lot from row to row raises above the sawtooth), a
+least-squares line per ramp; a turn takes the longer ramp's line, and a point of a ramp shorter than a neighbour (a
+drop, whose turn a wiggle can put a few rows from it) takes that neighbour's line where it passes within the wiggle
+height (the nearer, if both do). Only the setting of the method chosen is enabled.
+
 **In-image correction (D141):** with
 `in_image_correction` (off by default; a parameter of both kinds of folder, release only: `RELEASE_ONLY`) the
 distortion shared by all images (D53) is removed from every tile's SEM centres before the stitching

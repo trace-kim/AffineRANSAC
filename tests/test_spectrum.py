@@ -2,6 +2,7 @@
 what the real profiles hold."""
 
 import numpy as np
+import pytest
 
 from affine_ransac import spectrum
 
@@ -89,3 +90,26 @@ def test_removing_the_slow_part_leaves_the_sine_as_the_highest_peak():
     left = spectrum.amplitude_spectrum(position, remainder, frequency)
     assert abs(1 / frequency[np.argmax(profile)] - 13_000) < 1000
     assert abs(1 / frequency[np.argmax(left)] - 410) < 2 and left.max() > 0.25
+
+
+def test_the_fft_shows_a_sine_on_its_grid_with_its_amplitude_and_bridges_gaps():
+    position = np.arange(0.0, 51_200.0, 50.0)  # 1024 rows
+    values = 0.4 * np.sin(2 * np.pi * position * 100 / 51_200.0) + 3.0  # 100 periods: on the FFT's grid
+    frequency, amplitude = spectrum.fft_spectrum(position, values)
+    assert frequency[0] == pytest.approx(1 / 51_200.0) and frequency[-1] == pytest.approx(spectrum.limit(position))
+    assert frequency[np.argmax(amplitude)] == pytest.approx(100 / 51_200.0)
+    assert amplitude.max() == pytest.approx(0.4, rel=1e-3)
+    rows = uneven_rows(50.0, 51_200.0)
+    frequency, amplitude = spectrum.fft_spectrum(rows, 0.4 * np.sin(2 * np.pi * rows / 512.0))
+    assert abs(1 / frequency[np.argmax(amplitude)] - 512.0) < 6
+
+
+def test_a_straight_line_per_ramp_takes_a_sawtooth_out_and_leaves_the_sine():
+    position = np.arange(0.0, 39_000.0, 50.0)
+    sawtooth = 1.5 * ((position % 13_000) / 13_000 - 0.5)
+    np.testing.assert_allclose(spectrum.line_per_ramp(position, sawtooth, 0.5), sawtooth, atol=1e-12)
+    sine = 0.1 * np.sin(2 * np.pi * position / 410.0)
+    left = sawtooth + sine - spectrum.line_per_ramp(position, sawtooth + sine, 0.5)
+    amplitude, curve = spectrum.fit_sines(position, left, [1 / 410.0])
+    assert amplitude[0] == pytest.approx(0.1, abs=0.005)
+    assert np.abs(left - curve).max() < 0.01  # no row left on a drop's line

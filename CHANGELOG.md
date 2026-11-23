@@ -18,6 +18,9 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 - Frequency analysis, **removal**: tick *Remove slow part* to take out a running median (the sawtooth), and every
   picked peak's sine is taken out too. *After removal* shows what is left, and its spectrum is drawn beside the
   profile's (D174).
+- Frequency analysis, **options**: the spectrum by FFT of the profile resampled evenly, beside Lomb–Scargle; the slow
+  part as a straight line per ramp (split where the profile turns by more than a wiggle height), beside the running
+  median (D175).
 - The Registration tab's **Map data** menu copies or exports all measured points as CSV or TSV with columns
   `x`, `y`, `dx`, `dy` (mask µm and residual nm). Horizontal L/S leaves `dx` blank (D172).
 - **Analysis 10.** Horizontal L/S measures each complete line and space in ten x slices in the SEM and design.
