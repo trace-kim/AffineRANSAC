@@ -15,7 +15,7 @@ dependencies = [
     "pyqtgraph",
     "PySide6",
     "scikit-image",
-    "scipy",
+    "scipy>=1.15",  # the Lomb–Scargle amplitude of the frequency analysis (D173)
 ]
 
 [project.scripts]

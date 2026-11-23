@@ -24,7 +24,8 @@ per column below it (hidden unless ticked, D118), of dr beside the arrows and of
 both follow the map's zoom and pan; in grid average, per row and column of cells (band_means, D125). At start and on
 View All the maps show the contacts' full height, centred on them, at the maps' own width (fit, D117). Each mean per
 row: Auto, or a range typed in the boxes just below it (D119); under them its range (max − min) over all rows, of its
-largest ramp and between two lines dragged by hand, each drawn on the graph when ticked (RangeLines, D127).
+largest ramp and between two lines dragged by hand, each drawn on the graph when ticked (RangeLines, D127). Every
+mean per row and per column opens its frequency analysis in a window of its own (SpectrumButton, D173).
 Stripes (StripeSelector): the maps and profiles show the contacts of the stripes ticked. Copy profiles / Export
 profiles CSV give both profiles as a table; Copy / Save image the whole figure, the graphs of dx and dy together
 (D116) or one graph (also in each graph's right-click menu and its Copy button, D120).
@@ -56,6 +57,7 @@ from affine_ransac.pipeline import (PAIRING_GATE, PairResult, RejectedPair, Stit
 from affine_ransac.registration import band_means, error_summary, grid_means, largest_ramp, noise_sigma, row_means
 from affine_ransac.release import horizontal_ls, style
 from affine_ransac.release.analysis import ReleaseResult, tile_affines
+from affine_ransac.release.spectrum_window import MIN_POINTS, SpectrumWindow
 from affine_ransac.stitching import placement_corrections
 from affine_ransac.view_contact_size import QUANTITIES, size_summary, value_levels
 from affine_ransac.view_points import box_outlines, tile_rectangles
@@ -1047,7 +1049,7 @@ class RangeLines(QtWidgets.QWidget):
                 marks = pg.ScatterPlotItem(symbol="o", size=10, pen=pg.mkPen(pen.color(), width=1.5), brush=None)
                 self.items[kind].append(marks)
             self.boxes[kind] = QtWidgets.QCheckBox()
-            self.boxes[kind].setIcon(swatch(pen))
+            self.boxes[kind].setIcon(style.swatch(pen))
             self.boxes[kind].toggled.connect(lambda on, kind=kind: self.show_kind(kind, on))
         self.shade = pg.LinearRegionItem(orientation="horizontal", movable=False, brush=translucent(style.RAMP, 45),
                                          pen=pg.mkPen(None))
@@ -1125,19 +1127,6 @@ class RangeLines(QtWidgets.QWidget):
         self.setGeometry(QtCore.QRect(QtCore.QPoint(left, top), size))
 
 
-def swatch(pen: QtGui.QPen) -> QtGui.QIcon:
-    """A short stretch of line in this pen, for a tick box that draws such lines (drawn at twice its size)."""
-    pixmap = QtGui.QPixmap(40, 16)
-    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
-    painter = QtGui.QPainter(pixmap)
-    line = QtGui.QPen(pen)
-    line.setWidthF(3)
-    painter.setPen(line)
-    painter.drawLine(2, 8, 38, 8)
-    painter.end()
-    return QtGui.QIcon(pixmap)
-
-
 class CopyButton(QtWidgets.QToolButton):
     """A small Copy button over a graph's top-left corner, above its y axis (D120): copies the graph, with the items
     given (a map's colour bar), to the clipboard. Over the figure (a child of it), so not in its images; shown while
@@ -1155,6 +1144,53 @@ class CopyButton(QtWidgets.QToolButton):
     def place(self):
         self.setGeometry(QtCore.QRect(on_figure(self.figure, self.plot).topLeft() + QtCore.QPoint(2, 2),
                                       self.sizeHint()))
+
+
+class SpectrumButton(QtWidgets.QToolButton):
+    """A small button over a profile's top-right corner (D173) that opens its frequency analysis. Over the figure (a
+    child of it), so not in its images; shown while the profile is."""
+
+    def __init__(self, plot: pg.PlotItem, figure: pg.GraphicsView, open_it):
+        super().__init__(figure)
+        self.plot, self.figure = plot, figure
+        self.setIcon(spectrum_icon())
+        self.setToolTip("Frequency analysis of this profile, in a window of its own")
+        self.clicked.connect(open_it)
+        plot.geometryChanged.connect(self.place)
+        plot.visibleChanged.connect(lambda: self.setVisible(plot.isVisible()))
+
+    def place(self):
+        corner = on_figure(self.figure, self.plot).topRight()
+        self.setGeometry(QtCore.QRect(corner + QtCore.QPoint(-2 - self.sizeHint().width(), 2), self.sizeHint()))
+
+
+def spectrum_icon() -> QtGui.QIcon:
+    """A spectrum with one tall peak over its axis: the sign for frequency analysis (drawn at twice its size)."""
+    pixmap = QtGui.QPixmap(32, 32)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    painter.setPen(QtGui.QPen(QtGui.QColor(style.MUTED), 2.5))
+    painter.drawLine(3, 28, 29, 28)
+    curve = QtGui.QPainterPath(QtCore.QPointF(3, 25))
+    for x, y in ((8, 22), (12, 5), (16, 22), (20, 17), (23, 20), (26, 23), (29, 25)):
+        curve.lineTo(x, y)
+    painter.drawPath(curve)
+    painter.end()
+    return QtGui.QIcon(pixmap)
+
+
+def image_step(r: ReleaseResult, axis: int) -> float | None:
+    """The tiles' step (nm) along x (between the stripes) or y (within a stripe): the median distance between
+    neighbouring tile centres; None if there is none (one stripe, along x)."""
+    stripes = np.unique(r.stripe)
+    if axis == 0:
+        groups = [np.array([r.centers[r.stripe == s, 0].mean() for s in stripes])]
+    else:
+        groups = [r.centers[r.stripe == s, 1] for s in stripes]
+    steps = np.concatenate([np.diff(np.sort(group)) for group in groups])
+    steps = steps[steps > 1.0]
+    return float(np.median(steps)) if len(steps) else None
 
 
 def copy_icon() -> QtGui.QIcon:
@@ -1389,6 +1425,12 @@ class RegistrationView(QtWidgets.QWidget):
             for plot, items, name in self.graphs_of(panel):
                 style.graph_actions(plot, self.figure, items, name)
                 self.copy_buttons.append(CopyButton(plot, items, self.figure, name))
+        self.spectrum_buttons = []  # one over every mean per row and per column (D173)
+        for panel in self.panels:
+            for plot, along in ((panel.rows, "rows"), (panel.columns, "columns")):
+                open_it = lambda *_, panel=panel, along=along: self.open_spectrum(panel, along)
+                plot.vb.menu.addAction("Frequency analysis...", open_it)
+                self.spectrum_buttons.append(SpectrumButton(plot, self.figure, open_it))
 
         controls = QtWidgets.QHBoxLayout()
         for widget in (self.stripes, QtWidgets.QLabel("   Values:"), self.values, QtWidgets.QLabel("cell"), self.cell,
@@ -1443,6 +1485,7 @@ class RegistrationView(QtWidgets.QWidget):
         total = self.in_stripe.shape[1]
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
+        self.stripes_text = stripes
         features = "L/S centres" if r.horizontal_ls else "contacts"
         if r.horizontal_ls:
             fitted = "per stripe" if s.moving_window_per_stripe else "across stripes"
@@ -1567,6 +1610,23 @@ class RegistrationView(QtWidgets.QWidget):
         for k, item in enumerate(self.arrows):
             item.setData(*arrow_segments(start[step == k], error[step == k] * scale / 1000))
         self.arrow_key.setText(f"(1 nm error = {scale / 1000:g} µm on the map)")
+
+    def open_spectrum(self, panel: MarginalMap, along: str):
+        """The frequency analysis of this panel's mean per row ("rows") or per column ("columns") as shown, in a
+        window of its own (D173)."""
+        k = 2 if panel is self.arrow_panel else next(c for p, _, c in self.maps if p is panel)
+        profile = self.magnitude if panel is self.arrow_panel else panel.name
+        axis, position, mean = (1, self.row_y, self.row_mean) if along == "rows" else \
+            (0, self.column_x, self.column_mean)
+        if len(np.unique(position)) < MIN_POINTS:
+            QtWidgets.QMessageBox.information(self, "Frequency analysis", "This profile has too few points for a "
+                                              "spectrum.")
+            return
+        values = f"grid average, cell {self.cell.value():g} µm" if self.grid_mode() else \
+            ("every L/S centre" if self.result.horizontal_ls else "every contact")
+        window = SpectrumWindow(self, f"{profile} mean per {along[:-1]}", f"{self.stripes_text}, {values}", "xy"[axis],
+                                position, mean[:, k], (style.DX, style.DY, style.DR)[k], image_step(self.result, axis))
+        window.show()
 
     def graphs_of(self, panel: MarginalMap) -> list[tuple[pg.PlotItem, list, str]]:
         """(plot, items to render, name) of a panel's graphs; a map comes with its colour bar."""

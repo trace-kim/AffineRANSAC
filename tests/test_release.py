@@ -1895,3 +1895,86 @@ def test_the_log_shows_steps_problems_and_numbers_at_a_glance(tmp_path):
     assert look(lines[3], "Mean") == (style.CAUTION, False)
     assert look(lines[6], "ValueError") == (style.PROBLEM, False)
     window.close()
+
+
+def test_the_spectrum_window_measures_a_picked_peak_and_draws_markers_on_request():
+    """D173: a profile's spectrum, its markers off at start; a click on the spectrum circles the peak nearest to it
+    and names its period, its amplitude and the periods it may have folded from; a click on it drops it."""
+    from affine_ransac.release.spectrum_window import SpectrumWindow
+    style.setup()
+    pg.mkQApp()
+    position = np.arange(0.0, 20_000.0, 50.0) + 5e5
+    values = 0.6 * np.sin(2 * np.pi * position / 400.0)
+    window = SpectrumWindow(None, "dy mean per row", "all 2 stripes, every L/S centre", "y", position[::-1],
+                            values[::-1], style.DY, 2600.0)
+    window.show()
+    settle()
+    np.testing.assert_array_equal(window.position, position)  # from the lowest up
+    assert not any(line.isVisible() for line in window.limit_lines + window.image_lines)
+    window.limit_box.setChecked(True)
+    assert window.limit_lines[0].isVisible() and window.limit_lines[0].value() == pytest.approx(10.0)  # per µm
+    window.image_box.setChecked(True)
+    np.testing.assert_allclose([line.value() for line in window.image_lines], np.arange(1, 27) / 2.6)
+    assert all(line.isVisible() for line in window.image_lines)
+
+    class Click:
+        def __init__(self, period_nm):
+            self.position = window.spectrum.vb.mapViewToScene(QtCore.QPointF(1000 / period_nm, 0.1))
+
+        def scenePos(self):
+            return self.position
+
+        def button(self):
+            return QtCore.Qt.MouseButton.LeftButton
+
+    window.clicked(Click(405.0))  # beside the peak
+    (picked,) = window.picked
+    assert abs(1 / picked - 400.0) < 0.5
+    (label,) = window.labels
+    assert label.toPlainText() == "period 400 nm, amplitude 0.60 nm\nor folded from 57.1, 44.4, 26.7, 23.5 nm"
+    np.testing.assert_allclose(window.marks.getData()[0], [1000 * picked])
+    window.clicked(Click(401.0))
+    assert window.picked == [] and window.labels == []
+    window.close()
+
+
+def test_every_profile_opens_its_frequency_analysis(tmp_path):
+    """D173: a button over the top-right corner of every mean per row and per column (shown while it is), and an entry
+    in its right-click menu, open the profile as shown in a window of its own, with the tiles' step along its axis."""
+    from affine_ransac.release.spectrum_window import SpectrumWindow
+    from affine_ransac.release.views import image_step
+    style.setup()
+    pg.mkQApp()
+    write_contour_folder(tmp_path)
+    with pytest.warns(UserWarning):
+        result = analyse_folder(tmp_path, "contour CSV", Settings(), log=lambda line: None)
+    view = RegistrationView(result, use_opengl=False)
+    view.resize(1400, 900)
+    view.show()
+    settle()
+    profiles = [plot for panel in view.panels for plot in (panel.rows, panel.columns)]
+    assert [button.plot for button in view.spectrum_buttons] == profiles
+    for button in view.spectrum_buttons:
+        assert button.isVisible() == button.plot.isVisible() == (button.plot not in [p.columns for p in view.panels])
+        assert "Frequency analysis..." in [action.text() for action in button.plot.vb.menu.actions()]
+        if button.isVisible():
+            corner = view.figure.mapFromScene(button.plot.sceneBoundingRect()).boundingRect().topRight()
+            assert (button.geometry().topRight() - corner).manhattanLength() <= 6
+    # The tiles sit 2600 nm apart (their centres from the contacts they hold, a little less along x here).
+    assert image_step(result, 0) == pytest.approx(2600, abs=30) and image_step(result, 1) == pytest.approx(2600, abs=30)
+
+    view.spectrum_buttons[profiles.index(view.maps[1][0].rows)].click()  # dy mean per row
+    (window,) = view.findChildren(SpectrumWindow)
+    assert window.windowTitle() == "Frequency analysis: dy mean per row" and window.isVisible()
+    np.testing.assert_allclose(window.position, view.row_y)
+    np.testing.assert_allclose(window.values, view.row_mean[:, 1])
+    assert window.image_box.isEnabled() and len(window.image_lines) > 0
+    window.close()
+
+    view.values.setCurrentIndex(1)  # grid average: the profile as shown
+    view.open_spectrum(view.arrow_panel, "columns")
+    window = [w for w in view.findChildren(SpectrumWindow) if w.isVisible()][-1]
+    assert window.windowTitle() == "Frequency analysis: dr mean per column"
+    np.testing.assert_allclose(window.values, view.column_mean[np.argsort(view.column_x), 2])
+    assert "grid average" in window.findChildren(QtWidgets.QLabel)[0].text()
+    view.close()

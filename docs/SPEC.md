@@ -1360,6 +1360,27 @@ point's stitched design position in mask µm (y up) and its moving-window `SEM �
 the full run at point resolution, including all stripes and points outside the viewport in either *Values* mode.
 Horizontal L/S rows have a blank `dx` field because only the vertical error is measured.
 
+**Release: frequency analysis of a profile (D173).** A small button over the top-right corner of every mean per row
+and per column of the Registration tab (`views.SpectrumButton`, shown while its profile is) and *Frequency
+analysis...* in the profile's right-click menu open the profile as shown (stripes ticked, every point or grid
+average) in a window of its own (`release/spectrum_window.SpectrumWindow`); a window keeps the profile it was opened
+with. It shows the profile along a horizontal axis (position µm, error nm) and its **amplitude spectrum**: for each
+frequency (cycles per µm; the period in nm on the top axis) the amplitude in nm of the least-squares sine with a
+free mean, scipy's Lomb–Scargle periodogram (`spectrum.amplitude_spectrum`, `normalize="amplitude"`,
+`floating_mean`), because rows need not be evenly spaced (a band not found, mixed pitches). Frequencies run from one
+over the profile's length (the resolution: closer peaks are not told apart) to the **limit**, one over twice the
+median row spacing (a higher frequency shows folded below it), five steps per resolution step; scipy gets a few
+frequencies at a time so that each table it builds stays near 16 MB (`CHUNK_CELLS`). For horizontal L/S the rows
+are the centres of lines and spaces, half a pitch apart, so the limit is one over the pitch. **Markers**, off at
+start, each a tick box with a swatch: the limit (named on the graph) and every multiple of one over the **image
+step** up to it, where an error made inside every image would show (`views.image_step`: the median distance between
+neighbouring tile centres, within a stripe along y, between stripes along x; none with one stripe). **A click on
+the spectrum** takes its highest point within 8 screen pixels (at least one resolution step) and climbs to the top
+of that peak, refined on a grid ten times finer (`spectrum.peak_near`); the peak is circled and its period, its
+amplitude (all picked sines fitted together with the mean, `spectrum.fit_sines`) and the shorter periods it may have
+folded from (k / spacing ± f, k = 1, 2: `spectrum.folded_from`) are written beside it. A click within the same
+distance of a picked peak drops it. Copy / Save image: the window's figure or either graph.
+
 **In-image correction (D141):** with
 `in_image_correction` (off by default; a parameter of both kinds of folder, release only: `RELEASE_ONLY`) the
 distortion shared by all images (D53) is removed from every tile's SEM centres before the stitching
@@ -1798,9 +1819,10 @@ AffineRANSAC/
 │  ├─ contour_stitching.py   # S5 for pattern contours: images placed by their contours (D156)
 │  ├─ analysis.py            # end-to-end flow of one folder (contour CSVs / images), D62
 │  ├─ results_file.py        # save / load an AnalysisResult (.npz), D63
+│  ├─ spectrum.py            # frequency analysis of a registration profile (Lomb–Scargle), D173
 │  ├─ machine.py             # CPU, memory, process creation time (Windows API) for the detailed loading log, D149
 │  ├─ app.py                 # standalone analyzer: python -m affine_ransac.app, D64
-│  ├─ release/               # MaskReg, the minimal app for users: analysis, cache, style, views (+ contact size tab, D95), app (D77), agent (command line for an AI agent, D154), ftp + ftp_dialog + config (D82, D83), folders_dialog (D96), update (D101), contour_dialog (D129), parameters_dialog (D136), log_view (D148)
+│  ├─ release/               # MaskReg, the minimal app for users: analysis, cache, style, views (+ contact size tab, D95), app (D77), agent (command line for an AI agent, D154), ftp + ftp_dialog + config (D82, D83), folders_dialog (D96), update (D101), contour_dialog (D129), parameters_dialog (D136), log_view (D148), spectrum_window (D173)
 │  ├─ view_contact_size.py   # contact size tab: measure on request, maps (area / xCD / yCD), D71, D73, D74
 │  └─ cli.py                 # `affine-ransac run config.yaml`
 └─ tests/

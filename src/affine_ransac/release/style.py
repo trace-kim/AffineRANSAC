@@ -21,6 +21,7 @@ DETECTED, REFINED = "#c2189b", "#00a8c8"  # contours and centres from the detect
 THRESHOLD = "#e8b500"  # contour diagnosis: the pixels the threshold takes as contact (translucent, over the image)
 STRIPES = ["#2a78d6", "#9b4dca", "#1baf7a", "#c7951a"]  # design pattern: one colour per stripe, in turn
 ALL_ROWS, RAMP, MANUAL = "#7d7d79", "#9b4dca", TEXT  # min and max lines of a mean per row: all rows, ramp, by hand
+LIMIT, IMAGE_STEP = "#c7951a", "#7d7d79"  # spectrum markers: limit of the row spacing, image step and its multiples
 FONT = "Segoe UI"
 TICK_PT, LABEL_PT, TITLE_PT = 10, 11, 12
 EXPORT_SCALE = 2  # Copy / Save image: pixels per screen pixel
@@ -194,6 +195,19 @@ def graph_actions(plot: pg.PlotItem, view: pg.GraphicsView, items: list, name: s
     menu.addSeparator()
     menu.addAction("Copy this graph", lambda: QtWidgets.QApplication.clipboard().setImage(render_graph(view, items)))
     menu.addAction("Save this graph...", lambda: save_png(view, render_graph(view, items), name))
+
+
+def swatch(pen: QtGui.QPen) -> QtGui.QIcon:
+    """A short stretch of line in this pen, for a tick box that draws such lines (drawn at twice its size)."""
+    pixmap = QtGui.QPixmap(40, 16)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    line = QtGui.QPen(pen)
+    line.setWidthF(3)
+    painter.setPen(line)
+    painter.drawLine(2, 8, 38, 8)
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 def figure_bar(title: str, buttons: list[QtWidgets.QWidget]) -> QtWidgets.QHBoxLayout:
