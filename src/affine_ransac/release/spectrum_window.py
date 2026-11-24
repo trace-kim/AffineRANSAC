@@ -1,5 +1,5 @@
 """Frequency analysis of one mean per row or per column of the Registration tab, in a window of its own
-(docs/SPEC.md D173 to D180).
+(docs/SPEC.md D173 to D181).
 
 The profile as the tab showed it when the window opened, along a horizontal axis; below it what is left after
 removing parts of it; then the amplitude spectrum of both, the period in nm on the bottom axis and the frequency in
@@ -13,9 +13,11 @@ where each peak shows again at every shorter period it may have folded from.
 
 Peaks (D180): a click marks the peak nearest to it in what is left, circled, with its period, its amplitude and the
 periods the rows show the same beside it; a click on it drops the mark. A double click removes the peak's sine, its
-circle staying where the peak was; another double click puts it back.
+circle staying where the peak was; another double click puts it back. The labels keep clear of each other, of the
+other circles and of the legend, and a drag moves one (D181).
 """
 
+import math
 from contextlib import contextmanager
 
 import numpy as np
@@ -29,6 +31,8 @@ MIN_POINTS = 4  # fewer points give no spectrum
 CLICK_PX = 8  # a click on the spectrum picks the highest peak this many screen pixels around it
 WINDOW_ROWS = 20  # the running median's window at start: this many median row spacings
 SHORTEST_NM = 100.0  # Show periods down to (off at start): the user's choice (D179)
+CIRCLE_PX = 16  # a marked peak's circle, across
+GAP_PX = 2  # between a label and what it keeps clear of
 
 
 @contextmanager
@@ -69,6 +73,76 @@ def show_line(plot: pg.PlotItem, line: pg.PlotDataItem, name: str, on: bool):
     plot.legend.removeItem(line)
     if on:
         plot.legend.addItem(line, name)
+
+
+def slide(spot: QtCore.QRectF, taken: list[QtCore.QRectF], direction: str) -> QtCore.QRectF:
+    """The spot moved in this direction ("down", "up", "right" or "left") past everything taken that it overlaps,
+    until it overlaps nothing."""
+    spot = QtCore.QRectF(spot)
+    while hits := [t for t in taken if t.intersects(spot)]:
+        if direction == "down":
+            spot.moveTop(max(t.bottom() for t in hits) + GAP_PX)
+        elif direction == "up":
+            spot.moveBottom(min(t.top() for t in hits) - GAP_PX)
+        elif direction == "right":
+            spot.moveLeft(max(t.right() for t in hits) + GAP_PX)
+        else:
+            spot.moveRight(min(t.left() for t in hits) - GAP_PX)
+    return spot
+
+
+def nearest(point: QtCore.QPointF, rect: QtCore.QRectF) -> QtCore.QPointF:
+    """The point of the rectangle nearest to this point (the point itself if inside it)."""
+    return QtCore.QPointF(min(max(point.x(), rect.left()), rect.right()), min(max(point.y(), rect.top()), rect.bottom()))
+
+
+def free_spot(corner: QtCore.QPointF, size: QtCore.QSizeF, taken: list[QtCore.QRectF], bounds: QtCore.QRectF,
+              left: bool) -> QtCore.QRectF:
+    """Where a label of this size (screen pixels) hanging from this corner (its peak's top) overlaps nothing taken:
+    on the side asked for (left: its right edge at the corner) or the other, moved sideways into the bounds if it
+    sticks out, then slid down, up, right or left past what it overlaps. Of these the one that sticks out of the
+    bounds least (whole pixels), then the nearest the corner."""
+    def outside(s):
+        return round(max(0.0, bounds.left() - s.left()) + max(0.0, s.right() - bounds.right()) +
+                     max(0.0, bounds.top() - s.top()) + max(0.0, s.bottom() - bounds.bottom()))
+
+    def away(s):
+        gap = nearest(corner, s) - corner
+        return math.hypot(gap.x(), gap.y())
+
+    spots = []
+    for on_left in (left, not left):
+        x = corner.x() - (size.width() if on_left else 0)
+        x = max(bounds.left(), min(x, bounds.right() - size.width()))
+        hanging = QtCore.QRectF(QtCore.QPointF(x, corner.y()), size)
+        spots += [slide(hanging, taken, direction) for direction in ("down", "up", "right", "left")]
+    return min(spots, key=lambda s: (outside(s), away(s)))
+
+
+class PeakLabel(pg.TextItem):
+    """A marked peak's label; a drag moves it (D181). frequency (cycles per nm) names its peak, peak is the top of the
+    peak in the spectrum's units, moved(label, corner, finished) is called with its top-left corner (scene pixels)
+    at each step of a drag."""
+
+    def __init__(self, text: str, frequency: float, peak: QtCore.QPointF, moved):
+        super().__init__(text, color=style.TEXT, fill=pg.mkBrush(255, 255, 255, 210))
+        self.frequency, self.peak, self.moved = frequency, peak, moved
+        self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+
+    def hoverEvent(self, event):
+        if not event.isExit():
+            event.acceptDrags(QtCore.Qt.MouseButton.LeftButton)  # the drag is the label's, not the graph's pan
+
+    def mouseDragEvent(self, event):
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        event.accept()
+        view = self.getViewBox()
+        if event.isStart():
+            self.start = view.mapViewToScene(self.pos())
+        corner = self.start + event.scenePos() - event.buttonDownScenePos()
+        self.setPos(view.mapSceneToView(corner))
+        self.moved(self, corner, event.isFinish())
 
 
 class SpectrumWindow(QtWidgets.QWidget):
@@ -132,9 +206,15 @@ class SpectrumWindow(QtWidgets.QWidget):
                                                      pen=pg.mkPen(style.REMAINDER, width=1.5))
         # The marked peaks circled, the removed ones circled dashed where they stood (D180).
         self.marked_pen, self.removed_pen = pg.mkPen(style.TEXT, width=1.5), removed_pen
-        self.marks = pg.ScatterPlotItem(symbol="o", size=16, brush=pg.mkBrush(255, 255, 255, 0))
+        self.marks = pg.ScatterPlotItem(symbol="o", size=CIRCLE_PX, brush=pg.mkBrush(255, 255, 255, 0))
         self.spectrum.addItem(self.marks)
         self.labels = []
+        # A label set apart from its circle is joined to it by a thin line; a dragged one keeps its offset from its
+        # peak in screen pixels (D181).
+        self.leaders = pg.PlotDataItem(pen=pg.mkPen(style.MUTED, width=1))
+        self.spectrum.addItem(self.leaders, ignoreBounds=True)
+        self.dragged = {}  # frequency (cycles per nm) -> QPointF
+        self.spectrum.vb.sigTransformChanged.connect(self.place_labels)  # zoomed, panned or resized
         self.figure.scene().sigMouseClicked.connect(self.clicked)
 
         self.method.currentIndexChanged.connect(self.change_spectrum)
@@ -181,7 +261,8 @@ class SpectrumWindow(QtWidgets.QWidget):
             f"<b>{name}</b>: {about}. {len(self.position)} points over {length_um:.1f} µm, {self.spacing:.1f} nm apart "
             f"(median): periods shorter than {2 * self.spacing:.0f} nm show folded to longer ones, and peaks closer than "
             f"{1000 * spectrum.resolution(self.position):.3g} cycles per µm are not told apart. Click a peak to measure "
-            "it, again to drop the mark; double-click it to remove its sine, again to put it back.")
+            "it, again to drop the mark; double-click it to remove its sine, again to put it back. Drag a label to "
+            "move it.")
         summary.setWordWrap(True)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(summary)
@@ -288,14 +369,23 @@ class SpectrumWindow(QtWidgets.QWidget):
 
     def clicked(self, event):
         """A left click or double click on the spectrum (D180); one on the legend, which hides or shows a line, is left
-        to it (D176)."""
+        to it (D176), and one on a label, which a drag moves, does nothing (D181)."""
         position = event.scenePos()
         if event.button() != QtCore.Qt.MouseButton.LeftButton or \
                 not self.spectrum.vb.sceneBoundingRect().contains(position) or \
-                self.spectrum.legend.sceneBoundingRect().contains(position):
+                self.spectrum.legend.sceneBoundingRect().contains(position) or self.on_label(position):
             return
         within = max(spectrum.resolution(self.position), CLICK_PX * self.spectrum.vb.viewPixelSize()[0] / 1000)
         self.click_at(self.spectrum.vb.mapSceneToView(position).x() / 1000, within, event.double())
+
+    def on_label(self, position: QtCore.QPointF) -> bool:
+        """Whether this point (scene pixels) is on a label, and not on a circle: a label hangs from its circle's
+        centre, and a click on the circle is still the circle's (D181)."""
+        def on_circle(label):
+            away = self.spectrum.vb.mapViewToScene(label.peak) - position
+            return math.hypot(away.x(), away.y()) <= CIRCLE_PX / 2
+        return any(label.sceneBoundingRect().contains(position) for label in self.labels) and \
+            not any(on_circle(label) for label in self.labels)
 
     def click_at(self, near: float, within: float, double: bool = False):
         """A click at this frequency (cycles per nm) drops the mark of a marked peak within `within` of it, else marks
@@ -339,14 +429,56 @@ class SpectrumWindow(QtWidgets.QWidget):
         peaks += [(f, a, self.height(self.before_sines, f), "removed: ") for f, a in zip(self.removed, self.fitted)]
         pens = [self.removed_pen if removed else self.marked_pen for *_, removed in peaks]
         self.marks.setData([1000 * f for f, *_ in peaks], [h for _, _, h, _ in peaks], pen=pens)
-        middle = np.mean(self.spectrum.vb.viewRange()[0]) / 1000
+        self.dragged = {f: offset for f, offset in self.dragged.items() if f in self.marked + self.removed}
         for f, a, h, removed in peaks:
-            # Hanging from the peak's top, on the side with more room: a tall peak's label stays in the graph.
-            label = pg.TextItem(f"{removed}period {period_text(1 / f)} nm, amplitude {a:.2f} nm\n{self.alternatives(f)}",
-                                color=style.TEXT, anchor=(float(f > middle), 0), fill=pg.mkBrush(255, 255, 255, 210))
-            label.setPos(f * 1000, h)
+            label = PeakLabel(f"{removed}period {period_text(1 / f)} nm, amplitude {a:.2f} nm\n{self.alternatives(f)}",
+                              f, QtCore.QPointF(f * 1000, h), self.label_moved)
             self.spectrum.addItem(label, ignoreBounds=True)
             self.labels.append(label)
+        self.place_labels()
+
+    def place_labels(self, *_):
+        """Every label where it overlaps no other label, no other peak's circle and not the legend (D181). A label
+        hangs from its peak's top on the side with more room (a tall peak's label stays in the graph), else on the other
+        side, or slid down, up, right or left past what it would cover, whichever is nearest inside the graph
+        (free_spot); the tallest peak's label first. A dragged label stays where it was put beside its peak, and the
+        others keep clear of it."""
+        view = self.spectrum.vb
+        bounds = view.sceneBoundingRect()
+        tops = [view.mapViewToScene(label.peak) for label in self.labels]
+        circles = [QtCore.QRectF(top - QtCore.QPointF(CIRCLE_PX / 2, CIRCLE_PX / 2), QtCore.QSizeF(CIRCLE_PX, CIRCLE_PX))
+                   for top in tops]
+        spots = {i: QtCore.QRectF(tops[i] + self.dragged[label.frequency], label.boundingRect().size())
+                 for i, label in enumerate(self.labels) if label.frequency in self.dragged}
+        legend = [self.spectrum.legend.sceneBoundingRect()] if self.spectrum.legend.isVisible() else []
+        for i in sorted(set(range(len(self.labels))) - set(spots), key=lambda i: tops[i].y()):
+            taken = list(spots.values()) + circles[:i] + circles[i + 1:] + legend
+            spots[i] = free_spot(tops[i], self.labels[i].boundingRect().size(), taken, bounds,
+                                 left=tops[i].x() > bounds.center().x())
+        for i, label in enumerate(self.labels):
+            label.setPos(view.mapSceneToView(spots[i].topLeft()))
+        self.draw_leaders()
+
+    def draw_leaders(self):
+        """A thin line from the edge of each circle to its label, where the label is set apart from it (D181)."""
+        view, ends = self.spectrum.vb, []
+        for label in self.labels:
+            top = view.mapViewToScene(label.peak)
+            end = nearest(top, QtCore.QRectF(view.mapViewToScene(label.pos()), label.boundingRect().size()))
+            away = end - top
+            length = math.hypot(away.x(), away.y())
+            if length > CIRCLE_PX / 2 + GAP_PX:
+                ends += [view.mapSceneToView(top + away * (CIRCLE_PX / 2 / length)), view.mapSceneToView(end)]
+        self.leaders.setData([p.x() for p in ends], [p.y() for p in ends], connect="pairs")
+
+    def label_moved(self, label: PeakLabel, corner: QtCore.QPointF, finished: bool):
+        """A dragged label keeps its offset from its peak in screen pixels, so it follows the peak when the graph is
+        zoomed; the other labels make room for it when the drag ends (D181)."""
+        self.dragged[label.frequency] = corner - self.spectrum.vb.mapViewToScene(label.peak)
+        if finished:
+            self.place_labels()
+        else:
+            self.draw_leaders()
 
     def alternatives(self, frequency: float) -> str:
         """The other periods the rows show the same as this frequency (cycles per nm): below the limit, the shorter ones

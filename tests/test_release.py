@@ -2019,6 +2019,116 @@ def test_a_click_marks_a_peak_and_a_double_click_removes_it():
     window.close()
 
 
+def test_a_label_takes_the_nearest_free_spot_inside_the_graph():
+    """D181: a label hangs from its peak's top on the side asked for, moved sideways into the graph if it sticks out;
+    in the way of something, it slides past it down, up, right or left, to the spot that sticks out of the graph
+    least, then the nearest."""
+    from affine_ransac.release.spectrum_window import free_spot
+    R, P = QtCore.QRectF, QtCore.QPointF
+    bounds, size = R(0, 0, 400, 100), QtCore.QSizeF(100, 30)
+    assert free_spot(P(50, 10), size, [], bounds, left=False) == R(50, 10, 100, 30)
+    assert free_spot(P(350, 10), size, [], bounds, left=True) == R(250, 10, 100, 30)
+    assert free_spot(P(350, 10), size, [], bounds, left=False) == R(300, 10, 100, 30)  # into the graph
+    assert free_spot(P(50, 10), size, [R(40, 30, 120, 10)], bounds, left=False) == R(50, 42, 100, 30)  # slid down
+    # A block from the top to 70: below it the label would stick out by 2, above it and on its left far more.
+    assert free_spot(P(50, 10), size, [R(40, 0, 120, 70)], bounds, left=False) == R(162, 10, 100, 30)
+
+
+def test_the_labels_of_close_peaks_keep_apart_and_a_drag_moves_one():
+    """D181: a label alone hangs from its peak's top; the labels of peaks close together overlap neither each other
+    nor the other's circle. A drag moves a label and marks nothing, as does a click on it; a thin line then joins it
+    to its circle, it keeps its place beside its peak when the graph is zoomed, and the other labels make room for
+    it. A dropped mark forgets where its label was put."""
+    from pyqtgraph.Qt import QtTest
+
+    from affine_ransac.release.spectrum_window import CIRCLE_PX, SpectrumWindow
+    style.setup()
+    pg.mkQApp()
+    position = np.arange(0.0, 20_000.0, 50.0)
+    values = 0.6 * np.sin(2 * np.pi * position / 400.0) + 0.5 * np.sin(2 * np.pi * position / 430.0)
+    window = SpectrumWindow(None, "dy mean per row", "all stripes, every L/S centre", "y", position, values, style.DY,
+                            None)
+    window.show()
+    settle()
+    view, scene = window.figure.viewport(), window.spectrum.vb
+
+    def send(kind, point, buttons):
+        QtWidgets.QApplication.sendEvent(view, QtGui.QMouseEvent(
+            kind, QtCore.QPointF(point), QtCore.QPointF(view.mapToGlobal(point)), QtCore.Qt.MouseButton.LeftButton,
+            buttons, QtCore.Qt.KeyboardModifier.NoModifier))
+
+    def drag(label, by):
+        """Press on the label, move by this many screen pixels, release. pyqtgraph drops a move that comes less than
+        10 ms after the one before (its mouseRateLimit)."""
+        T, left, none = QtCore.QEvent.Type, QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton
+        start = window.figure.mapFromScene(label.sceneBoundingRect().center())
+        QtTest.QTest.mouseMove(view, start)
+        send(T.MouseButtonPress, start, left)
+        for k in range(1, 6):
+            QtTest.QTest.qWait(15)
+            send(T.MouseMove, start + by * k / 5, left)
+        send(T.MouseButtonRelease, start + by, none)
+        settle()
+
+    def circles():
+        return [QtCore.QRectF(scene.mapViewToScene(spot.pos()) - QtCore.QPointF(CIRCLE_PX / 2, CIRCLE_PX / 2),
+                              QtCore.QSizeF(CIRCLE_PX, CIRCLE_PX)) for spot in window.marks.points()]
+
+    def leaders():
+        x = window.leaders.getData()[0]
+        return 0 if x is None else len(x) // 2
+
+    def assert_apart():
+        boxes = [label.sceneBoundingRect() for label in window.labels]
+        assert not boxes[0].intersects(boxes[1])
+        for box, other in zip(boxes, circles()[::-1]):  # each label clear of the other peak's circle
+            assert not box.intersects(other)
+
+    window.click_at(1 / 400.0, 1e-5)
+    settle()
+    (alone,) = window.labels
+    assert (alone.sceneBoundingRect().topLeft() - circles()[0].center()).manhattanLength() < 1  # hanging from its top
+    assert leaders() == 0
+    window.click_at(1 / 430.0, 1e-5)
+    settle()
+    assert len(window.marked) == 2 and abs(1 / window.marked[1] - 430.0) < 1
+    assert abs(circles()[0].center().x() - circles()[1].center().x()) < 30  # close: they used to overlap
+    assert_apart()
+
+    marked = list(window.marked)
+    first = window.labels[0]
+    before = first.sceneBoundingRect().topLeft()
+    tap = window.figure.mapFromScene(first.sceneBoundingRect().center())
+    QtTest.QTest.mouseMove(view, tap)
+    send(QtCore.QEvent.Type.MouseButtonPress, tap, QtCore.Qt.MouseButton.LeftButton)
+    send(QtCore.QEvent.Type.MouseButtonRelease, tap, QtCore.Qt.MouseButton.NoButton)
+    settle()
+    assert window.marked == marked and first.sceneBoundingRect().topLeft() == before  # a click on a label: nothing
+    drag(first, QtCore.QPoint(40, 120))
+    assert window.marked == marked and window.removed == []  # the drag marked nothing
+    moved = first.sceneBoundingRect().topLeft()
+    assert (moved - before - QtCore.QPointF(40, 120)).manhattanLength() < 1
+    assert leaders() >= 1  # a line to the label set apart
+    assert_apart()
+
+    offset = moved - circles()[0].center()
+    window.spectrum.setXRange(1.5, 3.5, padding=0)  # per µm
+    settle()
+    assert (first.sceneBoundingRect().topLeft() - circles()[0].center() - offset).manhattanLength() < 1
+    assert_apart()
+
+    second = window.labels[1]
+    drag(second, (first.sceneBoundingRect().topLeft() - second.sceneBoundingRect().topLeft()).toPoint())
+    assert window.marked == marked and len(window.dragged) == 2  # both put by hand: they may overlap
+    window.click_at(window.marked[1], 1e-5)  # drop the second mark, then mark it again
+    assert window.marked == marked[:1] and list(window.dragged) == marked[:1]
+    window.click_at(1 / 430.0, 1e-5)
+    settle()
+    assert list(window.dragged) == marked[:1]
+    assert_apart()
+    window.close()
+
+
 def test_every_profile_opens_its_frequency_analysis(tmp_path):
     """D173: a button over the top-right corner of every mean per row and per column (shown while it is), and an entry
     in its right-click menu, open the profile as shown in a window of its own, with the tiles' step along its axis."""

@@ -25,6 +25,9 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 - Frequency analysis: a **click marks** a peak (circled, with its period and amplitude) without removing it, a click
   on it drops the mark; a **double click removes** its sine, its circle (dashed) staying where the peak stood, and
   another double click puts it back (D180).
+- Frequency analysis: the **labels of peaks** close together no longer overlap each other, the other circles or the
+  legend; a label set apart from its peak is joined to it by a thin line. **Drag a label** to move it, for example
+  off a peak it hides (D181).
 - Frequency analysis: the spectrum's **period** axis is at the bottom, its frequency axis at the top (D177).
 - Frequency analysis: the least-squares spectrum can no longer show a **false spike at its right end** (the limit)
   on evenly spaced rows (D178).

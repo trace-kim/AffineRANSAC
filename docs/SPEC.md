@@ -1390,6 +1390,16 @@ click puts it back, marked. A double click reaches the window as a click and the
 the rules are chosen so that the pair does what the double click means. A click on the legend (to hide or show a line) marks
 nothing (D176). Copy / Save image: the window's figure or any of its graphs.
 
+**Peak labels (D181).** The labels keep clear of each other, of the other peaks' circles and of the legend. Each
+hangs from its peak's top on the side with more room, moved sideways into the graph if it sticks out; where that
+covers something it slides past it down, up, right or left (`spectrum_window.free_spot`), and of these spots it takes
+the one that sticks out of the graph least, then the one nearest the peak's top; the tallest peak's label is placed
+first. A label set apart from its circle is joined to it by a thin line, from the circle's edge to the label's
+nearest point. A **drag** moves a label: it then keeps its offset from its peak in screen pixels, so it follows the
+peak when the graph is zoomed, the other labels keep clear of it once the drag ends, and dropping the mark forgets
+it. The labels are placed again whenever the graph is zoomed, panned or resized. A click on a label, off its circle,
+marks nothing (the label hangs from the circle's centre, and a click on the circle is still the circle's).
+
 **Removal (D174).** Between the profile and the spectrum, *After removal*: the profile minus what is removed, its
 spectrum a second line on the spectrum (*after removal*, shown and in the legend only while something is removed),
 and the part removed drawn dashed over the profile (*removed*). Removed are the **slow part**, when *Remove slow
