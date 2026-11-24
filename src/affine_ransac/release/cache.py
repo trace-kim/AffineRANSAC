@@ -5,7 +5,7 @@ opened again.
 The contact sizes, once measured (Contact size tab), are optional arrays: a file without them loads with none. So
 are the SEM overlaps the stitching got wrong (`slipped`: paired one row off, D109, or not lining up, D137): a file
 saved before loads with None (not known); and the in-image map of a run that removed it (D141): a file without it
-loads with None (not removed).
+loads with None (not removed); and the CDs of a horizontal L/S run (D182): a file without them loads with None.
 The tiles kept to measure them are not saved (the images are large).
 
 Where: CACHE_NAME in the data folder; if that cannot be written (read-only share), the same file under the
@@ -37,6 +37,7 @@ from affine_ransac.analysis import ContactSizes, saved_settings
 from affine_ransac.fitting.moving_window import MovingWindowResult
 from affine_ransac.intrafield import IntrafieldMap
 from affine_ransac.release.analysis import ReleaseResult
+from affine_ransac.release.horizontal_ls import LineSpaceCD
 from affine_ransac.results_file import _get_fields, _get_parts, _get_stitch, _put_fields, _put_parts, _put_stitch
 
 CACHE_NAME = "MaskReg_analysis.npz"
@@ -79,6 +80,8 @@ def run_arrays(result: ReleaseResult) -> dict:
         arrays["contact_sizes/sem"] = result.contact_sizes.sem
         arrays["contact_sizes/design"] = result.contact_sizes.design
         arrays["contact_sizes/roi_width_nm"] = np.asarray(result.contact_sizes.roi_width_nm)
+    if result.line_space_cd is not None:  # optional: a horizontal L/S run since D182
+        _put_fields(arrays, "line_space_cd", result.line_space_cd)
     info = {"format": FORMAT, "version": result.version, "analysis": result.analysis,
             "saved": time.strftime("%Y-%m-%d %H:%M"), "folder": result.folder, "kind": result.kind,
             "settings": asdict(result.settings), "tile_ids": result.tile_ids, "image_paths": result.image_paths,
@@ -176,5 +179,7 @@ def read_run(path: Path, folder, log) -> tuple[ReleaseResult, str] | None:
             oas_centers=arrays["oas_centers"], contact_sizes=sizes,
             version=info.get("version", ""), analysis=info.get("analysis", 0),
             slipped=[(int(i), int(j)) for i, j in arrays["slipped"]] if "slipped" in arrays else None,
-            intrafield=_get_fields(arrays, "intrafield", IntrafieldMap) if "intrafield/shift_nm" in arrays else None)
+            intrafield=_get_fields(arrays, "intrafield", IntrafieldMap) if "intrafield/shift_nm" in arrays else None,
+            line_space_cd=(_get_fields(arrays, "line_space_cd", LineSpaceCD) if "line_space_cd/sem" in arrays
+                           else None))
     return result, info["saved"]

@@ -1668,6 +1668,24 @@ or one map with its bar); the maps show the same centre and scale (`link_views`,
 map shown again takes the y range and centre of one shown before (not its area). The summary lines of the research
 tab. No SEM images or design behind the maps.
 
+**Release: L/S CD (D182).** A horizontal L/S run measures the CD of every L/S centre while it loads, from the outlines
+it finds anyway, so no image is read twice. A band's CD in its x slice is its mean thickness across the slice: its
+area over the slice width (`horizontal_ls.band_cds`). On the SEM that is the refined outline of the region between two
+white bands, as *Load contours* draws it (pixel rows → nm by the pixel height); on the design, the clipped band it was
+paired with (`io/design.horizontal_band_outlines`, which also says whether each band is drawn). A centre is a
+**line** or a **space** by the tone of its design pairs: **the drawn shapes are the spaces** (user, 2026-11-24).
+Averaged per merged centre over the images that saw it (`horizontal_ls.merged_cds`, `registration.merge_values`); a
+centre paired with no band of its own images' clips, or with bands of both tones, is known as neither and has no
+design CD (logged with `!!`). `ReleaseResult.line_space_cd` (`LineSpaceCD`: `sem`, `design`, `band`), saved as
+optional `line_space_cd/*` arrays (format unchanged; a run saved before has none, and the tab says to restart the
+analysis). The SEM edge is where each region's own outline puts it: half-way between its interior and the white
+band's peak, on its own side (mid-level, D122), so a line and a space both read short by about a band width.
+The Contact size tab of such a run is titled **L/S CD** (`views.LineSpaceCDView`), with no ROI width and no *Run
+measurement*: one map, **Show** Lines and spaces / Lines / Spaces (both at start; a centre known as neither is shown
+only with both), **Value** SEM or SEM − design, a jet colour bar from the 1st to the 99th percentile of what is shown,
+white between the centres, Copy / Save image; summary lines: the counts, then for lines and for spaces the mean and 3σ
+of the SEM, the design and SEM − design.
+
 **Release: Contour diagnosis (D129).** *Analysis → Contour diagnosis...* (Ctrl+D; `release/contour_dialog.ContourDialog`,
 a window of its own, modal like *Parameters*). **Load image...** opens one SEM image (any file the loader reads; it
 starts in the open folder). The preview shows the input to thresholding in the pixel frame (x, y px, y down; no grid

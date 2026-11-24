@@ -124,6 +124,8 @@ class ReleaseResult:
     slipped: list[tuple[int, int]] | None = field(default_factory=list)
     # the in-image distortion map removed from sem_points (settings.in_image_correction, D141); None: not removed
     intrafield: IntrafieldMap | None = None
+    # horizontal L/S: the CD of every centre, line or space (D182); saved. None: other patterns, or a run before D182
+    line_space_cd: horizontal_ls.LineSpaceCD | None = None
 
     @property
     def horizontal_ls(self) -> bool:
@@ -192,7 +194,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         sizes = np.array([(r.fov_x_nm, r.fov_y_nm) for r in records], dtype=float)
         stripe, neighbours = tile_stripes(centers), tile_neighbours(centers, sizes)
         oas_paths = [str(r.oas_path) if r.oas_path is not None else "" for r in records]
-        sem_points, design_points, sem_slopes, design_slopes = horizontal_ls.load_centers(
+        sem_points, design_points, sem_slopes, design_slopes, sem_cds, design_cds = horizontal_ls.load_centers(
             records, centers, sizes, s, record,
             lambda k, n: progress(LOAD_SHARE * k / n, f"L/S centres of tile {k} of {n}"), pool, detailed_log)
         design_stitch = horizontal_ls.stitch_bands(design_points, design_slopes, centers, sizes, s.design_max_match_nm,
@@ -281,11 +283,11 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     features = "L/S centres" if horizontal else "contacts"
     record(f"{len(observations.tile)} observations -> {len(contacts.count)} {features}")
 
-    def result(moving, kept=None):
+    def result(moving, kept=None, line_space_cd=None):
         return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
                              sem_points, design_points, stitch, design_stitch, contacts.sem_nm, contacts.design_nm,
                              moving, image_paths, lines, oas_paths, oas_centers, tiles=kept, slipped=slipped,
-                             intrafield=intrafield)
+                             intrafield=intrafield, line_space_cd=line_space_cd)
     if len(contacts.count) < 3:
         unit = "L/S centre(s)" if horizontal else "contact(s)"
         raise AnalysisFailed(f"Only {len(contacts.count)} measured {unit}. The Stitching tab shows the tiles, "
@@ -304,9 +306,18 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     else:
         moving = moving_window_affine(contacts.sem_nm, contacts.design_nm, s.moving_window_um * 1000,
                                       s.moving_step_um * 1000, y_only=horizontal, min_span_nm=span)
+    line_space_cd = None
+    if horizontal:  # every band's CD, from the outlines found while loading (D182)
+        line_space_cd = horizontal_ls.merged_cds(contacts, observations, sem_cds, design_cds)
+        bands = line_space_cd.band
+        record(f"L/S CD of {(bands == horizontal_ls.LINE).sum()} line and {(bands == horizontal_ls.SPACE).sum()} "
+               f"space centres (the drawn design bands are the spaces)")
+        if (bands == horizontal_ls.NOT_KNOWN).any():
+            record(f"!! {(bands == horizontal_ls.NOT_KNOWN).sum()} L/S centre(s) not known as line or space: paired "
+                   f"with no design band of their own image, or with bands of both tones")
     progress(1.0, "Done")
     keep_contacts = keep_tiles and kind == "images" and not horizontal
-    return result(moving, LoadedTiles(tiles, observations, contacts) if keep_contacts else None)
+    return result(moving, LoadedTiles(tiles, observations, contacts) if keep_contacts else None, line_space_cd)
 
 
 def _edge_tile(image_path, fov_nm, options: dict, log: StepLog | None = None) -> tuple[EdgePoints, int, int, float]:

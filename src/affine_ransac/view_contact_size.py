@@ -42,14 +42,14 @@ def value_levels(values: np.ndarray) -> tuple[float, float]:
     return (float(low), float(high)) if high > low else (float(low) - 1, float(low) + 1)
 
 
-def size_summary(name: str, unit: str, sem: np.ndarray, design: np.ndarray) -> str:
+def size_summary(name: str, unit: str, sem: np.ndarray, design: np.ndarray, items: str = "contact(s)") -> str:
     """One summary line of a quantity: mean and 3σ of the SEM value, the design value and SEM − design."""
     def stats(values):
         values = values[np.isfinite(values)]
         return f"mean {values.mean():.2f}, 3σ {3 * values.std():.2f}" if len(values) else "no value"
     missing = int((~np.isfinite(sem - design)).sum())
     return (f"{name} ({unit}): SEM {stats(sem)}; design {stats(design)}; SEM − design {stats(sem - design)}"
-            + (f"; {missing} contact(s) without a value" if missing else ""))
+            + (f"; {missing} {items} without a value" if missing else ""))
 
 
 class ContactSizeView(QtWidgets.QWidget):

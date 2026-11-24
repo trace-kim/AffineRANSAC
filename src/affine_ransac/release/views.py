@@ -32,7 +32,9 @@ profiles CSV give both profiles as a table; Copy / Save image the whole figure, 
 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
-the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile.
+the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile. Of a horizontal
+L/S run, titled L/S CD (D182): LineSpaceCDView, the CD map of its lines and spaces, both or one of them, measured with
+the run (no ROI width, no Run measurement).
 
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
@@ -1716,6 +1718,8 @@ NOT_IMAGES = ("N/A: contour CSVs hold contact centres only. Area, xCD and yCD ar
               "the .oas outlines of an image folder.")
 NEEDS_TILES = ("Measuring needs the tiles of the run in memory: restart the analysis (Analysis > Restart analysis, "
                "F5). While this tab is on, a run keeps them.")
+NO_LS_CD = ("This run was saved before MaskReg measured L/S CDs: restart the analysis (Analysis > Restart analysis, "
+            "F5).")
 
 
 class ContactSizeTab(QtWidgets.QWidget):
@@ -1733,13 +1737,17 @@ class ContactSizeTab(QtWidgets.QWidget):
             self.run_button.clicked.connect(lambda: on_measure(self.roi.value()))
         self.note = QtWidgets.QLabel()
         bar = QtWidgets.QHBoxLayout()
-        for widget in (QtWidgets.QLabel("ROI width:"), self.roi, self.run_button):
+        roi_label = QtWidgets.QLabel("ROI width:")
+        for widget in (roi_label, self.roi, self.run_button):
+            widget.setVisible(not result.horizontal_ls)  # an L/S run measured its CDs itself (D182)
             bar.addWidget(widget)
         bar.addWidget(self.note, stretch=1)
         self.layout_ = QtWidgets.QVBoxLayout(self)
         self.layout_.addLayout(bar)
         self.layout_.addStretch(1)  # replaced by the maps
-        if result.contact_sizes is not None:
+        if result.line_space_cd is not None:
+            self._show(LineSpaceCDView(result.design_nm, result.line_space_cd, use_opengl))
+        elif result.contact_sizes is not None:
             self.roi.setValue(result.contact_sizes.roi_width_nm)
             self.show_sizes(result.contact_sizes)
         self.update_state(busy=False)
@@ -1751,7 +1759,7 @@ class ContactSizeTab(QtWidgets.QWidget):
         if r.kind != "images":
             self.note.setText(NOT_IMAGES)
         elif r.horizontal_ls:
-            self.note.setText("Horizontal L/S measures the y positions of lines and spaces.")
+            self.note.setText("" if self.view else NO_LS_CD)
         elif r.tiles is None:
             self.note.setText(NEEDS_TILES)
         else:
@@ -1759,10 +1767,13 @@ class ContactSizeTab(QtWidgets.QWidget):
 
     def show_sizes(self, sizes: ContactSizes):
         """Replace the maps (or the empty space) by those of sizes."""
+        self._show(ContactSizeView(self.result.design_nm, sizes, self.use_opengl))
+
+    def _show(self, view: QtWidgets.QWidget):
         old = self.layout_.takeAt(1)
         if old.widget() is not None:
             old.widget().deleteLater()
-        self.view = ContactSizeView(self.result.design_nm, sizes, self.use_opengl)
+        self.view = view
         self.layout_.addWidget(self.view, stretch=1)
 
 
@@ -1873,3 +1884,93 @@ class ContactSizeView(QtWidgets.QWidget):
         """For the image menus: the figure and the maps shown, each with its colour bar."""
         return self.figure, [(f"{name} map", [plot, bar]) for box, (name, _), (plot, _, bar)
                              in zip(self.show_boxes, QUANTITIES, self.maps) if box.isChecked()]
+
+
+# The L/S CD map's Show choices: (label, map title, the band shown; None = both)
+SHOW_BANDS = (("Lines and spaces", "Line and space CD", None), ("Lines", "Line CD", horizontal_ls.LINE),
+              ("Spaces", "Space CD", horizontal_ls.SPACE))
+
+
+class LineSpaceCDView(QtWidgets.QWidget):
+    def __init__(self, design_nm: np.ndarray, cds: horizontal_ls.LineSpaceCD, use_opengl: bool = True):
+        """design_nm: (N, 2) L/S centres, mask nm; cds: their CDs on the SEM and the design and their band (line or
+        space), in the same rows. One map of the lines and spaces, or of one of them (D182)."""
+        super().__init__()
+        self.cds = cds
+        self.origin = np.round(design_nm.mean(axis=0), -3)  # whole µm
+        self.position_um = (design_nm - self.origin) / 1000
+        distance, _ = cKDTree(design_nm).query(design_nm, k=2)
+        self.dot_um = 0.4 * float(np.median(distance[:, 1])) / 1000  # as the contact maps
+
+        self.figure = figure(use_opengl)
+        self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
+        self.redraw.timeout.connect(self.draw_map)
+        self.plot = mask_plot(self.origin, data_unit_nm=1000)
+        self.image = pg.ImageItem(axisOrder="row-major")
+        self.plot.addItem(self.image)
+        self.bar = jet_bar((0.0, 1.0), "CD (nm)")
+        self.bar.sigLevelsChanged.connect(lambda *_: self.redraw.start())
+        self.figure.addItem(self.plot, row=0, col=0)
+        self.figure.addItem(self.bar, row=0, col=1)
+        self.plot.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
+        self.plot.vb.sigResized.connect(lambda *_: self.redraw.start())
+        style.graph_actions(self.plot, self.figure, [self.plot, self.bar], "CD map")
+
+        self.show_band = QtWidgets.QComboBox()
+        self.show_band.addItems([label for label, _, _ in SHOW_BANDS])
+        self.show_band.currentIndexChanged.connect(self.set_values)
+        self.sem_button = QtWidgets.QRadioButton("SEM")
+        self.difference_button = QtWidgets.QRadioButton("SEM − design")
+        self.sem_button.setChecked(True)
+        self.difference_button.toggled.connect(self.set_values)
+        controls = QtWidgets.QHBoxLayout()
+        for widget in (QtWidgets.QLabel("Show:"), self.show_band, QtWidgets.QLabel("   Value:"), self.sem_button,
+                       self.difference_button):
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        for button in style.image_menus(lambda: (self.figure, [("CD map", [self.plot, self.bar])])):
+            controls.addWidget(button)
+
+        self.summary = QtWidgets.QLabel("\n".join([self.count_text()] + [
+            size_summary(title, "nm", cds.sem[cds.band == band], cds.design[cds.band == band], "centre(s)")
+            for _, title, band in SHOW_BANDS[1:]]))
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.summary)
+        layout.addLayout(controls)
+        layout.addWidget(self.figure, stretch=1)
+        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
+        self.plot.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))  # every centre
+        self.set_values()
+
+    def count_text(self) -> str:
+        band = self.cds.band
+        unknown = int((band == horizontal_ls.NOT_KNOWN).sum())
+        return (f"{len(band)} L/S centres, {(band == horizontal_ls.LINE).sum()} on lines and "
+                f"{(band == horizontal_ls.SPACE).sum()} on spaces (the drawn design bands are the spaces)"
+                + (f", {unknown} not known as either (shown with both only)" if unknown else "")
+                + ". CD = the band's mean thickness across its tenth of the image, on its outline.")
+
+    def shown(self) -> np.ndarray:
+        """(N,) bool: the centres of the band chosen in Show (every centre with both)."""
+        band = SHOW_BANDS[self.show_band.currentIndex()][2]
+        return np.ones(len(self.cds.band), bool) if band is None else self.cds.band == band
+
+    def values(self) -> np.ndarray:
+        """(N,) the SEM CD, or SEM − design."""
+        return self.cds.sem - self.cds.design if self.difference_button.isChecked() else self.cds.sem
+
+    def set_values(self):
+        """Title and colour scale of what is shown (band, SEM or SEM − design), then the map drawn again."""
+        title = SHOW_BANDS[self.show_band.currentIndex()][1]
+        value = "SEM − design" if self.difference_button.isChecked() else "SEM"
+        self.plot.setTitle(f"{title}, {value} (nm)", color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
+        self.bar.blockSignals(True)  # one redraw below
+        self.bar.setLevels(value_levels(self.values()[self.shown()]))
+        self.bar.blockSignals(False)
+        self.draw_map()
+
+    def draw_map(self):
+        shown = self.shown()
+        draw_map(self.plot, self.image, self.position_um[shown], self.values()[shown], self.bar.levels(),
+                 self.dot_um, self.devicePixelRatioF(), background=255)

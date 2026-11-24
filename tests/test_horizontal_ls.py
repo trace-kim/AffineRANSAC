@@ -17,10 +17,10 @@ from affine_ransac.release import horizontal_ls
 from affine_ransac.release.agent import review
 from affine_ransac.release.analysis import (DEFAULTS, AnalysisFailed, analyse_folder, read_contours,
                                            read_design_images, read_display_images, tile_affines)
-from affine_ransac.release.cache import load_cache
+from affine_ransac.release.cache import load_cache, save_cache
 from affine_ransac.release.contour_dialog import count_lines, diagnose
 from affine_ransac.release.horizontal_ls import find_bands, paired_rows, stitch_bands
-from affine_ransac.release.views import matrix_of
+from affine_ransac.release.views import NO_LS_CD, ContactSizeTab, LineSpaceCDView, matrix_of
 from test_release import make_window, wait
 
 
@@ -100,10 +100,12 @@ def test_design_is_clipped_before_checking_for_complete_bands():
     shapes = layout.create_cell("TOP").shapes(layout.layer(4, 0))
     shapes.insert(kdb.Box(-50, -20, 50, -10))
     shapes.insert(kdb.Box(-50, 0, 10, 10))  # line and adjacent space both end within the field
-    outlines = horizontal_band_outlines(layout, 4, 0, (100, 100), 10)
+    outlines, drawn = horizontal_band_outlines(layout, 4, 0, (100, 100), 10)
     xs = [(c[:, 0].min(), c[:, 0].max()) for c in outlines]
     for left in range(-50, 50, 10):
         assert xs.count((left, left + 10)) == (3 if left < 10 else 1)
+    # Drawn bands: the line in every slice, the box ending at x = 10 in the first six; clear: the space between.
+    assert drawn.tolist() == [True] * 16 + [False] * 6
 
 
 def mosaic(folder):
@@ -171,6 +173,10 @@ def test_release_stitches_both_sets_in_y_and_calibrates_the_measured_heights(tmp
         np.testing.assert_array_equal(tile_affines(run)[:, 0], np.tile([1, 0, 0], (9, 1)))
         assert len(np.unique(run.moving.stripe)) == (3 if per_stripe else 0)
         assert review(run)["measured_axes"] == ["y"]
+        cd = run.line_space_cd  # neighbouring clips draw opposite tones: a band seen by both is neither
+        unknown = cd.band == horizontal_ls.NOT_KNOWN
+        assert len(cd.band) == len(run.design_nm) and unknown.any() and not unknown.all()
+        assert np.isnan(cd.design[unknown]).all() and np.isfinite(cd.design[~unknown]).all()
 
         if not per_stripe:
             reopened, _ = load_cache(tmp_path, window.cache_dir)
@@ -265,6 +271,77 @@ def test_one_tilted_sem_tile_calibrates_from_its_ten_columns(tmp_path):
     assert len(run.design_nm) == 40
     np.testing.assert_allclose(tile_affines(run)[0, :2, :2], [[1, 0], [1 / 12, 1]], atol=1e-9)
     np.testing.assert_allclose(run.moving.residuals[:, 1], 0, atol=1e-8)
+
+
+def line_space_tile(tmp_path):
+    """One 120 x 120 px tile, pixels 1 x 2 nm, 1 px white rows between interiors of the same tone: lines 19 px (38 nm)
+    wide, spaces 9 px (18 nm). Its clip draws the spaces at their interiors, so each design line also holds its two
+    white rows (42 nm). The interiors at the top and bottom of the field are cut by its border."""
+    records, _, _ = mosaic(tmp_path)
+    tile = records[0]
+    tile.fov_x_nm, tile.fov_y_nm = 120, 240
+    image = np.full((120, 120), 60, np.uint8)
+    image[[10, 30, 40, 60, 70, 90, 100]] = 225
+    cv2.imencode(".png", image)[1].tofile(str(tile.image_path))
+    layout = kdb.Layout()
+    layout.dbu = 0.001
+    shapes = layout.create_cell("TOP").shapes(layout.layer(4, 0))
+    for bottom, top in ((100, 120), (40, 58), (-20, -2), (-80, -62)):  # nm, y up from the field's centre
+        shapes.insert(kdb.Box(-70, bottom, 70, top))
+    layout.write(str(tile.oas_path))
+    return tile
+
+
+def test_line_and_space_cds_follow_the_design_tone_drawn_as_spaces(tmp_path):
+    tile = line_space_tile(tmp_path)
+    with ThreadPoolExecutor(1) as pool:
+        run = analyse_folder(tmp_path, "images", replace(SETTINGS, design_tolerance_nm=7), [tile],
+                             log=lambda line: None, pool=pool)
+    cd = run.line_space_cd
+    assert len(cd.band) == 60 and (cd.band == horizontal_ls.LINE).sum() == (cd.band == horizontal_ls.SPACE).sum() == 30
+    line, space = cd.band == horizontal_ls.LINE, cd.band == horizontal_ls.SPACE
+    np.testing.assert_allclose(cd.sem[line], 38, atol=1e-9)
+    np.testing.assert_allclose(cd.design[line], 42, atol=1e-9)
+    np.testing.assert_allclose(cd.sem[space], 18, atol=1e-9)
+    np.testing.assert_allclose(cd.design[space], 18, atol=1e-9)
+    np.testing.assert_allclose(np.unique(run.design_nm[line, 1] - tile.center_y_nm), [-41, 19, 79])  # 3 lines
+
+    save_cache(run, tmp_path / "user")
+    reopened, _ = load_cache(tmp_path, tmp_path / "user")
+    for name in ("sem", "design", "band"):
+        np.testing.assert_array_equal(getattr(reopened.line_space_cd, name), getattr(cd, name))
+
+
+def test_the_l_s_cd_tab_shows_lines_and_spaces_or_one_of_them(tmp_path, monkeypatch):
+    tile = line_space_tile(tmp_path)
+    window = make_window(tmp_path)
+    window.size_action.setChecked(True)
+    monkeypatch.setattr(release_app, "image_records", lambda folder: [tile])
+    monkeypatch.setattr(window, "settings", lambda: replace(SETTINGS, design_tolerance_nm=7))
+    with ThreadPoolExecutor(1) as pool:
+        monkeypatch.setattr(window, "kept_helpers", lambda: pool)
+        window.open_folder(str(tmp_path))
+        wait(window)
+    tabs, tab = window.centralWidget(), window.size_tab
+    assert tabs.tabText(2) == "L/S CD" and tab.run_button.isHidden() and tab.roi.isHidden()
+    view = tab.view
+    assert isinstance(view, LineSpaceCDView) and tab.note.text() == ""
+    assert view.shown().all() and "Line and space CD, SEM (nm)" in view.plot.titleLabel.text
+    assert "30 on lines and 30 on spaces" in view.summary.text()
+    assert "Line CD (nm): SEM mean 38.00" in view.summary.text()
+    view.show_band.setCurrentText("Spaces")
+    np.testing.assert_array_equal(view.shown(), window.result.line_space_cd.band == horizontal_ls.SPACE)
+    assert "Space CD, SEM (nm)" in view.plot.titleLabel.text
+    view.difference_button.setChecked(True)
+    view.show_band.setCurrentText("Lines")
+    np.testing.assert_allclose(view.values()[view.shown()], -4)
+    assert "Line CD, SEM − design (nm)" in view.plot.titleLabel.text
+    view.draw_map()
+    assert (view.image.image[..., :3] == 255).all(axis=-1).any()  # white between the centres
+    window.close()
+
+    saved = replace(window.result, line_space_cd=None)  # a run saved before D182
+    assert ContactSizeTab(saved, use_opengl=False).note.text() == NO_LS_CD
 
 
 def test_uniform_sem_stops_with_inspectable_empty_centres(tmp_path):

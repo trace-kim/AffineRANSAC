@@ -1,7 +1,7 @@
 """Temporary release method for horizontal lines and spaces separated by bright SEM edges."""
 
 from contextlib import closing, nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -19,9 +19,19 @@ from affine_ransac.matching import match_points_tree, match_with_shift, mutual_n
 from affine_ransac.overlap import overlapping_pairs
 from affine_ransac.overlap_fit import fit_overlap
 from affine_ransac.pipeline import PairResult, RejectedPair, find_lines, prepared_image, solved_stitching
-from affine_ransac.registration import design_errors_after_stitching
+from affine_ransac.registration import DesignErrors, MergedErrors, design_errors_after_stitching, merge_values
 
 SLICES = 10
+LINE, SPACE, NOT_KNOWN = 0, 1, -1  # LineSpaceCD.band. In the user's clips the drawn shapes are the spaces (D182).
+
+
+@dataclass
+class LineSpaceCD:
+    """CD of every L/S centre (the rows of ReleaseResult.sem_nm and design_nm): the band's mean thickness across its
+    x slice (its area over the slice width), nm, averaged over the images that saw it; NaN where none did."""
+    sem: np.ndarray     # (M,) on the SEM outline (the refined one, as Load contours draws it)
+    design: np.ndarray  # (M,) on the design band it was paired with; NaN where the band is NOT_KNOWN
+    band: np.ndarray    # (M,) LINE, SPACE or NOT_KNOWN: paired with no band of its own images' clips, or with both tones
 
 
 def band_settings(s: Settings) -> Settings:
@@ -102,30 +112,42 @@ def band_slope(contour):
     return moments["mu11"] / moments["mu20"] if moments["mu20"] else 0.0
 
 
+def band_cds(contours) -> np.ndarray:
+    """Mean thickness of each closed slice band, in its own units: its area over the slice width."""
+    return np.array([polygon_area(c) / np.ptp(c[:, 0]) for c in contours])
+
+
 def tile_centers(path, oas_path, fov_nm, s: Settings):
-    """Return each slice's centroid (tile-local nm) and centreline slope (dy/dx in the mask frame)."""
+    """Return each slice's centroid (tile-local nm) and centreline slope (dy/dx in the mask frame); and the CD of
+    each, nm: the SEM's (n,), the design's with whether its band is drawn (m, 2)."""
     image = load_sem_image(path)
     _, bands = find_bands(image, s)
     pixel_nm = np.asarray(fov_nm) / image.shape[::-1]
     sem = pixel_to_tile_nm(bands.centers, image.shape, pixel_nm)
     sem_slope = np.array([band_slope(c) for c in bands.contours]) * (-pixel_nm[1] / pixel_nm[0])
-    outlines = horizontal_band_outlines(load_layout(oas_path), s.layer, s.datatype, fov_nm, SLICES) if oas_path else []
+    outlines, drawn = (horizontal_band_outlines(load_layout(oas_path), s.layer, s.datatype, fov_nm, SLICES)
+                       if oas_path else ([], np.zeros(0, bool)))
     design = np.asarray([polygon_centroid(c) for c in outlines]).reshape(-1, 2)
-    return sem, design, sem_slope, np.array([band_slope(c) for c in outlines])
+    sem_cd = band_cds(bands.contours) * pixel_nm[1]  # px thick, rows pixel_nm[1] apart
+    design_cd = np.column_stack((band_cds(outlines), drawn)).reshape(-1, 2)
+    return sem, design, sem_slope, np.array([band_slope(c) for c in outlines]), sem_cd, design_cd
 
 
 def load_centers(records, centers, sizes, s, log, progress, pool, detailed_log=False):
-    """Read SEM and design centres in tile order, limiting simultaneous image work as for general contours."""
+    """Read SEM and design centres in tile order, limiting simultaneous image work as for general contours. Per tile:
+    the SEM and design centres (mask nm), their slopes and their CDs (tile_centers)."""
     workers = contour_workers([r.image_path for r in records], s.upscale, log, pool=pool)
     args = ((r.image_path, r.oas_path, size, s) for r, size in zip(records, sizes))
-    sem_points, design_points, sem_slopes, design_slopes = [], [], [], []
+    sem_points, design_points, sem_slopes, design_slopes, sem_cds, design_cds = [], [], [], [], [], []
     with helper_pool(workers) if pool is None else nullcontext(pool) as helpers:
         with closing(bounded_results(helpers, tile_centers, args, workers)) as results:
-            for k, (sem, design, sem_slope, design_slope) in enumerate(results):
+            for k, (sem, design, sem_slope, design_slope, sem_cd, design_cd) in enumerate(results):
                 sem_points.append(sem + centers[k])
                 design_points.append(design + centers[k])
                 sem_slopes.append(sem_slope)
                 design_slopes.append(design_slope)
+                sem_cds.append(sem_cd)
+                design_cds.append(design_cd)
                 if not len(sem) or not len(design):
                     log(f"!! {records[k].tile_id} has {len(sem)} SEM and {len(design)} design L/S centres")
                 if detailed_log:
@@ -133,7 +155,17 @@ def load_centers(records, centers, sizes, s, log, progress, pool, detailed_log=F
                     counts = [np.histogram(p[:, 0], bins=cuts)[0].tolist() for p in (sem, design)]
                     log(f"{records[k].tile_id} L/S centres per x slice, left to right: SEM {counts[0]}, design {counts[1]}")
                 progress(k + 1, len(records))
-    return sem_points, design_points, sem_slopes, design_slopes
+    return sem_points, design_points, sem_slopes, design_slopes, sem_cds, design_cds
+
+
+def merged_cds(merged: MergedErrors, observations: DesignErrors, sem_cds: list[np.ndarray],
+               design_cds: list[np.ndarray]) -> LineSpaceCD:
+    """Per L/S centre (merged, from observations) the mean CD over the images that saw it, and whether it is a line
+    or a space: the tone of the design bands it was paired with, drawn = space (D182)."""
+    sem, design = merge_values(merged, observations, [c[:, None] for c in sem_cds], design_cds)
+    drawn = design[:, 1]  # the mean of 1 (drawn) and 0 (clear) over the centre's own design pairs; NaN without one
+    band = np.select([drawn == 1, drawn == 0], [SPACE, LINE], NOT_KNOWN).astype(np.int8)
+    return LineSpaceCD(sem[:, 0], np.where(band == NOT_KNOWN, np.nan, design[:, 0]), band)
 
 
 def tile_outlines(path, fov_nm, s: Settings, full_width=False):

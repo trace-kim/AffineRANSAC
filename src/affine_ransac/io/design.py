@@ -149,17 +149,19 @@ def _fov_box(frame_nm, nm_per_dbu: float) -> kdb.Box:
     return kdb.Box(-half_w, -half_h, half_w, half_h)
 
 
-def horizontal_band_outlines(layout: kdb.Layout, layer: int, datatype: int, fov_nm, slices: int) -> list[np.ndarray]:
-    """Closed drawn and clear bands, clipped independently to each x slice of the SEM field, in tile-local nm."""
+def horizontal_band_outlines(layout: kdb.Layout, layer: int, datatype: int, fov_nm,
+                             slices: int) -> tuple[list[np.ndarray], np.ndarray]:
+    """Closed drawn and clear bands, clipped independently to each x slice of the SEM field, in tile-local nm, and
+    whether each is drawn (bool, the drawn ones first)."""
     if layout.find_layer(layer, datatype) is None:  # a blank clip alongside patterned ones
-        return []
+        return [], np.zeros(0, bool)
     unit = layout.dbu * 1000.0
     box = _fov_box(fov_nm, unit)
     frame = kdb.Region(box)
     drawn = kdb.Region(_shape_iterator(layout, layer, datatype, None))
     cuts = np.rint(np.linspace(box.left, box.right, slices + 1)).astype(int)
-    outlines = []
-    for tone in (frame & drawn, frame - drawn):
+    outlines, tones = [], []
+    for is_drawn, tone in ((True, frame & drawn), (False, frame - drawn)):
         for left, right in zip(cuts, cuts[1:]):
             if right > left:
                 strip = kdb.Box(int(left), box.bottom, int(right), box.top)
@@ -168,12 +170,13 @@ def horizontal_band_outlines(layout: kdb.Layout, layer: int, datatype: int, fov_
                     if (bounds.left == left and bounds.right == right and box.bottom < bounds.bottom
                             and bounds.top < box.top and not band.holes()):
                         outlines.append(_polygon_vertices(band) * unit)
-    return outlines
+                        tones.append(is_drawn)
+    return outlines, np.array(tones, bool)
 
 
 def horizontal_band_centers(layout: kdb.Layout, layer: int, datatype: int, fov_nm, slices: int = 1) -> np.ndarray:
     """Area centroids of both design tones, optionally sliced along x."""
-    outlines = horizontal_band_outlines(layout, layer, datatype, fov_nm, slices)
+    outlines, _ = horizontal_band_outlines(layout, layer, datatype, fov_nm, slices)
     return np.asarray([polygon_centroid(c) for c in outlines]).reshape(-1, 2)
 
 

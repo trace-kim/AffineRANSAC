@@ -541,7 +541,7 @@ class MaskRegWindow(QtWidgets.QMainWindow):
 
     def _add_size_tab(self, result, use_opengl: bool):
         self.size_tab = ContactSizeTab(result, use_opengl, self.measure_sizes)
-        self.tabs.addTab(self.size_tab, "Contact size")
+        self.tabs.addTab(self.size_tab, "L/S CD" if result.horizontal_ls else "Contact size")
 
     def set_gpu(self, on: bool):
         self.preferences.setValue("use_opengl", "true" if on else "false")
