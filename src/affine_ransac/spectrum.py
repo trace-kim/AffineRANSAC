@@ -30,14 +30,14 @@ def limit(position_nm: np.ndarray) -> float:
     return 0.5 / row_spacing(position_nm)
 
 
-def frequency_grid(position_nm: np.ndarray) -> np.ndarray:
-    """Frequencies (cycles per nm) from the resolution up to the limit, OVERSAMPLE steps per resolution step, without
-    those closer than the resolution to a multiple of the limit (D178): on evenly spaced rows a sine there is zero at
-    every row (or, at twice the limit, the same at every row), so its least-squares amplitude is the noise divided by
-    almost nothing. The grid starts one resolution above zero for the same reason."""
-    step, top = resolution(position_nm) / OVERSAMPLE, limit(position_nm)
-    grid = np.arange(resolution(position_nm), top + step / 2, step)
-    return grid[np.abs(grid - top * np.round(grid / top)) >= resolution(position_nm)]
+def frequency_grid(position_nm: np.ndarray, top: float | None = None) -> np.ndarray:
+    """Frequencies (cycles per nm) from the resolution up to the limit, or past it up to top (D179), OVERSAMPLE steps
+    per resolution step, without those closer than the resolution to a multiple of the limit (D178): on evenly spaced
+    rows a sine there is zero at every row (or, at twice the limit, the same at every row), so its least-squares
+    amplitude is the noise divided by almost nothing. The grid starts one resolution above zero for the same reason."""
+    step, edge = resolution(position_nm) / OVERSAMPLE, limit(position_nm)
+    grid = np.arange(resolution(position_nm), (top or edge) + step / 2, step)
+    return grid[np.abs(grid - edge * np.round(grid / edge)) >= resolution(position_nm)]
 
 
 def amplitude_spectrum(position_nm: np.ndarray, values: np.ndarray, frequency: np.ndarray) -> np.ndarray:
@@ -53,17 +53,26 @@ def amplitude_spectrum(position_nm: np.ndarray, values: np.ndarray, frequency: n
     return amplitude.reshape(np.shape(frequency))
 
 
-def fft_spectrum(position_nm: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def fft_spectrum(position_nm: np.ndarray, values: np.ndarray, top: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Amplitude spectrum by FFT, for comparison with the least-squares one (D175): the profile (positions from the
     lowest up) resampled every median row spacing by straight lines between its points (across a gap too), its mean
-    removed, a Hann window. Returns the frequencies (cycles per nm, from the first above zero to the limit) and the
-    amplitudes (nm: 2 |X| / sum of the window, so a sine on a frequency of the grid shows its amplitude)."""
+    removed, a Hann window. Returns the frequencies (cycles per nm, from the first above zero to the limit, or past it
+    up to top: there the FFT of evenly spaced rows repeats, mirrored, D179) and the amplitudes (nm: 2 |X| / sum of
+    the window, so a sine on a frequency of the grid shows its amplitude)."""
     spacing = row_spacing(position_nm)
     grid = np.arange(position_nm[0], position_nm[-1] + spacing / 2, spacing)
     resampled = np.interp(grid, position_nm, values)
     window = np.hanning(len(grid))
-    transform = np.fft.rfft((resampled - resampled.mean()) * window)
-    return np.fft.rfftfreq(len(grid), spacing)[1:], 2 * np.abs(transform[1:]) / window.sum()
+    amplitude = 2 * np.abs(np.fft.rfft((resampled - resampled.mean()) * window)) / window.sum()
+    count = len(grid)  # FFT bin k is at k / (count spacing); bin k shows what bin |k - count round(k / count)| shows
+    bins = np.arange(1, int((top or limit(position_nm)) * count * spacing + 1e-9) + 1)
+    return bins / (count * spacing), amplitude[np.abs(bins - count * np.round(bins / count)).astype(int)]
+
+
+def fold(frequency: float, spacing_nm: float) -> float:
+    """The frequency up to the limit (cycles per nm) that rows every spacing_nm show for this one."""
+    rate = 1.0 / spacing_nm
+    return abs(frequency - rate * round(frequency / rate))
 
 
 def fit_sines(position_nm: np.ndarray, values: np.ndarray, frequencies) -> tuple[np.ndarray, np.ndarray]:

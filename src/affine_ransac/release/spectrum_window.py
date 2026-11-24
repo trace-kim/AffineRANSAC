@@ -8,7 +8,8 @@ cycles per µm on the top one (D177): least-squares sines (Lomb–Scargle), or a
 sawtooth), and the sine of every picked peak, all picked sines fitted together on what the slow part leaves; the part
 removed is drawn over the profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
 frequency shows folded below it) and the image step with its multiples (where an error made inside every image would
-show). A click on the spectrum picks the peak nearest to it in what is left: its sine, as removed, a stem up to its
+show). Show periods down to (off at start, D179): both spectra past the limit, on a shaded band of folded copies,
+where each peak shows again at every shorter period it may have folded from. A click on the spectrum picks the peak nearest to it in what is left: its sine, as removed, a stem up to its
 amplitude (D176), with its period, its amplitude and the shorter periods it may have folded from written beside it.
 A click on a picked peak drops it.
 """
@@ -25,6 +26,7 @@ from affine_ransac.release import style
 MIN_POINTS = 4  # fewer points give no spectrum
 CLICK_PX = 8  # a click on the spectrum picks the highest peak this many screen pixels around it
 WINDOW_ROWS = 20  # the running median's window at start: this many median row spacings
+SHORTEST_NM = 100.0  # Show periods down to (off at start): the user's choice (D179)
 
 
 @contextmanager
@@ -85,6 +87,14 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.method.setToolTip("Lomb–Scargle: a least-squares sine at each frequency, for rows at any spacing. FFT: the "
                                "profile resampled every median row spacing, straight across gaps, Hann window. Picked "
                                "peaks are measured by least squares either way")
+        self.limit = spectrum.limit(self.position)  # cycles per nm
+        self.extend_box = QtWidgets.QCheckBox("Show periods down to")
+        self.extend_box.setToolTip("Continues the spectrum past the limit: each peak shows again at every shorter period "
+                                   "it may have folded from. It takes longer, in proportion to the range shown")
+        self.shortest = QtWidgets.QDoubleSpinBox(decimals=1, minimum=1.0, maximum=1e5, singleStep=10.0, suffix=" nm",
+                                                 keyboardTracking=False)
+        self.shortest.setValue(SHORTEST_NM)
+        self.shortest.setToolTip("The shortest period shown when the box is ticked")
         self.frequency, self.amplitude = self.spectrum_of(self.values)  # cycles per nm; nm
         self.picked = []  # the picked peaks' frequencies, cycles per nm
 
@@ -107,6 +117,13 @@ class SpectrumWindow(QtWidgets.QWidget):
         style.style_plot(self.spectrum, "", "period (nm)", "amplitude (nm)")
         self.style_top_axis()
         style.legend(self.spectrum)
+        # Past the limit, shaded and named: every peak there is a copy of one below it (D179).
+        self.band = pg.LinearRegionItem((self.limit * 1000, self.limit * 1000), movable=False, pen=pg.mkPen(None),
+                                        brush=pg.mkBrush(128, 128, 128, 30))
+        self.band.setZValue(-10)
+        pg.InfLineLabel(self.band.lines[0], "folded copies", position=0.95, anchors=[(0, 0), (0, 0)], color=style.TEXT)
+        self.band.setVisible(False)
+        self.spectrum.addItem(self.band, ignoreBounds=True)
         self.profile_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude, pen=pg.mkPen(color, width=2),
                                                    name="profile")
         self.remainder_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude,
@@ -117,7 +134,9 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.labels = []
         self.figure.scene().sigMouseClicked.connect(self.clicked)
 
-        self.method.currentIndexChanged.connect(self.change_method)
+        self.method.currentIndexChanged.connect(self.change_spectrum)
+        self.extend_box.toggled.connect(self.change_spectrum)
+        self.shortest.valueChanged.connect(lambda *_: self.extend_box.isChecked() and self.change_spectrum())
         self.slow_box = QtWidgets.QCheckBox("Remove slow part:")
         self.slow_box.setToolTip("Remove the profile's slow part (its sawtooth), leaving the faster signal")
         self.slow_box.toggled.connect(self.update_removal)
@@ -144,7 +163,7 @@ class SpectrumWindow(QtWidgets.QWidget):
                                                          (f"{name} spectrum", [self.spectrum])]))
         controls = QtWidgets.QHBoxLayout()
         for widget in (QtWidgets.QLabel("Spectrum:"), self.method, QtWidgets.QLabel("    "), self.limit_box,
-                       self.image_box):
+                       self.image_box, QtWidgets.QLabel("    "), self.extend_box, self.shortest):
             controls.addWidget(widget)
         controls.addStretch(1)
         for button in menus:
@@ -207,15 +226,26 @@ class SpectrumWindow(QtWidgets.QWidget):
             box.toggled.connect(lambda on, lines=lines: [line.setVisible(on) for line in lines])
         return limit_box, image_box
 
+    def shown_top(self) -> float:
+        """The highest frequency shown (cycles per nm): the limit, or past it up to the shortest period asked for."""
+        return max(self.limit, 1 / self.shortest.value()) if self.extend_box.isChecked() else self.limit
+
     def spectrum_of(self, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """(frequencies, cycles per nm; amplitudes, nm) of values at the rows, by the method chosen (D175)."""
+        """(frequencies, cycles per nm; amplitudes, nm) of values at the rows, by the method chosen (D175), up to the
+        highest frequency shown (D179)."""
         with busy():
             if self.method.currentIndex() == 1:
-                return spectrum.fft_spectrum(self.position, values)
-            frequency = spectrum.frequency_grid(self.position)
+                return spectrum.fft_spectrum(self.position, values, self.shown_top())
+            frequency = spectrum.frequency_grid(self.position, self.shown_top())
             return frequency, spectrum.amplitude_spectrum(self.position, values, frequency)
 
-    def change_method(self, *_):
+    def change_spectrum(self, *_):
+        """The spectra again, by the method chosen and up to the highest frequency shown, with the band of folded
+        copies past the limit; picks beyond what is shown are dropped."""
+        top = self.shown_top()
+        self.band.setRegion((self.limit * 1000, top * 1000))
+        self.band.setVisible(top > self.limit)
+        self.picked = [f for f in self.picked if f <= top]
         self.frequency, self.amplitude = self.spectrum_of(self.values)
         self.profile_spectrum.setData(self.frequency * 1000, self.amplitude)
         self.update_removal()
@@ -285,14 +315,24 @@ class SpectrumWindow(QtWidgets.QWidget):
         show_line(self.spectrum, self.stems, "removed sines", bool(self.picked))
         middle = np.mean(self.spectrum.vb.viewRange()[0]) / 1000
         for f, a in zip(frequency, self.fitted):
-            folded = ", ".join(period_text(1 / g) for g in spectrum.folded_from(f, self.spacing))
             # Hanging from the stem's top, on the side with more room: a tall stem's label stays in the graph.
-            label = pg.TextItem(f"period {period_text(1 / f)} nm, amplitude {a:.2f} nm\nor folded from {folded} nm",
+            label = pg.TextItem(f"period {period_text(1 / f)} nm, amplitude {a:.2f} nm\n{self.alternatives(f)}",
                                 color=style.TEXT, anchor=(float(f > middle), 0), fill=pg.mkBrush(255, 255, 255, 210))
             label.setPos(f * 1000, a)
             label.setVisible(self.stems.isVisible())
             self.spectrum.addItem(label, ignoreBounds=True)
             self.labels.append(label)
+
+    def alternatives(self, frequency: float) -> str:
+        """The other periods the rows show the same as this frequency (cycles per nm): below the limit, the shorter ones
+        it may have folded from; past it (a folded copy, D179), the one below the limit and the other copies."""
+        periods = lambda fs: ", ".join(period_text(1 / g) for g in fs)
+        if frequency <= self.limit:
+            return f"or folded from {periods(spectrum.folded_from(frequency, self.spacing))} nm"
+        shown = spectrum.fold(frequency, self.spacing)
+        others = [g for g in spectrum.folded_from(shown, self.spacing)
+                  if abs(g - frequency) > spectrum.resolution(self.position)]
+        return f"a copy of {period_text(1 / shown)} nm, as are {periods(others)} nm"
 
     def show_labels(self):
         """The picked peaks' labels are shown while their stems are."""

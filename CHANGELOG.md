@@ -27,6 +27,9 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 - Frequency analysis: the spectrum's **period** axis is at the bottom, its frequency axis at the top (D177).
 - Frequency analysis: the least-squares spectrum can no longer show a **false spike at its right end** (the limit)
   on evenly spaced rows (D178).
+- Frequency analysis: **Show periods down to** (off at start, 100 nm) continues the spectrum past the limit, shaded
+  as *folded copies*: each peak shows again at every shorter period it may have folded from. Compare two datasets of
+  different pitch: the period that stays in the same place in both is not from the sampling (D179).
 - The Registration tab's **Map data** menu copies or exports all measured points as CSV or TSV with columns
   `x`, `y`, `dx`, `dy` (mask µm and residual nm). Horizontal L/S leaves `dx` blank (D172).
 - **Analysis 10.** Horizontal L/S measures each complete line and space in ten x slices in the SEM and design.

@@ -60,6 +60,31 @@ def test_no_false_spike_at_the_limit_of_evenly_spaced_rows():
         assert abs(1 / frequency[np.argmax(amplitude)] - 433.0) < 2 and amplitude.max() < 0.55
 
 
+def test_past_the_limit_each_peak_shows_again_where_it_may_have_folded_from():
+    """D179: rows every 100 nm (a tenth missing) show a 130 nm ripple at 433 nm; continued past the limit, both
+    spectra show it at 130 nm too, as high. The least-squares grid keeps away from every multiple of the limit."""
+    position = uneven_rows(100.0, 40_000.0)
+    values = 0.5 * np.sin(2 * np.pi * position / 130.0)
+    top = 1 / 100.0  # twice the limit
+    frequency = spectrum.frequency_grid(position, top)
+    edge = spectrum.limit(position)
+    assert frequency[-1] <= top and frequency[-1] > 1.9 * edge
+    assert np.all(np.abs(frequency - edge * np.round(frequency / edge)) >= spectrum.resolution(position))
+    amplitude = spectrum.amplitude_spectrum(position, values, frequency)
+    for period in (433.3, 130.0):
+        near = np.abs(1 / frequency - period) < 2
+        assert amplitude[near].max() == pytest.approx(0.5, abs=0.02)
+    assert spectrum.fold(1 / 130.0, 100.0) == pytest.approx(1 / 100.0 - 1 / 130.0)
+    assert spectrum.fold(1 / 433.3, 100.0) == pytest.approx(1 / 433.3)
+
+    rows = np.arange(0.0, 51_200.0, 50.0)  # FFT: 1024 rows; past the limit bin k shows bin 1024 - k
+    below, low = spectrum.fft_spectrum(rows, np.sin(2 * np.pi * rows / 300.0))
+    frequency, amplitude = spectrum.fft_spectrum(rows, np.sin(2 * np.pi * rows / 300.0), 1 / 80.0)
+    np.testing.assert_allclose(frequency, np.arange(1, 641) / 51_200.0)
+    np.testing.assert_allclose(amplitude[:512], low)
+    np.testing.assert_allclose(amplitude[512:], low[::-1][1:129])
+
+
 def test_two_close_sines_are_fitted_together_and_leave_the_noise():
     """A beat: two sines whose periods differ by 10 %. Fitted together, each keeps its own amplitude."""
     position = uneven_rows(40.0, 60_000.0, seed=2)

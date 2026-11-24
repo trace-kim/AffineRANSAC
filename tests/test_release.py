@@ -2127,3 +2127,42 @@ def test_the_spectrum_window_offers_an_fft_and_a_straight_line_per_ramp():
     assert window.picked == [picked] and len(window.profile_spectrum.getData()[0]) == len(
         spectrum.frequency_grid(position))
     window.close()
+
+
+def test_the_spectrum_window_shows_the_folded_copies_past_the_limit_on_request():
+    """D179: off at start; ticked, both spectra run down to the period asked for (100 nm at start), past the limit on a
+    shaded band, where a peak shows again at each period it may have folded from. A pick there names the peak below
+    the limit and the other copies; unticked, the spectra end at the limit and a pick past it is dropped."""
+    from affine_ransac import spectrum
+    from affine_ransac.release.spectrum_window import SpectrumWindow
+    style.setup()
+    pg.mkQApp()
+    position = np.arange(0.0, 40_000.0, 100.0)  # a 200 nm pitch: line and space centres every 100 nm
+    values = 0.5 * np.sin(2 * np.pi * position / 130.0)  # shows at 433 nm
+    window = SpectrumWindow(None, "dy mean per row", "all stripes, every L/S centre", "y", position, values, style.DY,
+                            None)
+    window.show()
+    settle()
+    assert not window.extend_box.isChecked() and window.shortest.value() == 100.0 and not window.band.isVisible()
+    assert window.profile_spectrum.getData()[0].max() < 5.0  # cycles per µm: the limit, a 200 nm period
+
+    window.extend_box.setChecked(True)
+    assert window.band.isVisible() and window.band.getRegion() == pytest.approx((5.0, 10.0))
+    np.testing.assert_allclose(window.profile_spectrum.getData()[0], 1000 * spectrum.frequency_grid(position, 0.01))
+    frequency, amplitude = window.profile_spectrum.getData()
+    for period in (433.3, 130.0):
+        assert amplitude[np.abs(1000 / frequency - period) < 2].max() == pytest.approx(0.5, abs=0.01)
+    window.pick(1 / 130.0, 1e-5)
+    (picked,) = window.picked
+    assert abs(1 / picked - 130.0) < 0.2 and window.fitted[0] == pytest.approx(0.5, abs=0.01)
+    assert window.labels[0].toPlainText() == ("period 130 nm, amplitude 0.50 nm\n"
+                                              "a copy of 433 nm, as are 81.2, 56.5, 44.8 nm")
+    assert np.abs(window.remainder).max() < 0.01  # the same sine as at 433 nm: all of it removed
+
+    window.method.setCurrentIndex(1)  # the FFT runs past the limit too
+    assert window.profile_spectrum.getData()[0].max() == pytest.approx(10.0)
+    window.shortest.setValue(120.0)  # 130 nm still shown
+    assert window.band.getRegion() == pytest.approx((5.0, 1000 / 120.0)) and window.picked == [picked]
+    window.extend_box.setChecked(False)
+    assert not window.band.isVisible() and window.picked == [] and window.profile_spectrum.getData()[0].max() <= 5.0
+    window.close()

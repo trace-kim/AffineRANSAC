@@ -1410,6 +1410,16 @@ least-squares line per ramp; a turn takes the longer ramp's line, and a point of
 drop, whose turn a wiggle can put a few rows from it) takes that neighbour's line where it passes within the wiggle
 height (the nearer, if both do). Only the setting of the method chosen is enabled.
 
+**Past the limit (D179).** *Show periods down to* (off at start; 100 nm, the user's choice) continues both spectra
+past the limit up to one over that period: the least-squares one on its grid (with D178's gaps at every multiple of
+the limit), the FFT by its bins past the limit, which repeat those below it mirrored (bin k shows bin
+|k − n round(k / n)|, n bins). Past the limit the graph is shaded and named *folded copies*: on evenly spaced rows
+(rows missing included) a peak shows again, as high, at every k / spacing ± f, so one profile cannot tell which is
+real; two profiles of different pitch can (the period that stays put). Not interpolation, which draws straight lines
+between rows that follow the folded, longer period. A pick past the limit is labelled with the period below the limit
+it is a copy of and the other copies (`spectrum.fold`); picks past what is shown are dropped when the range shrinks.
+The image-step markers stay up to the limit.
+
 **In-image correction (D141):** with
 `in_image_correction` (off by default; a parameter of both kinds of folder, release only: `RELEASE_ONLY`) the
 distortion shared by all images (D53) is removed from every tile's SEM centres before the stitching
