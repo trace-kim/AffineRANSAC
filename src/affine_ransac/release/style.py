@@ -13,6 +13,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 TEXT, MUTED, GRID = "#1b1b1a", "#52514e", "#d8d8d4"
 DX, DY = "#2a78d6", "#eb6834"         # the two error components, in every figure
 DR = "#1baf7a"                        # the error's length |measured − design|
+LINE_CD, SPACE_CD = "#2a78d6", "#eb6834"  # L/S CD: the means per row of the lines and of the spaces
 DESIGN, SEM = "#2a78d6", "#eb6834"    # stitching view: design and measured centres
 TILES, OVERLAPS, FAILURE = "#9a9a96", "#1baf7a", "#e34948"
 OK, CAUTION = "#14804a", "#b06f00"   # status texts: nothing wrong; worth knowing, results not affected (red: FAILURE)

@@ -1698,7 +1698,11 @@ measurement*: one map, **Show** Lines and spaces / Lines / Spaces (both at start
 only with both), **Edge** Own outline / Band middle / Space side (own outline at start; each explained in its
 tooltip; named in the map's title), **Value** SEM or SEM − design, a jet colour bar from the 1st to the 99th
 percentile of what is shown, white between the centres, Copy / Save image; summary lines: the counts, then for lines
-and for spaces the mean and 3σ of the SEM (at the chosen edge), the design and SEM − design.
+and for spaces the mean and 3σ of the SEM (at the chosen edge), the design and SEM − design. **Mean per row (D184)**
+on the map's right, as in the Registration tab (`MarginalMap`, following the map's zoom and pan; no mean per column):
+of what the map shows, the lines and the spaces each a line of its own named in the legend, rows by `group_rows` on
+the design y; a centre without a value is left out of its row, one known as neither out of both; its axis *CD (nm)*
+or *SEM − design (nm)*, the dashed zero line only with SEM − design. The map's View All fits every centre.
 
 **Release: Contour diagnosis (D129).** *Analysis → Contour diagnosis...* (Ctrl+D; `release/contour_dialog.ContourDialog`,
 a window of its own, modal like *Parameters*). **Load image...** opens one SEM image (any file the loader reads; it

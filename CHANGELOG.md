@@ -16,6 +16,8 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
   The drawn design shapes are taken as the spaces. Runs saved before have none: restart the analysis (D182).
 - L/S CD, **Edge**: the CD between each region's own outline, between the middles of its white bands, or on the
   space side (the CD-SEM threshold at 50 % on the slope facing the space), chosen in the tab without a new run (D183).
+- L/S CD: the **mean per row** on the map's right, as in the Registration tab, the lines and the spaces each a line
+  of its own (D184).
 
 - **Frequency analysis** of every mean per row and per column of the Registration tab: the button over its top-right
   corner (or *Frequency analysis...* in its right-click menu) opens the profile and its amplitude spectrum in a

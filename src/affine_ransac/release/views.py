@@ -35,7 +35,8 @@ then ContactSizeView: maps of the area, xCD and yCD of every contact (any of the
 the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile. Of a horizontal
 L/S run, titled L/S CD (D182): LineSpaceCDView, the CD map of its lines and spaces, both or one of them, with the
 edge at the region's own outline, the white band's middle or its space side (D183), measured with the run (no ROI
-width, no Run measurement).
+width, no Run measurement); its mean per row on its right (MarginalMap, no mean per column), the lines and the
+spaces each a line of its own (D184).
 
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
@@ -928,7 +929,7 @@ class MarginalMap:
             plot.hideButtons()  # its "A" auto-ranged every axis, as View All did
         for plot in (self.map, self.columns):
             plot.getAxis("left").setWidth(self.AXIS_PX)
-        self.rows.addLine(x=0, pen=pg.mkPen(style.MUTED, style=QtCore.Qt.PenStyle.DashLine))
+        self.zero = self.rows.addLine(x=0, pen=pg.mkPen(style.MUTED, style=QtCore.Qt.PenStyle.DashLine))
         style.zero_line(self.columns)
         self.rows.setMouseEnabled(x=True, y=False)
         self.columns.setMouseEnabled(x=False, y=True)
@@ -1747,7 +1748,7 @@ class ContactSizeTab(QtWidgets.QWidget):
         self.layout_.addLayout(bar)
         self.layout_.addStretch(1)  # replaced by the maps
         if result.line_space_cd is not None:
-            self._show(LineSpaceCDView(result.design_nm, result.line_space_cd, use_opengl))
+            self._show(LineSpaceCDView(result.design_nm, result.line_space_cd, result.settings.row_gap_nm, use_opengl))
         elif result.contact_sizes is not None:
             self.roi.setValue(result.contact_sizes.roi_width_nm)
             self.show_sizes(result.contact_sizes)
@@ -1893,12 +1894,14 @@ SHOW_BANDS = (("Lines and spaces", "Line and space CD", None), ("Lines", "Line C
 
 
 class LineSpaceCDView(QtWidgets.QWidget):
-    def __init__(self, design_nm: np.ndarray, cds: horizontal_ls.LineSpaceCD, use_opengl: bool = True):
+    def __init__(self, design_nm: np.ndarray, cds: horizontal_ls.LineSpaceCD, row_gap_nm: float = 10.0,
+                 use_opengl: bool = True):
         """design_nm: (N, 2) L/S centres, mask nm; cds: their CDs on the SEM and the design and their band (line or
-        space), in the same rows. One map of the lines and spaces, or of one of them (D182), with the SEM edge where
-        Edge puts it (horizontal_ls.EDGES, D183)."""
+        space), in the same rows; row_gap_nm: see group_rows. One map of the lines and spaces, or of one of them
+        (D182), with the SEM edge where Edge puts it (horizontal_ls.EDGES, D183), and its mean per row on its right,
+        of the lines and of the spaces shown, each a line of its own (D184)."""
         super().__init__()
-        self.cds = cds
+        self.cds, self.design_y, self.row_gap_nm = cds, design_nm[:, 1], row_gap_nm
         self.origin = np.round(design_nm.mean(axis=0), -3)  # whole µm
         self.position_um = (design_nm - self.origin) / 1000
         distance, _ = cKDTree(design_nm).query(design_nm, k=2)
@@ -1907,16 +1910,23 @@ class LineSpaceCDView(QtWidgets.QWidget):
         self.figure = figure(use_opengl)
         self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
         self.redraw.timeout.connect(self.draw_map)
-        self.plot = mask_plot(self.origin, data_unit_nm=1000)
+        # The map with its mean per row on its right, as in the Registration tab; no mean per column (D184).
+        self.panel = MarginalMap(self.figure.ci, 0, 0, self.origin, "", "CD", self.view_all)
+        self.figure.ci.layout.removeItem(self.panel.columns)
+        self.panel.columns.setVisible(False)
+        self.plot, self.rows = self.panel.map, self.panel.rows
         self.image = pg.ImageItem(axisOrder="row-major")
         self.plot.addItem(self.image)
         self.bar = jet_bar((0.0, 1.0), "CD (nm)")
         self.bar.sigLevelsChanged.connect(lambda *_: self.redraw.start())
-        self.figure.addItem(self.plot, row=0, col=0)
-        self.figure.addItem(self.bar, row=0, col=1)
+        self.figure.addItem(self.bar, row=0, col=2)
         self.plot.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
         self.plot.vb.sigResized.connect(lambda *_: self.redraw.start())
+        self.legend = style.legend(self.rows)
+        self.profiles = {band: self.rows.plot(pen=pg.mkPen(color, width=2)) for band, color
+                         in ((horizontal_ls.LINE, style.LINE_CD), (horizontal_ls.SPACE, style.SPACE_CD))}
         style.graph_actions(self.plot, self.figure, [self.plot, self.bar], "CD map")
+        style.graph_actions(self.rows, self.figure, [self.rows], "CD mean per row")
 
         self.show_band = QtWidgets.QComboBox()
         self.show_band.addItems([label for label, _, _ in SHOW_BANDS])
@@ -1936,7 +1946,8 @@ class LineSpaceCDView(QtWidgets.QWidget):
                        QtWidgets.QLabel("   Value:"), self.sem_button, self.difference_button):
             controls.addWidget(widget)
         controls.addStretch(1)
-        for button in style.image_menus(lambda: (self.figure, [("CD map", [self.plot, self.bar])])):
+        graphs = [("CD map", [self.plot, self.bar]), ("CD mean per row", [self.rows])]
+        for button in style.image_menus(lambda: (self.figure, graphs)):
             controls.addWidget(button)
 
         self.summary = QtWidgets.QLabel()
@@ -1945,9 +1956,13 @@ class LineSpaceCDView(QtWidgets.QWidget):
         layout.addWidget(self.summary)
         layout.addLayout(controls)
         layout.addWidget(self.figure, stretch=1)
-        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
-        self.plot.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))  # every centre
+        self.view_all()
         self.set_values()
+
+    def view_all(self):
+        """The map on every centre (its View All too: fitting its image zoomed out more every time, D114)."""
+        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
+        self.plot.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
 
     def summary_text(self) -> str:
         """The counts, then for lines and for spaces the SEM, design and SEM − design CDs at the chosen edge."""
@@ -1982,7 +1997,24 @@ class LineSpaceCDView(QtWidgets.QWidget):
         self.bar.blockSignals(True)  # one redraw below
         self.bar.setLevels(value_levels(self.values()[self.shown()]))
         self.bar.blockSignals(False)
+        self.draw_profiles()
         self.draw_map()
+
+    def draw_profiles(self):
+        """The mean per row (group_rows on the design y) of the lines and of the spaces shown, each a line named in
+        the legend; a centre without a value is left out of its row, a centre known as neither out of both. The zero
+        line only for SEM − design (shown, it would stretch the CD axis to 0)."""
+        difference = self.difference_button.isChecked()
+        style.style_plot(self.rows, x_label="SEM − design (nm)" if difference else "CD (nm)")
+        self.panel.zero.setVisible(difference)
+        values, shown = self.values(), self.shown()
+        self.legend.clear()
+        for _, title, band in SHOW_BANDS[1:]:
+            keep = (self.cds.band == band) & shown & np.isfinite(values)
+            y, mean = row_means(self.design_y[keep], values[keep], self.row_gap_nm)[:2] if keep.any() else ([], [])
+            self.profiles[band].setData(mean, (np.asarray(y) - self.origin[1]) / 1000)
+            if (self.cds.band[shown] == band).any():
+                self.legend.addItem(self.profiles[band], title)
 
     def draw_map(self):
         shown = self.shown()

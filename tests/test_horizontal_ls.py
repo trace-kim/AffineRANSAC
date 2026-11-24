@@ -344,12 +344,23 @@ def test_the_l_s_cd_tab_shows_lines_and_spaces_or_one_of_them(tmp_path, monkeypa
     assert view.shown().all() and "Line and space CD, SEM (nm)" in view.plot.titleLabel.text
     assert "30 on lines and 30 on spaces" in view.summary.text()
     assert "Line CD (nm): SEM mean 38.00" in view.summary.text()
+    # The mean per row beside the map: one point per band (its 10 slices), the lines and the spaces each a line.
+    line, space = view.profiles[horizontal_ls.LINE], view.profiles[horizontal_ls.SPACE]
+    points = lambda item: 0 if item.xData is None else len(item.xData)  # pyqtgraph keeps no data as None
+    np.testing.assert_allclose(line.xData, 38, atol=1e-9)
+    np.testing.assert_allclose(line.yData, (tile.center_y_nm + np.array([-41, 19, 79]) - view.origin[1]) / 1000)
+    np.testing.assert_allclose(space.xData, 18, atol=1e-9)
+    assert points(space) == 3 and len(view.legend.items) == 2 and not view.panel.zero.isVisible()
+    assert not view.panel.columns.isVisible()
     view.show_band.setCurrentText("Spaces")
     np.testing.assert_array_equal(view.shown(), window.result.line_space_cd.band == horizontal_ls.SPACE)
     assert "Space CD, SEM (nm)" in view.plot.titleLabel.text
+    assert points(line) == 0 and len(view.legend.items) == 1
     view.difference_button.setChecked(True)
     view.show_band.setCurrentText("Lines")
     np.testing.assert_allclose(view.values()[view.shown()], -4)
+    np.testing.assert_allclose(line.xData, -4, atol=1e-9)
+    assert points(space) == 0 and view.panel.zero.isVisible()
     assert "Line CD, SEM − design (nm), own outline" in view.plot.titleLabel.text
     view.edge.setCurrentText("Space side")
     np.testing.assert_allclose(view.values()[view.shown()], 0, atol=1e-9)
