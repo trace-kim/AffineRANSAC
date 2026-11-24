@@ -415,6 +415,15 @@ def _collect(tiles, designs, nominals, sems, indices, skipped) -> DesignErrors:
     )
 
 
+def some_observations(errors: DesignErrors, rows: np.ndarray) -> DesignErrors:
+    """Only these observations (rows: indices into errors, in order); the per-tile fields are kept as they are."""
+    def pick(values):
+        return None if values is None else values[rows]
+    return replace(errors, tile=errors.tile[rows], design_nm=errors.design_nm[rows], sem_nm=errors.sem_nm[rows],
+                   error_nm=errors.error_nm[rows], design_nominal_nm=errors.design_nominal_nm[rows],
+                   sem_index=pick(errors.sem_index), design_index=pick(errors.design_index))
+
+
 def merge_observations(errors: DesignErrors, design_corrections: np.ndarray, radius_nm: float = 5.0) -> MergedErrors:
     """Average the observations of the same physical contact (seen by several tiles in an overlap).
 

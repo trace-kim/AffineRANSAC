@@ -7,11 +7,13 @@ from types import SimpleNamespace
 import cv2
 import klayout.db as kdb
 import numpy as np
+import pyqtgraph as pg
 import pytest
 
 from affine_ransac.analysis import HORIZONTAL_LS
 from affine_ransac.fitting.moving_window import moving_window_affine
 from affine_ransac.io.design import horizontal_band_outlines
+from affine_ransac.registration import DesignErrors, merge_observations
 from affine_ransac.release import app as release_app
 from affine_ransac.release import horizontal_ls
 from affine_ransac.release.agent import review
@@ -20,7 +22,7 @@ from affine_ransac.release.analysis import (DEFAULTS, AnalysisFailed, analyse_fo
 from affine_ransac.release.cache import load_cache, save_cache
 from affine_ransac.release.contour_dialog import count_lines, diagnose
 from affine_ransac.release.horizontal_ls import find_bands, paired_rows, stitch_bands
-from affine_ransac.release.views import NO_LS_CD, ContactSizeTab, LineSpaceCDView, matrix_of
+from affine_ransac.release.views import NO_LS_CD, ContactSizeTab, LineSpaceCDView, RegistrationView, matrix_of
 from test_release import make_window, wait
 
 
@@ -373,6 +375,52 @@ def test_the_l_s_cd_tab_shows_lines_and_spaces_or_one_of_them(tmp_path, monkeypa
 
     saved = replace(window.result, line_space_cd=None)  # a run saved before D182
     assert ContactSizeTab(saved, use_opengl=False).note.text() == NO_LS_CD
+
+
+@pytest.mark.parametrize("tones", ["lines", "spaces"])
+def test_registering_one_tone_fits_and_reports_only_its_centres(tmp_path, tones):
+    tile = line_space_tile(tmp_path)
+    image = cv2.imdecode(np.fromfile(str(tile.image_path), np.uint8), cv2.IMREAD_GRAYSCALE)
+    image[40], image[41] = 60, 225  # one white band a pixel lower moves the space above it and the line below it
+    cv2.imencode(".png", image)[1].tofile(str(tile.image_path))
+    s = replace(SETTINGS, design_tolerance_nm=7)
+    messages = []
+    with ThreadPoolExecutor(1) as pool:
+        both = analyse_folder(tmp_path, "images", s, [tile], log=lambda line: None, pool=pool)
+        one = analyse_folder(tmp_path, "images", replace(s, ls_registration=tones), [tile], log=messages.append,
+                             pool=pool)
+    keep = both.line_space_cd.band == horizontal_ls.TONES[tones]
+    assert keep.sum() == len(one.design_nm) == 30 and (one.line_space_cd.band == horizontal_ls.TONES[tones]).all()
+    assert any(f"Registration of the {tones} only: 30 of 60 L/S centres" in line for line in messages)
+    assert not any("left without" in line for line in messages)
+    # The same centres, fitted on their own: as a moving-window affine of those centres alone.
+    mine, theirs = np.lexsort(one.design_nm.T), np.lexsort(both.design_nm[keep].T)
+    np.testing.assert_array_equal(one.design_nm[mine], both.design_nm[keep][theirs])
+    np.testing.assert_array_equal(one.sem_nm[mine], both.sem_nm[keep][theirs])
+    alone = moving_window_affine(both.sem_nm[keep], both.design_nm[keep], s.moving_window_um * 1000,
+                                 s.moving_step_um * 1000, y_only=True,
+                                 min_span_nm=(tile.fov_x_nm / (2 * horizontal_ls.SLICES), s.design_tolerance_nm))
+    np.testing.assert_allclose(one.moving.residuals[mine], alone.residuals[theirs], atol=1e-9)
+    assert not np.allclose(one.moving.residuals[mine, 1], both.moving.residuals[keep][theirs, 1], atol=1e-3)
+    pg.mkQApp()
+    summary = RegistrationView(one, use_opengl=False).summary.text()
+    assert summary.startswith(f"<b>30 {tones[:-1]} centres</b>")
+
+
+def test_registering_one_tone_says_which_images_it_leaves_without_a_centre():
+    # A line seen by images A and B, a space of B, a space of C.
+    design = np.array([[0., 0.], [0., 0.], [0., 20.], [100., 40.]])
+    observations = DesignErrors(np.array([0, 1, 1, 2]), design, design + [0, 1], np.tile([0., 1.], (4, 1)), design,
+                                {}, sem_index=np.arange(4), design_index=np.arange(4))
+    merged = merge_observations(observations, np.zeros((3, 2)), 2)
+    band = np.array([horizontal_ls.LINE if 0 in m else horizontal_ls.SPACE for m in merged.members])
+    for tones, kept, emptied in (("lines", [0, 1], "line centre: ['C']"), ("spaces", [2, 3], "space centre: ['A']")):
+        messages = []
+        subset, centres = horizontal_ls.one_tone(observations, merged, band, tones, np.zeros((3, 2)), 2,
+                                                 ["A", "B", "C"], messages.append)
+        np.testing.assert_array_equal(subset.sem_index, kept)
+        assert len(centres.count) == (1 if tones == "lines" else 2)
+        assert messages[-1] == f"!! 1 image(s) left without any {emptied}"
 
 
 def test_uniform_sem_stops_with_inspectable_empty_centres(tmp_path):

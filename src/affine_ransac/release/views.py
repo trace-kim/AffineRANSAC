@@ -60,7 +60,7 @@ from affine_ransac.pipeline import (PAIRING_GATE, PairResult, RejectedPair, Stit
                                     contact_stripes, pair_kind, stripe_ranges)
 from affine_ransac.registration import band_means, error_summary, grid_means, largest_ramp, noise_sigma, row_means
 from affine_ransac.release import horizontal_ls, style
-from affine_ransac.release.analysis import ReleaseResult, tile_affines
+from affine_ransac.release.analysis import ReleaseResult, registered_features, tile_affines
 from affine_ransac.release.spectrum_window import MIN_POINTS, SpectrumWindow
 from affine_ransac.stitching import placement_corrections
 from affine_ransac.view_contact_size import QUANTITIES, size_summary, value_levels
@@ -1490,7 +1490,7 @@ class RegistrationView(QtWidgets.QWidget):
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
         self.stripes_text = stripes
-        features = "L/S centres" if r.horizontal_ls else "contacts"
+        features = registered_features(s) if r.horizontal_ls else "contacts"  # lines or spaces only (D185)
         if r.horizontal_ls:
             fitted = "per stripe" if s.moving_window_per_stripe else "across stripes"
             dy = self.error_nm[:, 1]

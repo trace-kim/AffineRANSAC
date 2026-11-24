@@ -920,6 +920,17 @@ stitched placement. The horizontal transform is the identity and its residual is
 (NaN in the run file). The Registration tab, profiles and command-line review report y. This temporary path
 uses the paired design clips directly and omits the contact-specific realignment and in-image correction.
 
+**Lines only or spaces only (D185).** Setting `ls_registration` (lines and spaces, the default | lines | spaces;
+MaskReg only, *Registration* section of the Parameters dialog). With lines or spaces, after the observations are
+merged, only the centres of that tone stay, with their observations (`horizontal_ls.one_tone`): the tone is the
+one the L/S CD gives each merged centre (`merged_cds`, D182: the drawn design bands are the spaces), and a centre
+known as neither is left out. They are merged again; `merge_observations` groups whole centres, so they are the same
+centres. The moving-window affine (either form), the residuals, the Registration tab, the frequency analysis and the
+L/S CD then hold that tone only; the stitchings and the design pairing use every centre, as with both. The log gives
+how many centres of each kind were left out, and with `!!` the images left without a centre of that tone. The
+Registration tab's summary counts *line centres* or *space centres*. With one tone the rows are a pitch apart, not
+half a pitch, so the frequency analysis's limit is a period of two pitches.
+
 **Stitching by contours (D156; MaskReg, `pattern` contours).** `contour_stitching.py`. An edge point knows where it
 is across its edge only, so two images are compared by how far their edges lie apart **across the edges**, edges
 facing the same way only; nothing is assumed about the pattern (no direction, pitch or shape). Per image, its refined
@@ -1768,7 +1779,7 @@ case), **Load**, **Save as...** and **Delete**, and a line saying what was done.
 are shown under headings that fold and unfold them, in the order the analysis runs (`parameters_dialog.SECTIONS`;
 `SettingsDialog(sections=...)`, the research app keeps one list): *Stitching* (`stitch_method`,
 `overlap_tolerance_nm`), *In-image correction* (`in_image_correction`) and *Registration* (`moving_window_um`,
-`moving_step_um`, `moving_window_per_stripe`) open; *Contour detection* (`CONTOUR_SETTINGS`, image folders) and
+`moving_step_um`, `moving_window_per_stripe`, `ls_registration`, D185) open; *Contour detection* (`CONTOUR_SETTINGS`, image folders) and
 *Advanced* (`max_match_nm`, `outlier_factor`, `min_matched`, `design_max_match_nm`, `design_search_nm`,
 `design_tolerance_nm`, `min_match_fraction`, `realign`, `tile_margin_nm`, `in_image_order`, `group_radius_nm`,
 `row_gap_nm`) folded, unless one of their parameters shown differs from its default (a changed value is never
