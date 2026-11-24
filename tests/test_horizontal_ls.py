@@ -52,7 +52,7 @@ def test_a_thin_white_band_can_step_diagonally_without_joining_its_two_interiors
     x = np.arange(80)
     for y in [8, 20, 32, 44]:
         image[y + x // 20, x] = 220
-    detected, _ = find_bands(image, replace(SETTINGS, refinement="none"))
+    detected, _, _ = find_bands(image, replace(SETTINGS, refinement="none"))
     centres = detected.centers.reshape(10, 3, 2)
     np.testing.assert_allclose(centres[:, :, 1], (14 + (x // 20).reshape(10, 8).mean(axis=1))[:, None]
                                + [0, 12, 24])
@@ -77,6 +77,19 @@ def test_different_interior_levels_and_a_broken_separator_only_cost_local_slices
     assert d.detected.left_out["not crossing or joined"] >= 1
 
 
+def test_a_dark_speck_in_a_white_band_leaves_its_two_regions_without_that_neighbour():
+    image = np.full((60, 80), 60, np.uint8)
+    image[[10, 50]] = 225
+    image[28:33] = 225
+    image[30, 5] = 60  # in the first of the ten slices
+    _, _, edges = find_bands(image, replace(SETTINGS, refinement="none"))
+    edges = edges.reshape(10, 2, 4)  # per slice its two complete regions, from the top down: top, bottom, above, below
+    np.testing.assert_allclose(edges[1:, 0], np.tile([10.5, 27.5, 9.5, 32.5], (9, 1)))  # across the cut ones too
+    np.testing.assert_allclose(edges[1:, 1], np.tile([32.5, 49.5, 27.5, 50.5], (9, 1)))
+    np.testing.assert_allclose(edges[0, 0, :3], [10.5, 27.5, 9.5])
+    assert np.isnan(edges[0, 0, 3]) and np.isnan(edges[0, 1, 2])
+
+
 def test_crossed_refinement_keeps_the_detected_edges_at_that_column(monkeypatch):
     image = np.full((45, 80), 60, np.uint8)
     image[[5, 20, 35]] = 235
@@ -87,7 +100,7 @@ def test_crossed_refinement_keeps_the_detected_edges_at_that_column(monkeypatch)
         return replace(lines, upper=upper)
 
     monkeypatch.setattr(horizontal_ls, "refine_line_edges", crossed)
-    found, measured = find_bands(image, SETTINGS)
+    found, measured, _ = find_bands(image, SETTINGS)
     assert len(found.contours) == len(measured.contours) == 20
     for a, b in zip(found.contours, measured.contours):
         assert a[4, 1] == b[4, 1]  # column 3, after the slice's left cut
@@ -300,9 +313,11 @@ def test_line_and_space_cds_follow_the_design_tone_drawn_as_spaces(tmp_path):
     cd = run.line_space_cd
     assert len(cd.band) == 60 and (cd.band == horizontal_ls.LINE).sum() == (cd.band == horizontal_ls.SPACE).sum() == 30
     line, space = cd.band == horizontal_ls.LINE, cd.band == horizontal_ls.SPACE
-    np.testing.assert_allclose(cd.sem[line], 38, atol=1e-9)
+    # Own outline, band middle, space side. The top line takes its space-side edge from the space cut by the field's
+    # top, the bottom space its band middle from the line cut by its bottom.
+    np.testing.assert_allclose(cd.sem[line], np.tile([38, 40, 42], (30, 1)), atol=1e-9)
+    np.testing.assert_allclose(cd.sem[space], np.tile([18, 20, 18], (30, 1)), atol=1e-9)
     np.testing.assert_allclose(cd.design[line], 42, atol=1e-9)
-    np.testing.assert_allclose(cd.sem[space], 18, atol=1e-9)
     np.testing.assert_allclose(cd.design[space], 18, atol=1e-9)
     np.testing.assert_allclose(np.unique(run.design_nm[line, 1] - tile.center_y_nm), [-41, 19, 79])  # 3 lines
 
@@ -335,7 +350,12 @@ def test_the_l_s_cd_tab_shows_lines_and_spaces_or_one_of_them(tmp_path, monkeypa
     view.difference_button.setChecked(True)
     view.show_band.setCurrentText("Lines")
     np.testing.assert_allclose(view.values()[view.shown()], -4)
-    assert "Line CD, SEM − design (nm)" in view.plot.titleLabel.text
+    assert "Line CD, SEM − design (nm), own outline" in view.plot.titleLabel.text
+    view.edge.setCurrentText("Space side")
+    np.testing.assert_allclose(view.values()[view.shown()], 0, atol=1e-9)
+    assert "space side" in view.plot.titleLabel.text and "Line CD (nm): SEM mean 42.00" in view.summary.text()
+    view.edge.setCurrentText("Band middle")
+    np.testing.assert_allclose(view.values()[view.shown()], -2, atol=1e-9)
     view.draw_map()
     assert (view.image.image[..., :3] == 255).all(axis=-1).any()  # white between the centres
     window.close()

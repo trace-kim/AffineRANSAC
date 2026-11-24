@@ -14,6 +14,8 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 - **L/S CD**: a horizontal L/S run measures the CD of every line and space. With *View → Contact size tab* on, the
   tab, titled *L/S CD* for such a run, maps them: lines and spaces, lines only or spaces only, SEM or SEM − design.
   The drawn design shapes are taken as the spaces. Runs saved before have none: restart the analysis (D182).
+- L/S CD, **Edge**: the CD between each region's own outline, between the middles of its white bands, or on the
+  space side (the CD-SEM threshold at 50 % on the slope facing the space), chosen in the tab without a new run (D183).
 
 - **Frequency analysis** of every mean per row and per column of the Registration tab: the button over its top-right
   corner (or *Frequency analysis...* in its right-click menu) opens the profile and its amplitude spectrum in a

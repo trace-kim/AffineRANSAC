@@ -23,13 +23,21 @@ from affine_ransac.registration import DesignErrors, MergedErrors, design_errors
 
 SLICES = 10
 LINE, SPACE, NOT_KNOWN = 0, 1, -1  # LineSpaceCD.band. In the user's clips the drawn shapes are the spaces (D182).
+# Where the SEM edge is in a white band: the columns of LineSpaceCD.sem, (name, what it is) (D183)
+EDGES = (("Own outline", "Each region's own outline: half-way between its interior and the white band's peak, on its "
+                         "own side, as Load contours draws it. Lines and spaces both read short by about a band width."),
+         ("Band middle", "The middle of each white band, half-way between the outlines on its two sides. One edge per "
+                         "band, shared by the line and the space beside it."),
+         ("Space side", "The outline on the space's side of each white band, for the line beside it too: the CD-SEM "
+                        "threshold method at 50 %."))
 
 
 @dataclass
 class LineSpaceCD:
     """CD of every L/S centre (the rows of ReleaseResult.sem_nm and design_nm): the band's mean thickness across its
-    x slice (its area over the slice width), nm, averaged over the images that saw it; NaN where none did."""
-    sem: np.ndarray     # (M,) on the SEM outline (the refined one, as Load contours draws it)
+    x slice, nm, averaged over the images that saw it; NaN where none did."""
+    sem: np.ndarray     # (M, 3) on the SEM, its edges as each of EDGES puts them (NaN where a band's neighbour is not
+                        # known: the middle and the space side need the region across each white band)
     design: np.ndarray  # (M,) on the design band it was paired with; NaN where the band is NOT_KNOWN
     band: np.ndarray    # (M,) LINE, SPACE or NOT_KNOWN: paired with no band of its own images' clips, or with both tones
 
@@ -49,8 +57,8 @@ def band_mask(image, s):
     return (pixels <= high).astype(np.uint8), float(level), pixels
 
 
-def find_bands(image: np.ndarray, s: Settings) -> tuple[DetectedContacts, DetectedContacts]:
-    """Prepare the whole image once, then close and measure the interiors in ten x slices."""
+def find_bands(image: np.ndarray, s: Settings) -> tuple[DetectedContacts, DetectedContacts, np.ndarray]:
+    """Prepare the whole image once, then close and measure the interiors in ten x slices (bands_from_mask)."""
     big = prepared_image(image, s.background_px, True, s.denoise, s.median_px, s.nlm_h, s.tv_weight, s.upscale)
     mask, level, _ = band_mask(big, s)
     return bands_from_mask(big, mask, level, s)
@@ -60,11 +68,41 @@ def closed_band(x, top, bottom):
     return np.vstack((np.column_stack((x, top)), np.column_stack((x, bottom))[::-1]))
 
 
+def outline_edges(top, bottom, upper, lower, height):
+    """One region's refined edges in each column, or its detected pixel faces where refinement crossed the two edges
+    or left the field. An edge missing in a column (NaN: the region leaves the field there) leaves the other alone."""
+    with np.errstate(invalid="ignore"):
+        bad = (upper >= lower) | (upper < -0.5) | (lower > height - 0.5)
+    return np.where(bad, top, upper), np.where(bad, bottom, lower)
+
+
+def slice_mean(edge, x):
+    """Mean height of an edge over its slice, as the closed band's polygon holds it: the end values reach the cuts."""
+    y = np.r_[edge[0], edge, edge[-1]]
+    return float(((y[1:] + y[:-1]) / 2 * np.diff(x)).sum() / (x[-1] - x[0]))
+
+
+def across_one_band(mask, lower, upper) -> bool:
+    """Whether one region's lowest rows (lower, per column) and the next region's highest rows (upper) face each other
+    across one white band: only band pixels (mask 0) between them in every column of the slice (upscaled px). A dark
+    speck in the band, or a region left out between them, says no."""
+    if not (np.isfinite(lower).all() and np.isfinite(upper).all()):
+        return False
+    lower, upper = lower.astype(int), upper.astype(int)
+    first, stop = lower.min() + 1, upper.max()
+    rows = np.arange(first, stop)[:, None]
+    return not (mask[first:stop].astype(bool) & (rows > lower) & (rows < upper)).any()
+
+
 def bands_from_mask(big, mask, level, s):
+    """The regions between white bands closed in each x slice, detected and refined; and per refined region the slice
+    means of its outline's upper and lower edge and of the facing edges of the regions across the white band above
+    it and the one below it ((n, 4) native px, y down; NaN where no region faces it across one band, D183). Those
+    regions may be cut by the field's border, not left out for their size."""
     f = s.upscale
     width = big.shape[1] // f
     cuts = np.linspace(-0.5, width - 0.5, SLICES + 1)  # physical pixel edges; adjacent polygons share each cut
-    found, moved = [], []
+    found, moved, band_edges = [], [], []
     left_out = {"not crossing or joined": 0, "clipped": 0, "small": 0, "large": 0}
     for left, right in zip(cuts, cuts[1:]):
         start, stop = int(np.ceil(left)), int(np.ceil(right))
@@ -77,11 +115,20 @@ def bands_from_mask(big, mask, level, s):
             big[:, part], edges, True, s.search_px * f, s.edge_step_px * f, s.edge_blur_px * f, s.refinement)
         detected, refined = in_image_lines(edges, f), in_image_lines(refined, f)
         x = np.r_[left, np.arange(start, stop), right]
-        for top, bottom, upper, lower in zip(detected.upper, detected.lower, refined.upper, refined.lower):
+        means = np.full((len(edges.upper), 2), np.nan)  # per region, from the top down: its outline's two edges
+        kept, usable = [], np.zeros(len(edges.upper), bool)  # measured here; measured or cut by the border
+        for k, (top, bottom, upper, lower) in enumerate(zip(detected.upper, detected.lower, refined.upper,
+                                                            refined.lower)):
             # Pixel faces enclose the detected interior, including a single row. Refined edges are crossings.
             top, bottom = top - 0.5 / f, bottom + 0.5 / f
+            if s.refinement == "none":
+                upper, lower = top, bottom
+            else:
+                upper, lower = outline_edges(top, bottom, upper, lower, big.shape[0] / f)
+            means[k] = slice_mean(upper, x), slice_mean(lower, x)
             if not np.all(bottom > top):  # a boundary leaves the top or bottom of the field
                 left_out["clipped"] += 1
+                usable[k] = True
                 continue
             # The saved area limits describe a full-width band. Apply the equivalent limit to its local thickness.
             area_px = np.mean(bottom - top) * width
@@ -91,19 +138,23 @@ def bands_from_mask(big, mask, level, s):
             if s.max_area_px and area_px > s.max_area_px:
                 left_out["large"] += 1
                 continue
-            if s.refinement == "none":
-                upper, lower = top, bottom
-            else:
-                valid = (upper < lower) & (upper >= -0.5) & (lower <= big.shape[0] / f - 0.5)
-                upper, lower = np.where(valid, upper, top), np.where(valid, lower, bottom)
+            kept.append(k)
+            usable[k] = True
             for contours, a, b in ((found, top, bottom), (moved, upper, lower)):
                 contours.append(closed_band(x, np.r_[a[0], a, a[-1]], np.r_[b[0], b, b[-1]]))
+        # faces[k]: region k and the next one down face each other across one white band
+        faces = [usable[k] and usable[k + 1] and across_one_band(mask[:, part], edges.lower[k], edges.upper[k + 1])
+                 for k in range(len(edges.upper) - 1)]
+        for k in kept:
+            above = means[k - 1, 1] if k > 0 and faces[k - 1] else np.nan
+            below = means[k + 1, 0] if k < len(faces) and faces[k] else np.nan
+            band_edges.append((*means[k], above, below))
 
     def regions(contours):
         centers = np.asarray([polygon_centroid(c) for c in contours]).reshape(-1, 2)
         return DetectedContacts(centers, np.array([polygon_area(c) for c in contours]), contours,
                                 level, left_out)
-    return regions(found), regions(moved)
+    return regions(found), regions(moved), np.array(band_edges, float).reshape(-1, 4)
 
 
 def band_slope(contour):
@@ -119,16 +170,18 @@ def band_cds(contours) -> np.ndarray:
 
 def tile_centers(path, oas_path, fov_nm, s: Settings):
     """Return each slice's centroid (tile-local nm) and centreline slope (dy/dx in the mask frame); and the CD of
-    each, nm: the SEM's (n,), the design's with whether its band is drawn (m, 2)."""
+    each, nm: the SEM's (n, 3), between its own outline's edges, between the middles of its two white bands and
+    between the facing edges of the regions across them; the design's with whether its band is drawn (m, 2)."""
     image = load_sem_image(path)
-    _, bands = find_bands(image, s)
+    _, bands, edges = find_bands(image, s)
     pixel_nm = np.asarray(fov_nm) / image.shape[::-1]
     sem = pixel_to_tile_nm(bands.centers, image.shape, pixel_nm)
     sem_slope = np.array([band_slope(c) for c in bands.contours]) * (-pixel_nm[1] / pixel_nm[0])
     outlines, drawn = (horizontal_band_outlines(load_layout(oas_path), s.layer, s.datatype, fov_nm, SLICES)
                        if oas_path else ([], np.zeros(0, bool)))
     design = np.asarray([polygon_centroid(c) for c in outlines]).reshape(-1, 2)
-    sem_cd = band_cds(bands.contours) * pixel_nm[1]  # px thick, rows pixel_nm[1] apart
+    top, bottom, above, below = edges.T * pixel_nm[1]  # y down; rows pixel_nm[1] apart
+    sem_cd = np.column_stack((bottom - top, (bottom + below) / 2 - (above + top) / 2, below - above))
     design_cd = np.column_stack((band_cds(outlines), drawn)).reshape(-1, 2)
     return sem, design, sem_slope, np.array([band_slope(c) for c in outlines]), sem_cd, design_cd
 
@@ -161,11 +214,15 @@ def load_centers(records, centers, sizes, s, log, progress, pool, detailed_log=F
 def merged_cds(merged: MergedErrors, observations: DesignErrors, sem_cds: list[np.ndarray],
                design_cds: list[np.ndarray]) -> LineSpaceCD:
     """Per L/S centre (merged, from observations) the mean CD over the images that saw it, and whether it is a line
-    or a space: the tone of the design bands it was paired with, drawn = space (D182)."""
-    sem, design = merge_values(merged, observations, [c[:, None] for c in sem_cds], design_cds)
+    or a space: the tone of the design bands it was paired with, drawn = space (D182). On the space side (D183) a
+    space is its own outline, a line spans the facing outlines of the spaces across its white bands."""
+    sem, design = merge_values(merged, observations, sem_cds, design_cds)
     drawn = design[:, 1]  # the mean of 1 (drawn) and 0 (clear) over the centre's own design pairs; NaN without one
     band = np.select([drawn == 1, drawn == 0], [SPACE, LINE], NOT_KNOWN).astype(np.int8)
-    return LineSpaceCD(sem[:, 0], np.where(band == NOT_KNOWN, np.nan, design[:, 0]), band)
+    own, middle, across = sem.T
+    space_side = np.select([band == SPACE, band == LINE], [own, across], np.nan)
+    return LineSpaceCD(np.column_stack((own, middle, space_side)), np.where(band == NOT_KNOWN, np.nan, design[:, 0]),
+                       band)
 
 
 def tile_outlines(path, fov_nm, s: Settings, full_width=False):
@@ -184,7 +241,7 @@ def tile_outlines(path, fov_nm, s: Settings, full_width=False):
                 found.append(closed_band(x, a, b))
                 refined.append(closed_band(x, u, v))
     else:
-        detected, measured = find_bands(image, s)
+        detected, measured, _ = find_bands(image, s)
         found, refined = detected.contours, measured.contours
     return ([pixel_to_tile_nm(c, image.shape, pixel_nm) for c in found],
             [pixel_to_tile_nm(c, image.shape, pixel_nm) for c in refined], np.ones(len(found), bool))

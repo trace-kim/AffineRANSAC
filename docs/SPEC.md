@@ -1669,22 +1669,36 @@ map shown again takes the y range and centre of one shown before (not its area).
 tab. No SEM images or design behind the maps.
 
 **Release: L/S CD (D182).** A horizontal L/S run measures the CD of every L/S centre while it loads, from the outlines
-it finds anyway, so no image is read twice. A band's CD in its x slice is its mean thickness across the slice: its
-area over the slice width (`horizontal_ls.band_cds`). On the SEM that is the refined outline of the region between two
-white bands, as *Load contours* draws it (pixel rows → nm by the pixel height); on the design, the clipped band it was
-paired with (`io/design.horizontal_band_outlines`, which also says whether each band is drawn). A centre is a
+it finds anyway, so no image is read twice. A band's CD in its x slice is its mean thickness across the slice. On the
+SEM, between the edges below (pixel rows → nm by the pixel height); on the design, the clipped band it was paired
+with, its area over the slice width (`horizontal_ls.band_cds`; `io/design.horizontal_band_outlines` also says whether
+each band is drawn). A centre is a
 **line** or a **space** by the tone of its design pairs: **the drawn shapes are the spaces** (user, 2026-11-24).
 Averaged per merged centre over the images that saw it (`horizontal_ls.merged_cds`, `registration.merge_values`); a
 centre paired with no band of its own images' clips, or with bands of both tones, is known as neither and has no
 design CD (logged with `!!`). `ReleaseResult.line_space_cd` (`LineSpaceCD`: `sem`, `design`, `band`), saved as
 optional `line_space_cd/*` arrays (format unchanged; a run saved before has none, and the tab says to restart the
-analysis). The SEM edge is where each region's own outline puts it: half-way between its interior and the white
-band's peak, on its own side (mid-level, D122), so a line and a space both read short by about a band width.
+analysis).
+**Where the SEM edge is (D183).** Every white band holds two edges, one from each side: the outlines of the regions
+above and below it, each half-way between its own interior and the band's peak (mid-level, D122, the threshold
+method at 50 % from that side). The run keeps three CDs per centre (`LineSpaceCD.sem` (M, 3), `horizontal_ls.EDGES`):
+**own outline** (between the region's own two edges: a line and a space both read short by about a band width),
+**band middle** (between the middles of its two white bands, each half-way between the outlines on its two sides:
+one edge per band, so a line and the space beside it add up to the distance between band middles) and **space side**
+(a space between its own edges; a line between the facing outlines of the spaces across its two bands: the CD-SEM
+threshold method on the slope facing the space). Each is the difference of slice means of the edges
+(`slice_mean`, as the band's polygon holds them; the own outline equals the area over the slice width). The region
+across a band (`bands_from_mask`, (n, 4) per band: own top and bottom, the facing edges above and below, native px)
+is the next region up or down, measured or cut by the field's border (not one left out for its size), when only
+white-band pixels lie between the two in every column of the slice (`across_one_band`); a dark speck in the band or a
+region left out between them gives none, and the middle and space-side CDs that need it are NaN there (the summary
+counts them as without a value). Space side needs the centre's band: NaN for a centre known as neither.
 The Contact size tab of such a run is titled **L/S CD** (`views.LineSpaceCDView`), with no ROI width and no *Run
 measurement*: one map, **Show** Lines and spaces / Lines / Spaces (both at start; a centre known as neither is shown
-only with both), **Value** SEM or SEM − design, a jet colour bar from the 1st to the 99th percentile of what is shown,
-white between the centres, Copy / Save image; summary lines: the counts, then for lines and for spaces the mean and 3σ
-of the SEM, the design and SEM − design.
+only with both), **Edge** Own outline / Band middle / Space side (own outline at start; each explained in its
+tooltip; named in the map's title), **Value** SEM or SEM − design, a jet colour bar from the 1st to the 99th
+percentile of what is shown, white between the centres, Copy / Save image; summary lines: the counts, then for lines
+and for spaces the mean and 3σ of the SEM (at the chosen edge), the design and SEM − design.
 
 **Release: Contour diagnosis (D129).** *Analysis → Contour diagnosis...* (Ctrl+D; `release/contour_dialog.ContourDialog`,
 a window of its own, modal like *Parameters*). **Load image...** opens one SEM image (any file the loader reads; it

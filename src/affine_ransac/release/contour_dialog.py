@@ -128,7 +128,7 @@ def diagnose(image: np.ndarray, s: Settings, preparation: PreparedImageCache | N
         with timed(log, "threshold the white bands and close the ten x slices"):
             big = upscaled_image(flat, s.upscale)
             mask, level, shown = horizontal_ls.band_mask(big, s)
-            detected, refined = horizontal_ls.bands_from_mask(big, mask, level, s)
+            detected, refined, _ = horizontal_ls.bands_from_mask(big, mask, level, s)
         return Diagnosis(shown, detected, refined, 0, mask, log)
     else:
         seconds = {}

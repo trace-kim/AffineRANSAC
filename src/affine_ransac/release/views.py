@@ -33,8 +33,9 @@ profiles CSV give both profiles as a table; Copy / Save image the whole figure, 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
 the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile. Of a horizontal
-L/S run, titled L/S CD (D182): LineSpaceCDView, the CD map of its lines and spaces, both or one of them, measured with
-the run (no ROI width, no Run measurement).
+L/S run, titled L/S CD (D182): LineSpaceCDView, the CD map of its lines and spaces, both or one of them, with the
+edge at the region's own outline, the white band's middle or its space side (D183), measured with the run (no ROI
+width, no Run measurement).
 
 Everything is drawn relative to an origin in whole µm (OpenGL works in float32); the axes show mask µm.
 """
@@ -1894,7 +1895,8 @@ SHOW_BANDS = (("Lines and spaces", "Line and space CD", None), ("Lines", "Line C
 class LineSpaceCDView(QtWidgets.QWidget):
     def __init__(self, design_nm: np.ndarray, cds: horizontal_ls.LineSpaceCD, use_opengl: bool = True):
         """design_nm: (N, 2) L/S centres, mask nm; cds: their CDs on the SEM and the design and their band (line or
-        space), in the same rows. One map of the lines and spaces, or of one of them (D182)."""
+        space), in the same rows. One map of the lines and spaces, or of one of them (D182), with the SEM edge where
+        Edge puts it (horizontal_ls.EDGES, D183)."""
         super().__init__()
         self.cds = cds
         self.origin = np.round(design_nm.mean(axis=0), -3)  # whole µm
@@ -1919,21 +1921,25 @@ class LineSpaceCDView(QtWidgets.QWidget):
         self.show_band = QtWidgets.QComboBox()
         self.show_band.addItems([label for label, _, _ in SHOW_BANDS])
         self.show_band.currentIndexChanged.connect(self.set_values)
+        self.edge = QtWidgets.QComboBox()  # where the edge is in each white band (D183)
+        for k, (name, what) in enumerate(horizontal_ls.EDGES):
+            self.edge.addItem(name)
+            self.edge.setItemData(k, what, QtCore.Qt.ItemDataRole.ToolTipRole)
+        self.edge.setToolTip("Where the edge is in each white band; each choice explains itself in its tooltip")
+        self.edge.currentIndexChanged.connect(self.set_values)
         self.sem_button = QtWidgets.QRadioButton("SEM")
         self.difference_button = QtWidgets.QRadioButton("SEM − design")
         self.sem_button.setChecked(True)
         self.difference_button.toggled.connect(self.set_values)
         controls = QtWidgets.QHBoxLayout()
-        for widget in (QtWidgets.QLabel("Show:"), self.show_band, QtWidgets.QLabel("   Value:"), self.sem_button,
-                       self.difference_button):
+        for widget in (QtWidgets.QLabel("Show:"), self.show_band, QtWidgets.QLabel("   Edge:"), self.edge,
+                       QtWidgets.QLabel("   Value:"), self.sem_button, self.difference_button):
             controls.addWidget(widget)
         controls.addStretch(1)
         for button in style.image_menus(lambda: (self.figure, [("CD map", [self.plot, self.bar])])):
             controls.addWidget(button)
 
-        self.summary = QtWidgets.QLabel("\n".join([self.count_text()] + [
-            size_summary(title, "nm", cds.sem[cds.band == band], cds.design[cds.band == band], "centre(s)")
-            for _, title, band in SHOW_BANDS[1:]]))
+        self.summary = QtWidgets.QLabel()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.summary)
@@ -1943,13 +1949,17 @@ class LineSpaceCDView(QtWidgets.QWidget):
         self.plot.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))  # every centre
         self.set_values()
 
-    def count_text(self) -> str:
-        band = self.cds.band
+    def summary_text(self) -> str:
+        """The counts, then for lines and for spaces the SEM, design and SEM − design CDs at the chosen edge."""
+        band, sem = self.cds.band, self.cds.sem[:, self.edge.currentIndex()]
         unknown = int((band == horizontal_ls.NOT_KNOWN).sum())
-        return (f"{len(band)} L/S centres, {(band == horizontal_ls.LINE).sum()} on lines and "
-                f"{(band == horizontal_ls.SPACE).sum()} on spaces (the drawn design bands are the spaces)"
-                + (f", {unknown} not known as either (shown with both only)" if unknown else "")
-                + ". CD = the band's mean thickness across its tenth of the image, on its outline.")
+        return "\n".join([
+            f"{len(band)} L/S centres, {(band == horizontal_ls.LINE).sum()} on lines and "
+            f"{(band == horizontal_ls.SPACE).sum()} on spaces (the drawn design bands are the spaces)"
+            + (f", {unknown} not known as either (shown with both only)" if unknown else "")
+            + ". CD = the band's mean thickness across its tenth of the image."]
+            + [size_summary(title, "nm", sem[band == shown], self.cds.design[band == shown], "centre(s)")
+               for _, title, shown in SHOW_BANDS[1:]])
 
     def shown(self) -> np.ndarray:
         """(N,) bool: the centres of the band chosen in Show (every centre with both)."""
@@ -1957,14 +1967,18 @@ class LineSpaceCDView(QtWidgets.QWidget):
         return np.ones(len(self.cds.band), bool) if band is None else self.cds.band == band
 
     def values(self) -> np.ndarray:
-        """(N,) the SEM CD, or SEM − design."""
-        return self.cds.sem - self.cds.design if self.difference_button.isChecked() else self.cds.sem
+        """(N,) the SEM CD at the chosen edge, or SEM − design."""
+        sem = self.cds.sem[:, self.edge.currentIndex()]
+        return sem - self.cds.design if self.difference_button.isChecked() else sem
 
     def set_values(self):
-        """Title and colour scale of what is shown (band, SEM or SEM − design), then the map drawn again."""
+        """Title, summary and colour scale of what is shown (band, edge, SEM or SEM − design), then the map drawn
+        again."""
+        self.summary.setText(self.summary_text())
         title = SHOW_BANDS[self.show_band.currentIndex()][1]
         value = "SEM − design" if self.difference_button.isChecked() else "SEM"
-        self.plot.setTitle(f"{title}, {value} (nm)", color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
+        edge = horizontal_ls.EDGES[self.edge.currentIndex()][0].lower()
+        self.plot.setTitle(f"{title}, {value} (nm), {edge}", color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
         self.bar.blockSignals(True)  # one redraw below
         self.bar.setLevels(value_levels(self.values()[self.shown()]))
         self.bar.blockSignals(False)
