@@ -21,9 +21,10 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 - Frequency analysis, **options**: the spectrum by FFT of the profile resampled evenly, beside Lomb–Scargle; the slow
   part as a straight line per ramp (split where the profile turns by more than a wiggle height), beside the running
   median (D175).
-- Frequency analysis: a picked peak is drawn as the sine taken out, a **stem** up to its amplitude named *removed
-  sines* in the legend, instead of a circle on the profile's line; a click on the legend no longer picks a peak
-  (D176).
+- Frequency analysis: a click on the legend no longer picks a peak (D176).
+- Frequency analysis: a **click marks** a peak (circled, with its period and amplitude) without removing it, a click
+  on it drops the mark; a **double click removes** its sine, its circle (dashed) staying where the peak stood, and
+  another double click puts it back (D180).
 - Frequency analysis: the spectrum's **period** axis is at the bottom, its frequency axis at the top (D177).
 - Frequency analysis: the least-squares spectrum can no longer show a **false spike at its right end** (the limit)
   on evenly spaced rows (D178).

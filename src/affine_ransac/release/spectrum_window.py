@@ -1,17 +1,19 @@
 """Frequency analysis of one mean per row or per column of the Registration tab, in a window of its own
-(docs/SPEC.md D173, D174, D175).
+(docs/SPEC.md D173 to D180).
 
 The profile as the tab showed it when the window opened, along a horizontal axis; below it what is left after
 removing parts of it; then the amplitude spectrum of both, the period in nm on the bottom axis and the frequency in
 cycles per µm on the top one (D177): least-squares sines (Lomb–Scargle), or an FFT of the profile resampled evenly
-(D175). Removed (D174): the slow part on request (Remove slow part: a running median, or a straight line per ramp, D175: the
-sawtooth), and the sine of every picked peak, all picked sines fitted together on what the slow part leaves; the part
+(D175). Removed (D174): the slow part on request (Remove slow part: a running median, or a straight line per ramp,
+D175: the sawtooth), and the sine of every removed peak, all fitted together on what the slow part leaves; the part
 removed is drawn over the profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
 frequency shows folded below it) and the image step with its multiples (where an error made inside every image would
 show). Show periods down to (off at start, D179): both spectra past the limit, on a shaded band of folded copies,
-where each peak shows again at every shorter period it may have folded from. A click on the spectrum picks the peak nearest to it in what is left: its sine, as removed, a stem up to its
-amplitude (D176), with its period, its amplitude and the shorter periods it may have folded from written beside it.
-A click on a picked peak drops it.
+where each peak shows again at every shorter period it may have folded from.
+
+Peaks (D180): a click marks the peak nearest to it in what is left, circled, with its period, its amplitude and the
+periods the rows show the same beside it; a click on it drops the mark. A double click removes the peak's sine, its
+circle staying where the peak was; another double click puts it back.
 """
 
 from contextlib import contextmanager
@@ -96,7 +98,7 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.shortest.setValue(SHORTEST_NM)
         self.shortest.setToolTip("The shortest period shown when the box is ticked")
         self.frequency, self.amplitude = self.spectrum_of(self.values)  # cycles per nm; nm
-        self.picked = []  # the picked peaks' frequencies, cycles per nm
+        self.marked, self.removed = [], []  # the peaks clicked and double-clicked (D180): frequencies, cycles per nm
 
         self.figure = pg.GraphicsLayoutWidget()
         x_label, um = f"{axis} (µm)", self.position / 1000
@@ -128,9 +130,10 @@ class SpectrumWindow(QtWidgets.QWidget):
                                                    name="profile")
         self.remainder_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude,
                                                      pen=pg.mkPen(style.REMAINDER, width=1.5))
-        # The picked sines as removed, a stem each up to its amplitude: not on a spectrum line, which can be hidden.
-        self.stems = self.spectrum.plot([], [], pen=removed_pen, connect="pairs")
-        self.stems.visibleChanged.connect(self.show_labels)  # their labels go with them when the legend hides them
+        # The marked peaks circled, the removed ones circled dashed where they stood (D180).
+        self.marked_pen, self.removed_pen = pg.mkPen(style.TEXT, width=1.5), removed_pen
+        self.marks = pg.ScatterPlotItem(symbol="o", size=16, brush=pg.mkBrush(255, 255, 255, 0))
+        self.spectrum.addItem(self.marks)
         self.labels = []
         self.figure.scene().sigMouseClicked.connect(self.clicked)
 
@@ -178,7 +181,7 @@ class SpectrumWindow(QtWidgets.QWidget):
             f"<b>{name}</b>: {about}. {len(self.position)} points over {length_um:.1f} µm, {self.spacing:.1f} nm apart "
             f"(median): periods shorter than {2 * self.spacing:.0f} nm show folded to longer ones, and peaks closer than "
             f"{1000 * spectrum.resolution(self.position):.3g} cycles per µm are not told apart. Click a peak to measure "
-            "it and remove its sine; click it again to put it back.")
+            "it, again to drop the mark; double-click it to remove its sine, again to put it back.")
         summary.setWordWrap(True)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(summary)
@@ -245,7 +248,7 @@ class SpectrumWindow(QtWidgets.QWidget):
         top = self.shown_top()
         self.band.setRegion((self.limit * 1000, top * 1000))
         self.band.setVisible(top > self.limit)
-        self.picked = [f for f in self.picked if f <= top]
+        self.marked, self.removed = [f for f in self.marked if f <= top], [f for f in self.removed if f <= top]
         self.frequency, self.amplitude = self.spectrum_of(self.values)
         self.profile_spectrum.setData(self.frequency * 1000, self.amplitude)
         self.update_removal()
@@ -266,12 +269,13 @@ class SpectrumWindow(QtWidgets.QWidget):
         return spectrum.running_median(self.position, self.values, self.window.value() * 1000)
 
     def update_removal(self, *_):
-        """What is removed (the slow part if ticked, plus the picked sines fitted together on what it leaves), drawn
-        over the profile; what is left and its spectrum; the picked peaks."""
+        """What is removed (the slow part if ticked, plus the removed peaks' sines fitted together on what it leaves),
+        drawn over the profile; what is left and its spectrum; the marked and removed peaks."""
         slow = self.slow_part()
-        self.fitted, sines = spectrum.fit_sines(self.position, self.values - slow, self.picked)
-        self.remainder = self.values - slow - sines
-        removing = self.slow_box.isChecked() or bool(self.picked)
+        self.before_sines = self.values - slow
+        self.fitted, sines = spectrum.fit_sines(self.position, self.before_sines, self.removed)
+        self.remainder = self.before_sines - sines
+        removing = self.slow_box.isChecked() or bool(self.removed)
         self.remainder_amplitude = self.spectrum_of(self.remainder)[1] if removing else self.amplitude
         self.removed_line.setData(self.position / 1000, slow + sines)
         show_line(self.profile, self.removed_line, "removed", removing)
@@ -280,46 +284,67 @@ class SpectrumWindow(QtWidgets.QWidget):
                                      color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
         self.remainder_spectrum.setData(self.frequency * 1000, self.remainder_amplitude)
         show_line(self.spectrum, self.remainder_spectrum, "after removal", removing)
-        self.draw_picked()
+        self.draw_marks()
 
     def clicked(self, event):
-        """A left click on the spectrum picks or drops a peak, unless the legend took it (to hide or show a line)."""
+        """A left click or double click on the spectrum (D180); one on the legend, which hides or shows a line, is left
+        to it (D176)."""
         position = event.scenePos()
-        if event.button() != QtCore.Qt.MouseButton.LeftButton or event.isAccepted() or \
-                not self.spectrum.vb.sceneBoundingRect().contains(position):
+        if event.button() != QtCore.Qt.MouseButton.LeftButton or \
+                not self.spectrum.vb.sceneBoundingRect().contains(position) or \
+                self.spectrum.legend.sceneBoundingRect().contains(position):
             return
         within = max(spectrum.resolution(self.position), CLICK_PX * self.spectrum.vb.viewPixelSize()[0] / 1000)
-        self.pick(self.spectrum.vb.mapSceneToView(position).x() / 1000, within)
+        self.click_at(self.spectrum.vb.mapSceneToView(position).x() / 1000, within, event.double())
 
-    def pick(self, near: float, within: float):
-        """Drop the picked peak nearest to this frequency (cycles per nm) if one is within `within` of it, else pick
-        the top of the peak nearest to it in what is left."""
-        close = [f for f in self.picked if abs(f - near) <= within]
-        if close:
-            self.picked.remove(min(close, key=lambda f: abs(f - near)))
+    def click_at(self, near: float, within: float, double: bool = False):
+        """A click at this frequency (cycles per nm) drops the mark of a marked peak within `within` of it, else marks
+        the top of the peak nearest to it in what is left. A double click removes the sine of the marked peak there (or
+        of the peak nearest to it), or puts a removed one back, marked. A double click comes after a click at the same
+        place, so a click on a removed peak does nothing."""
+        close = [f for f in self.marked + self.removed if abs(f - near) <= within]
+        peak = min(close, key=lambda f: abs(f - near)) if close else None
+        if peak is None:
+            peak = spectrum.peak_near(self.position, self.remainder, self.frequency, self.remainder_amplitude, near,
+                                      within)
+            (self.removed if double else self.marked).append(peak)
+        elif double and peak in self.removed:
+            self.removed.remove(peak)
+            self.marked.append(peak)
+        elif double:
+            self.marked.remove(peak)
+            self.removed.append(peak)
+        elif peak in self.marked:
+            self.marked.remove(peak)
+        if double:
+            self.update_removal()
         else:
-            self.picked.append(spectrum.peak_near(self.position, self.remainder, self.frequency,
-                                                  self.remainder_amplitude, near, within))
-        self.update_removal()
+            self.draw_marks()
 
-    def draw_picked(self):
-        """Every picked peak's sine as removed: a stem from zero up to its amplitude (fitted with the others), named
-        "removed sines" in the legend, with its period, its amplitude and the shorter periods it may have folded from
-        beside its top."""
+    def height(self, values: np.ndarray, frequency: float) -> float:
+        """The spectrum of values at this frequency (cycles per nm), by the method chosen: the height of its line."""
+        if self.method.currentIndex() == 1:
+            return float(np.interp(frequency, *spectrum.fft_spectrum(self.position, values, self.shown_top())))
+        return float(spectrum.amplitude_spectrum(self.position, values, frequency))
+
+    def draw_marks(self):
+        """Every marked peak circled on the spectrum of what is left; every removed one circled dashed where it stood
+        before its sine was removed (D180). Beside each its period, its amplitude (the marked ones fitted together on
+        what is left, the removed ones as removed) and the other periods the rows show the same."""
         for label in self.labels:
             self.spectrum.removeItem(label)
         self.labels = []
-        frequency = np.array(self.picked)
-        self.stems.setData(np.repeat(frequency * 1000, 2),
-                           np.column_stack([np.zeros(len(frequency)), self.fitted]).ravel())
-        show_line(self.spectrum, self.stems, "removed sines", bool(self.picked))
+        marked = spectrum.fit_sines(self.position, self.remainder, self.marked)[0]
+        peaks = [(f, a, self.height(self.remainder, f), "") for f, a in zip(self.marked, marked)]
+        peaks += [(f, a, self.height(self.before_sines, f), "removed: ") for f, a in zip(self.removed, self.fitted)]
+        pens = [self.removed_pen if removed else self.marked_pen for *_, removed in peaks]
+        self.marks.setData([1000 * f for f, *_ in peaks], [h for _, _, h, _ in peaks], pen=pens)
         middle = np.mean(self.spectrum.vb.viewRange()[0]) / 1000
-        for f, a in zip(frequency, self.fitted):
-            # Hanging from the stem's top, on the side with more room: a tall stem's label stays in the graph.
-            label = pg.TextItem(f"period {period_text(1 / f)} nm, amplitude {a:.2f} nm\n{self.alternatives(f)}",
+        for f, a, h, removed in peaks:
+            # Hanging from the peak's top, on the side with more room: a tall peak's label stays in the graph.
+            label = pg.TextItem(f"{removed}period {period_text(1 / f)} nm, amplitude {a:.2f} nm\n{self.alternatives(f)}",
                                 color=style.TEXT, anchor=(float(f > middle), 0), fill=pg.mkBrush(255, 255, 255, 210))
-            label.setPos(f * 1000, a)
-            label.setVisible(self.stems.isVisible())
+            label.setPos(f * 1000, h)
             self.spectrum.addItem(label, ignoreBounds=True)
             self.labels.append(label)
 
@@ -333,8 +358,3 @@ class SpectrumWindow(QtWidgets.QWidget):
         others = [g for g in spectrum.folded_from(shown, self.spacing)
                   if abs(g - frequency) > spectrum.resolution(self.position)]
         return f"a copy of {period_text(1 / shown)} nm, as are {periods(others)} nm"
-
-    def show_labels(self):
-        """The picked peaks' labels are shown while their stems are."""
-        for label in self.labels:
-            label.setVisible(self.stems.isVisible())

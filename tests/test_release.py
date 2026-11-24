@@ -1930,24 +1930,25 @@ def test_the_spectrum_window_measures_a_picked_peak_and_draws_markers_on_request
         def button(self):
             return QtCore.Qt.MouseButton.LeftButton
 
-        def isAccepted(self):
+        def double(self):
             return False
 
     window.clicked(Click(405.0))  # beside the peak
-    (picked,) = window.picked
+    (picked,) = window.marked
     assert abs(1 / picked - 400.0) < 0.5
     (label,) = window.labels
     assert label.toPlainText() == "period 400 nm, amplitude 0.60 nm\nor folded from 57.1, 44.4, 26.7, 23.5 nm"
-    np.testing.assert_allclose(window.stems.getData()[0], [1000 * picked] * 2)
+    np.testing.assert_allclose(window.marks.getData()[0], [1000 * picked])
     window.clicked(Click(401.0))
-    assert window.picked == [] and window.labels == []
+    assert window.marked == [] and window.labels == []
     window.close()
 
 
-def test_a_picked_sine_is_a_stem_and_a_click_on_the_legend_picks_nothing():
-    """D176: a picked peak's sine, as removed, is a stem from zero up to its fitted amplitude, named in the legend while
-    something is picked; it stays where it is when the profile's line is hidden, and its label goes with it. A click on
-    a legend entry hides or shows the line and picks no peak."""
+def test_a_click_marks_a_peak_and_a_double_click_removes_it():
+    """D180: a click marks the peak nearest to it, circled on the line with its period and amplitude, and removes
+    nothing; a click on the circle drops the mark. A double click removes the peak's sine; its circle, dashed, stays
+    where the peak stood, also with the profile's line hidden. A click on it then does nothing; another double click
+    puts it back, marked. A click on the legend (to hide or show a line) marks nothing (D176)."""
     from pyqtgraph.Qt import QtTest
 
     from affine_ransac.release.spectrum_window import SpectrumWindow
@@ -1959,37 +1960,62 @@ def test_a_picked_sine_is_a_stem_and_a_click_on_the_legend_picks_nothing():
                             None)
     window.show()
     settle()
-    legend = lambda: [label.text for _, label in window.spectrum.legend.items]
+    view = window.figure.viewport()
+
+    def press(point, double=False):
+        """The mouse events a Qt widget gets from a click, or from a double click: the second press comes as a double
+        click (QTBUG-25831)."""
+        QtTest.QTest.mouseMove(view, point)
+        T, left, none = QtCore.QEvent.Type, QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton
+        steps = [(T.MouseButtonPress, left), (T.MouseButtonRelease, none)]
+        for kind, buttons in steps + ([(T.MouseButtonDblClick, left), (T.MouseButtonRelease, none)] if double else []):
+            QtWidgets.QApplication.sendEvent(view, QtGui.QMouseEvent(
+                kind, QtCore.QPointF(point), QtCore.QPointF(view.mapToGlobal(point)), QtCore.Qt.MouseButton.LeftButton,
+                buttons, QtCore.Qt.KeyboardModifier.NoModifier))
+        settle()
+
+    def click(period_nm, height=0.1, double=False):
+        press(window.figure.mapFromScene(window.spectrum.vb.mapViewToScene(QtCore.QPointF(1000 / period_nm, height))),
+              double)
 
     def click_legend(name):
         (sample,) = [s for s, label in window.spectrum.legend.items if label.text == name]
-        point = window.figure.mapFromScene(sample.mapToScene(sample.boundingRect().center()))
-        QtTest.QTest.mouseMove(window.figure.viewport(), point)
-        QtTest.QTest.mouseClick(window.figure.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=point)
-        settle()
+        press(window.figure.mapFromScene(sample.mapToScene(sample.boundingRect().center())))
+
+    def circle():
+        (spot,) = window.marks.points()
+        return spot.pos().x(), spot.pos().y(), spot.pen().style()
 
     click_legend("profile")  # inside the spectrum: it used to pick a peak there too
-    assert not window.profile_spectrum.isVisible() and window.picked == []
+    assert not window.profile_spectrum.isVisible() and window.marked == [] == window.removed
     click_legend("profile")
     assert window.profile_spectrum.isVisible()
 
-    window.pick(1 / 400.0, 1e-5)
-    (picked,) = window.picked
-    assert legend() == ["profile", "after removal", "removed sines"]
-    x, y = window.stems.getData()
-    np.testing.assert_allclose(x, [1000 * picked] * 2)
-    np.testing.assert_allclose(y, [0, window.fitted[0]])
-    assert window.fitted[0] == pytest.approx(0.6, abs=0.01)
-    (label,) = window.labels
-    assert label.pos().y() == pytest.approx(window.fitted[0])  # at the stem's top, not on a spectrum line
+    click(405.0)
+    (peak,) = window.marked
+    assert abs(1 / peak - 400.0) < 0.5 and window.removed == [] and not window.remainder_spectrum.isVisible()
+    np.testing.assert_array_equal(window.remainder, window.values)  # nothing removed
+    x, y, line = circle()
+    assert x == pytest.approx(1000 * peak) and y == pytest.approx(0.6, abs=0.01)  # on the peak's top
+    assert line == QtCore.Qt.PenStyle.SolidLine
+    assert window.labels[0].toPlainText().startswith("period 400 nm, amplitude 0.60 nm\n")
+    click(1 / peak, height=y)  # on the circle itself
+    assert window.marked == [] and window.labels == []
+
+    click(405.0, double=True)
+    assert window.marked == [] and len(window.removed) == 1 and abs(1 / window.removed[0] - 400.0) < 0.5
+    assert window.remainder_spectrum.isVisible() and np.abs(window.remainder).max() < 0.01
+    x, y, line = circle()
+    assert y == pytest.approx(0.6, abs=0.01) and line == QtCore.Qt.PenStyle.DashLine  # where the peak stood
+    assert window.labels[0].toPlainText().startswith("removed: period 400 nm, amplitude 0.60 nm\n")
     click_legend("profile")
-    assert not window.profile_spectrum.isVisible() and window.stems.isVisible() and label.isVisible()
-    click_legend("removed sines")
-    assert not window.stems.isVisible() and not label.isVisible() and window.picked == [picked]
-    click_legend("removed sines")
-    assert label.isVisible()
-    window.pick(picked, 1e-5)
-    assert legend() == ["profile"] and window.labels == []
+    assert not window.profile_spectrum.isVisible() and circle()[1] == pytest.approx(y)
+    click(405.0)  # a click on a removed peak does nothing
+    assert len(window.removed) == 1 and window.marked == []
+    click(405.0, double=True)  # put back, marked
+    assert window.removed == [] and len(window.marked) == 1 and not window.remainder_spectrum.isVisible()
+    np.testing.assert_array_equal(window.remainder, window.values)
+    assert circle()[2] == QtCore.Qt.PenStyle.SolidLine
     window.close()
 
 
@@ -2066,8 +2092,8 @@ def test_the_spectrum_window_removes_the_slow_part_and_the_picked_sines():
     assert window.removed_line.isVisible() and window.remainder_spectrum.isVisible()
     assert legend(window.spectrum) == ["profile", "after removal"] and legend(window.profile) == ["profile", "removed"]
     top = window.frequency[np.argmax(window.remainder_amplitude)]  # the sine, once the sawtooth is out
-    window.pick(top, 1e-5)
-    (picked,) = window.picked
+    window.click_at(top, 1e-5, double=True)
+    (picked,) = window.removed
     assert abs(1 / picked - 410) < 1 and window.fitted[0] == pytest.approx(0.3, abs=0.02)
     sine = spectrum.fit_sines(position, values - slow, [picked])[1]
     np.testing.assert_allclose(window.removed_line.getData()[1], slow + sine)
@@ -2078,8 +2104,8 @@ def test_the_spectrum_window_removes_the_slow_part_and_the_picked_sines():
     assert np.corrcoef(window.remainder, sawtooth)[0, 1] > 0.99
     window.window.setValue(2.0)  # changes nothing while the slow part is not removed
     np.testing.assert_allclose(window.remainder, values - spectrum.fit_sines(position, values, [picked])[1])
-    window.pick(picked, 1e-5)
-    assert window.picked == [] and not window.remainder_spectrum.isVisible()
+    window.click_at(picked, 1e-5, double=True)  # put back, marked
+    assert window.removed == [] and window.marked == [picked] and not window.remainder_spectrum.isVisible()
     window.close()
 
 
@@ -2115,8 +2141,8 @@ def test_the_spectrum_window_offers_an_fft_and_a_straight_line_per_ramp():
     np.testing.assert_allclose(window.removed_line.getData()[1], slow)
     assert np.corrcoef(slow, sawtooth)[0, 1] > 0.99  # the sawtooth found
     np.testing.assert_allclose(window.remainder_spectrum.getData()[1], spectrum.fft_spectrum(position, values - slow)[1])
-    window.pick(frequency[np.argmax(spectrum.fft_spectrum(position, values - slow)[1])], 1e-5)
-    (picked,) = window.picked
+    window.click_at(frequency[np.argmax(spectrum.fft_spectrum(position, values - slow)[1])], 1e-5, double=True)
+    (picked,) = window.removed
     assert abs(1 / picked - 205) < 0.2 and window.fitted[0] == pytest.approx(0.25, abs=0.01)
     window.wiggle.setValue(0.5)
     np.testing.assert_allclose(window.removed_line.getData()[1],
@@ -2124,7 +2150,7 @@ def test_the_spectrum_window_offers_an_fft_and_a_straight_line_per_ramp():
                                + spectrum.fit_sines(position, values - spectrum.line_per_ramp(position, values, 0.5),
                                                     [picked])[1])
     window.method.setCurrentIndex(0)  # back to Lomb–Scargle: the pick is kept
-    assert window.picked == [picked] and len(window.profile_spectrum.getData()[0]) == len(
+    assert window.removed == [picked] and len(window.profile_spectrum.getData()[0]) == len(
         spectrum.frequency_grid(position))
     window.close()
 
@@ -2152,17 +2178,17 @@ def test_the_spectrum_window_shows_the_folded_copies_past_the_limit_on_request()
     frequency, amplitude = window.profile_spectrum.getData()
     for period in (433.3, 130.0):
         assert amplitude[np.abs(1000 / frequency - period) < 2].max() == pytest.approx(0.5, abs=0.01)
-    window.pick(1 / 130.0, 1e-5)
-    (picked,) = window.picked
+    window.click_at(1 / 130.0, 1e-5, double=True)
+    (picked,) = window.removed
     assert abs(1 / picked - 130.0) < 0.2 and window.fitted[0] == pytest.approx(0.5, abs=0.01)
-    assert window.labels[0].toPlainText() == ("period 130 nm, amplitude 0.50 nm\n"
+    assert window.labels[0].toPlainText() == ("removed: period 130 nm, amplitude 0.50 nm\n"
                                               "a copy of 433 nm, as are 81.2, 56.5, 44.8 nm")
     assert np.abs(window.remainder).max() < 0.01  # the same sine as at 433 nm: all of it removed
 
     window.method.setCurrentIndex(1)  # the FFT runs past the limit too
     assert window.profile_spectrum.getData()[0].max() == pytest.approx(10.0)
     window.shortest.setValue(120.0)  # 130 nm still shown
-    assert window.band.getRegion() == pytest.approx((5.0, 1000 / 120.0)) and window.picked == [picked]
+    assert window.band.getRegion() == pytest.approx((5.0, 1000 / 120.0)) and window.removed == [picked]
     window.extend_box.setChecked(False)
-    assert not window.band.isVisible() and window.picked == [] and window.profile_spectrum.getData()[0].max() <= 5.0
+    assert not window.band.isVisible() and window.removed == [] and window.profile_spectrum.getData()[0].max() <= 5.0
     window.close()

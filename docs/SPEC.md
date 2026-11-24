@@ -1378,25 +1378,26 @@ are the centres of lines and spaces, half a pitch apart, so the limit is one ove
 start, each a tick box with a swatch: the limit (named on the graph) and every multiple of one over the **image
 step** up to it, where an error made inside every image would show (`views.image_step`: the median distance between
 neighbouring tile centres, within a stripe along y, between stripes along x; none with one stripe). **A click on
-the spectrum** takes its highest point within 8 screen pixels (at least one resolution step) and climbs to the top
-of that peak, refined on a grid ten times finer (`spectrum.peak_near`); its sine, which is removed (D174), is drawn as
-a **stem** from zero up to its amplitude (all picked sines fitted together with the mean, `spectrum.fit_sines`),
-dashed like the *removed* line over the profile and named *removed sines* in the legend while a peak is picked
-(D176), and its period, its amplitude and the shorter periods it may have folded from (k / spacing ± f, k = 1, 2:
-`spectrum.folded_from`) are written beside the stem's top. The stem stands on no spectrum line, so it stays put when
-the legend hides one; hiding the stems hides their labels. A click within the same distance of a picked peak drops
-it; a click the legend takes (to hide or show a line) picks nothing. Copy / Save image: the window's figure or any of
-its graphs.
+the spectrum** (D180) **marks** a peak and removes nothing: it takes the highest point of what is left within 8
+screen pixels (at least one resolution step) and climbs to the top of that peak, refined on a grid ten times finer
+(`spectrum.peak_near`); the peak is circled on the spectrum of what is left (the profile's while nothing is removed),
+and its period, its amplitude (the marked sines fitted together with a mean on what is left, `spectrum.fit_sines`)
+and the shorter periods it may have folded from (k / spacing ± f, k = 1, 2: `spectrum.folded_from`) are written beside
+it. A click within the same distance of a marked peak drops the mark. A **double click** removes the peak's sine
+(below); its circle, dashed, stays where the peak stood before its sine was removed (on the spectrum of the profile
+minus the slow part) and its label starts with *removed:*; a click on a removed peak does nothing, another double
+click puts it back, marked. A double click reaches the window as a click and then a double click at the same place;
+the rules are chosen so that the pair does what the double click means. A click on the legend (to hide or show a line) marks
+nothing (D176). Copy / Save image: the window's figure or any of its graphs.
 
 **Removal (D174).** Between the profile and the spectrum, *After removal*: the profile minus what is removed, its
 spectrum a second line on the spectrum (*after removal*, shown and in the legend only while something is removed),
 and the part removed drawn dashed over the profile (*removed*). Removed are the **slow part**, when *Remove slow
 part* is ticked (off at start): a running median over a window in µm (`spectrum.running_median`, 20 median row
 spacings at start), which follows ramps and keeps drops sharp, so it takes out a sawtooth; and the **sine of every
-picked peak**, all picked sines fitted together with a mean on the profile minus the slow part (`fit_sines`). A new
-pick is the peak nearest to the click in what is left, so a second sine of a beat can be picked once the first is
-removed; a picked peak stays circled on the profile's spectrum. Untick the slow part to remove only the sines and
-see the sawtooth. A running median shorter than a few periods of a sine takes part of it, and near a drop it lags by
+removed peak** (double-clicked, D180), all removed sines fitted together with a mean on the profile minus the slow
+part (`fit_sines`). A new mark is the peak nearest to the click in what is left, so a second sine of a beat can be
+found once the first is removed. Untick the slow part to remove only the sines and see the sawtooth. A running median shorter than a few periods of a sine takes part of it, and near a drop it lags by
 up to half a window of the ramp (the tooltip says so).
 
 **Options (D175).** *Spectrum*: Lomb–Scargle (at start) or *FFT, resampled evenly* (`spectrum.fft_spectrum`: the
