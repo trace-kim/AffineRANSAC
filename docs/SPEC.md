@@ -1365,7 +1365,8 @@ and per column of the Registration tab (`views.SpectrumButton`, shown while its 
 analysis...* in the profile's right-click menu open the profile as shown (stripes ticked, every point or grid
 average) in a window of its own (`release/spectrum_window.SpectrumWindow`); a window keeps the profile it was opened
 with. It shows the profile along a horizontal axis (position µm, error nm) and its **amplitude spectrum**: for each
-frequency (cycles per µm; the period in nm on the top axis) the amplitude in nm of the least-squares sine with a
+frequency (cycles per µm, on the top axis; the period in nm on the bottom one, D177: the graph is linear in
+frequency, its ticks labelled by period) the amplitude in nm of the least-squares sine with a
 free mean, scipy's Lomb–Scargle periodogram (`spectrum.amplitude_spectrum`, `normalize="amplitude"`,
 `floating_mean`), because rows need not be evenly spaced (a band not found, mixed pitches). Frequencies run from one
 over the profile's length (the resolution: closer peaks are not told apart) to the **limit**, one over twice the

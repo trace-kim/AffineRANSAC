@@ -1910,6 +1910,9 @@ def test_the_spectrum_window_measures_a_picked_peak_and_draws_markers_on_request
     window.show()
     settle()
     np.testing.assert_array_equal(window.position, position)  # from the lowest up
+    bottom, top = window.spectrum.getAxis("bottom"), window.spectrum.getAxis("top")  # D177: the period at the bottom
+    assert (bottom.labelText, top.labelText) == ("period (nm)", "frequency (cycles per µm)") and top.isVisible()
+    assert bottom.tickStrings([2.0, 10.0], 1, 2.0) == ["500", "100"] and top.tickStrings([2.0, 10.0], 1, 2.0) == ["2", "10"]
     assert not any(line.isVisible() for line in window.limit_lines + window.image_lines)
     window.limit_box.setChecked(True)
     assert window.limit_lines[0].isVisible() and window.limit_lines[0].value() == pytest.approx(10.0)  # per µm

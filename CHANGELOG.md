@@ -24,6 +24,7 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
 - Frequency analysis: a picked peak is drawn as the sine taken out, a **stem** up to its amplitude named *removed
   sines* in the legend, instead of a circle on the profile's line; a click on the legend no longer picks a peak
   (D176).
+- Frequency analysis: the spectrum's **period** axis is at the bottom, its frequency axis at the top (D177).
 - The Registration tab's **Map data** menu copies or exports all measured points as CSV or TSV with columns
   `x`, `y`, `dx`, `dy` (mask µm and residual nm). Horizontal L/S leaves `dx` blank (D172).
 - **Analysis 10.** Horizontal L/S measures each complete line and space in ten x slices in the SEM and design.

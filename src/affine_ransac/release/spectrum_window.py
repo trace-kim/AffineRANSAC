@@ -2,8 +2,9 @@
 (docs/SPEC.md D173, D174, D175).
 
 The profile as the tab showed it when the window opened, along a horizontal axis; below it what is left after
-removing parts of it; then the amplitude spectrum of both in cycles per µm, with the period in nm on the top axis:
-least-squares sines (Lomb–Scargle), or an FFT of the profile resampled evenly (D175). Removed (D174): the slow part on request (Remove slow part: a running median, or a straight line per ramp, D175: the
+removing parts of it; then the amplitude spectrum of both, the period in nm on the bottom axis and the frequency in
+cycles per µm on the top one (D177): least-squares sines (Lomb–Scargle), or an FFT of the profile resampled evenly
+(D175). Removed (D174): the slow part on request (Remove slow part: a running median, or a straight line per ramp, D175: the
 sawtooth), and the sine of every picked peak, all picked sines fitted together on what the slow part leaves; the part
 removed is drawn over the profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
 frequency shows folded below it) and the image step with its multiples (where an error made inside every image would
@@ -41,7 +42,8 @@ def period_text(period_nm: float) -> str:
 
 
 class PeriodAxis(pg.AxisItem):
-    """A spectrum's top axis: the period (nm) at each tick of its frequency axis (cycles per µm)."""
+    """A spectrum's bottom axis: the period (nm) at each tick of the frequency (cycles per µm), which the data are in
+    and the top axis shows."""
 
     def tickStrings(self, values, scale, spacing):
         return [period_text(1000 / v) if v > 0 else "" for v in values]
@@ -101,8 +103,8 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.remainder_plot.setXLink(self.profile)
         self.remainder_line = self.remainder_plot.plot(um, self.values, pen=pg.mkPen(style.REMAINDER, width=2))
 
-        self.spectrum = self.figure.addPlot(row=2, col=0, axisItems={"top": PeriodAxis("top")})
-        style.style_plot(self.spectrum, "", "frequency (cycles per µm)", "amplitude (nm)")
+        self.spectrum = self.figure.addPlot(row=2, col=0, axisItems={"bottom": PeriodAxis("bottom")})
+        style.style_plot(self.spectrum, "", "period (nm)", "amplitude (nm)")
         self.style_top_axis()
         style.legend(self.spectrum)
         self.profile_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude, pen=pg.mkPen(color, width=2),
@@ -174,7 +176,9 @@ class SpectrumWindow(QtWidgets.QWidget):
         axis.setPen(pg.mkPen(style.MUTED))
         axis.setTextPen(pg.mkPen(style.TEXT))
         axis.setStyle(tickFont=QtGui.QFont(style.FONT, style.TICK_PT), tickTextOffset=6)
-        axis.setLabel("period (nm)", color=style.TEXT, **{"font-size": f"{style.LABEL_PT}pt", "font-family": style.FONT})
+        axis.enableAutoSIPrefix(False)  # the label carries the unit
+        axis.setLabel("frequency (cycles per µm)", color=style.TEXT,
+                      **{"font-size": f"{style.LABEL_PT}pt", "font-family": style.FONT})
 
     def marker_boxes(self, image_step_nm: float | None) -> tuple[QtWidgets.QCheckBox, QtWidgets.QCheckBox]:
         """Tick boxes, off at start, each drawing its markers on the spectrum: the limit of the row spacing, and every
