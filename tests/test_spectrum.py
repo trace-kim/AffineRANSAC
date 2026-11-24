@@ -47,6 +47,19 @@ def test_a_period_shorter_than_two_row_spacings_shows_folded_and_says_where_from
     assert np.min(np.abs(1 / candidates - 120.0)) < 0.5
 
 
+def test_no_false_spike_at_the_limit_of_evenly_spaced_rows():
+    """D178: exactly at the limit a sine through evenly spaced rows is zero at every row; the grid used to end there
+    when the number of rows was odd, and the last point could stand twice as high as the true peak."""
+    rng = np.random.default_rng(5)
+    for rows in (400, 401, 402, 403):
+        position = 5e5 + np.arange(rows) * 100.0
+        values = 0.5 * np.sin(2 * np.pi * position / 433.0) + rng.normal(0, 0.05, rows)
+        frequency = spectrum.frequency_grid(position)
+        amplitude = spectrum.amplitude_spectrum(position, values, frequency)
+        assert spectrum.limit(position) - frequency[-1] >= spectrum.resolution(position) * (1 - 1e-9)
+        assert abs(1 / frequency[np.argmax(amplitude)] - 433.0) < 2 and amplitude.max() < 0.55
+
+
 def test_two_close_sines_are_fitted_together_and_leave_the_noise():
     """A beat: two sines whose periods differ by 10 %. Fitted together, each keeps its own amplitude."""
     position = uneven_rows(40.0, 60_000.0, seed=2)

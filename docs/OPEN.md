@@ -73,11 +73,6 @@ it stays as built at the user's wish (2026-11-12) and is not to be extended.
   settings and reproduction are in `docs/notes/2026-11-16-contour-cpu-benchmark.md`.
 - A moving-window position holding fewer than 3 contacts stops the whole run (`fitting/moving_window.py`, code
   checked). The user met it on 2026-10-27.
-- Frequency analysis, Lomb–Scargle: exactly at the limit a sine through evenly spaced rows is zero at every row, so
-  the least-squares amplitude there is noise divided by almost nothing. `spectrum.frequency_grid` ends exactly on
-  the limit when the number of rows is odd (evenly spaced rows), and the last point can then be a false spike: on
-  made-up rows every 100 nm with a 0.5 nm sine and 0.05 nm noise, 1.03 nm with 401 rows, 0.01 nm with 403
-  (2026-11-24). Not seen by the user. Any extension past the limit must also avoid every multiple of it.
 
 ## Parked: not asked for, here so they are not invented twice
 

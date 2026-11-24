@@ -31,9 +31,13 @@ def limit(position_nm: np.ndarray) -> float:
 
 
 def frequency_grid(position_nm: np.ndarray) -> np.ndarray:
-    """Frequencies (cycles per nm) from the resolution up to the limit, OVERSAMPLE steps per resolution step."""
-    step = resolution(position_nm) / OVERSAMPLE
-    return np.arange(resolution(position_nm), limit(position_nm) + step / 2, step)
+    """Frequencies (cycles per nm) from the resolution up to the limit, OVERSAMPLE steps per resolution step, without
+    those closer than the resolution to a multiple of the limit (D178): on evenly spaced rows a sine there is zero at
+    every row (or, at twice the limit, the same at every row), so its least-squares amplitude is the noise divided by
+    almost nothing. The grid starts one resolution above zero for the same reason."""
+    step, top = resolution(position_nm) / OVERSAMPLE, limit(position_nm)
+    grid = np.arange(resolution(position_nm), top + step / 2, step)
+    return grid[np.abs(grid - top * np.round(grid / top)) >= resolution(position_nm)]
 
 
 def amplitude_spectrum(position_nm: np.ndarray, values: np.ndarray, frequency: np.ndarray) -> np.ndarray:

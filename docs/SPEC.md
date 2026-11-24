@@ -1370,7 +1370,9 @@ frequency, its ticks labelled by period) the amplitude in nm of the least-square
 free mean, scipy's Lomb–Scargle periodogram (`spectrum.amplitude_spectrum`, `normalize="amplitude"`,
 `floating_mean`), because rows need not be evenly spaced (a band not found, mixed pitches). Frequencies run from one
 over the profile's length (the resolution: closer peaks are not told apart) to the **limit**, one over twice the
-median row spacing (a higher frequency shows folded below it), five steps per resolution step; scipy gets a few
+median row spacing (a higher frequency shows folded below it), five steps per resolution step, leaving out those
+closer than the resolution to a multiple of the limit, as near zero (D178: on evenly spaced rows a sine exactly at
+the limit is zero at every row, and its least-squares amplitude is the noise divided by almost nothing); scipy gets a few
 frequencies at a time so that each table it builds stays near 16 MB (`CHUNK_CELLS`). For horizontal L/S the rows
 are the centres of lines and spaces, half a pitch apart, so the limit is one over the pitch. **Markers**, off at
 start, each a tick box with a swatch: the limit (named on the graph) and every multiple of one over the **image
