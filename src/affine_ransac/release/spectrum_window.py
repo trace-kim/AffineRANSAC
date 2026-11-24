@@ -3,13 +3,13 @@
 
 The profile as the tab showed it when the window opened, along a horizontal axis; below it what is left after
 removing parts of it; then the amplitude spectrum of both in cycles per µm, with the period in nm on the top axis:
-least-squares sines (Lomb–Scargle), or an FFT of the profile resampled evenly (D175). Removed (D174): the slow part
-on request (Remove slow part: a running median, or a straight line per ramp, D175: the sawtooth), and the sine of
-every picked peak, all picked sines fitted together on what the slow part leaves; the part removed is drawn over the
-profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
+least-squares sines (Lomb–Scargle), or an FFT of the profile resampled evenly (D175). Removed (D174): the slow part on request (Remove slow part: a running median, or a straight line per ramp, D175: the
+sawtooth), and the sine of every picked peak, all picked sines fitted together on what the slow part leaves; the part
+removed is drawn over the profile. Markers on the spectrum, off at start: the limit of the row spacing (a higher
 frequency shows folded below it) and the image step with its multiples (where an error made inside every image would
-show). A click on the spectrum picks the peak nearest to it in what is left: circled, with its period, its amplitude
-and the shorter periods it may have folded from written beside it. A click on a picked peak drops it.
+show). A click on the spectrum picks the peak nearest to it in what is left: its sine, as removed, a stem up to its
+amplitude (D176), with its period, its amplitude and the shorter periods it may have folded from written beside it.
+A click on a picked peak drops it.
 """
 
 from contextlib import contextmanager
@@ -93,8 +93,8 @@ class SpectrumWindow(QtWidgets.QWidget):
         style.legend(self.profile)
         style.zero_line(self.profile)
         self.profile.plot(um, self.values, pen=pg.mkPen(color, width=2), name="profile")
-        self.removed_line = self.profile.plot(um, np.zeros_like(um),
-                                              pen=pg.mkPen(style.REMOVED, width=1.5, style=QtCore.Qt.PenStyle.DashLine))
+        removed_pen = pg.mkPen(style.REMOVED, width=1.5, style=QtCore.Qt.PenStyle.DashLine)
+        self.removed_line = self.profile.plot(um, np.zeros_like(um), pen=removed_pen)
         self.remainder_plot = self.figure.addPlot(row=1, col=0)
         style.style_plot(self.remainder_plot, "", x_label, "error (nm)")  # its title names its one line
         style.zero_line(self.remainder_plot)
@@ -109,8 +109,9 @@ class SpectrumWindow(QtWidgets.QWidget):
                                                    name="profile")
         self.remainder_spectrum = self.spectrum.plot(self.frequency * 1000, self.amplitude,
                                                      pen=pg.mkPen(style.REMAINDER, width=1.5))
-        self.marks = pg.ScatterPlotItem(symbol="o", size=16, pen=pg.mkPen(style.TEXT, width=1.5), brush=None)
-        self.spectrum.addItem(self.marks)
+        # The picked sines as removed, a stem each up to its amplitude: not on a spectrum line, which can be hidden.
+        self.stems = self.spectrum.plot([], [], pen=removed_pen, connect="pairs")
+        self.stems.visibleChanged.connect(self.show_labels)  # their labels go with them when the legend hides them
         self.labels = []
         self.figure.scene().sigMouseClicked.connect(self.clicked)
 
@@ -248,8 +249,9 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.draw_picked()
 
     def clicked(self, event):
+        """A left click on the spectrum picks or drops a peak, unless the legend took it (to hide or show a line)."""
         position = event.scenePos()
-        if event.button() != QtCore.Qt.MouseButton.LeftButton or \
+        if event.button() != QtCore.Qt.MouseButton.LeftButton or event.isAccepted() or \
                 not self.spectrum.vb.sceneBoundingRect().contains(position):
             return
         within = max(spectrum.resolution(self.position), CLICK_PX * self.spectrum.vb.viewPixelSize()[0] / 1000)
@@ -267,23 +269,28 @@ class SpectrumWindow(QtWidgets.QWidget):
         self.update_removal()
 
     def draw_picked(self):
-        """Every picked peak circled on the profile's spectrum, its period and amplitude (fitted with the others) and
-        the shorter periods it may have folded from beside it."""
+        """Every picked peak's sine as removed: a stem from zero up to its amplitude (fitted with the others), named
+        "removed sines" in the legend, with its period, its amplitude and the shorter periods it may have folded from
+        beside its top."""
         for label in self.labels:
             self.spectrum.removeItem(label)
         self.labels = []
         frequency = np.array(self.picked)
-        if not len(frequency):
-            self.marks.setData([], [])
-            return
-        height = np.interp(frequency, self.frequency, self.amplitude)  # on the profile's spectrum line
-        self.marks.setData(frequency * 1000, height)
+        self.stems.setData(np.repeat(frequency * 1000, 2),
+                           np.column_stack([np.zeros(len(frequency)), self.fitted]).ravel())
+        show_line(self.spectrum, self.stems, "removed sines", bool(self.picked))
         middle = np.mean(self.spectrum.vb.viewRange()[0]) / 1000
-        for f, a, h in zip(frequency, self.fitted, height):
+        for f, a in zip(frequency, self.fitted):
             folded = ", ".join(period_text(1 / g) for g in spectrum.folded_from(f, self.spacing))
-            # Hanging from the peak's top, on the side with more room: a tall peak's label stays in the graph.
+            # Hanging from the stem's top, on the side with more room: a tall stem's label stays in the graph.
             label = pg.TextItem(f"period {period_text(1 / f)} nm, amplitude {a:.2f} nm\nor folded from {folded} nm",
                                 color=style.TEXT, anchor=(float(f > middle), 0), fill=pg.mkBrush(255, 255, 255, 210))
-            label.setPos(f * 1000, h)
+            label.setPos(f * 1000, a)
+            label.setVisible(self.stems.isVisible())
             self.spectrum.addItem(label, ignoreBounds=True)
             self.labels.append(label)
+
+    def show_labels(self):
+        """The picked peaks' labels are shown while their stems are."""
+        for label in self.labels:
+            label.setVisible(self.stems.isVisible())

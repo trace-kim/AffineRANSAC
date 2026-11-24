@@ -1927,14 +1927,66 @@ def test_the_spectrum_window_measures_a_picked_peak_and_draws_markers_on_request
         def button(self):
             return QtCore.Qt.MouseButton.LeftButton
 
+        def isAccepted(self):
+            return False
+
     window.clicked(Click(405.0))  # beside the peak
     (picked,) = window.picked
     assert abs(1 / picked - 400.0) < 0.5
     (label,) = window.labels
     assert label.toPlainText() == "period 400 nm, amplitude 0.60 nm\nor folded from 57.1, 44.4, 26.7, 23.5 nm"
-    np.testing.assert_allclose(window.marks.getData()[0], [1000 * picked])
+    np.testing.assert_allclose(window.stems.getData()[0], [1000 * picked] * 2)
     window.clicked(Click(401.0))
     assert window.picked == [] and window.labels == []
+    window.close()
+
+
+def test_a_picked_sine_is_a_stem_and_a_click_on_the_legend_picks_nothing():
+    """D176: a picked peak's sine, as removed, is a stem from zero up to its fitted amplitude, named in the legend while
+    something is picked; it stays where it is when the profile's line is hidden, and its label goes with it. A click on
+    a legend entry hides or shows the line and picks no peak."""
+    from pyqtgraph.Qt import QtTest
+
+    from affine_ransac.release.spectrum_window import SpectrumWindow
+    style.setup()
+    pg.mkQApp()
+    position = np.arange(0.0, 20_000.0, 50.0)
+    values = 0.6 * np.sin(2 * np.pi * position / 400.0)
+    window = SpectrumWindow(None, "dy mean per row", "all stripes, every L/S centre", "y", position, values, style.DY,
+                            None)
+    window.show()
+    settle()
+    legend = lambda: [label.text for _, label in window.spectrum.legend.items]
+
+    def click_legend(name):
+        (sample,) = [s for s, label in window.spectrum.legend.items if label.text == name]
+        point = window.figure.mapFromScene(sample.mapToScene(sample.boundingRect().center()))
+        QtTest.QTest.mouseMove(window.figure.viewport(), point)
+        QtTest.QTest.mouseClick(window.figure.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=point)
+        settle()
+
+    click_legend("profile")  # inside the spectrum: it used to pick a peak there too
+    assert not window.profile_spectrum.isVisible() and window.picked == []
+    click_legend("profile")
+    assert window.profile_spectrum.isVisible()
+
+    window.pick(1 / 400.0, 1e-5)
+    (picked,) = window.picked
+    assert legend() == ["profile", "after removal", "removed sines"]
+    x, y = window.stems.getData()
+    np.testing.assert_allclose(x, [1000 * picked] * 2)
+    np.testing.assert_allclose(y, [0, window.fitted[0]])
+    assert window.fitted[0] == pytest.approx(0.6, abs=0.01)
+    (label,) = window.labels
+    assert label.pos().y() == pytest.approx(window.fitted[0])  # at the stem's top, not on a spectrum line
+    click_legend("profile")
+    assert not window.profile_spectrum.isVisible() and window.stems.isVisible() and label.isVisible()
+    click_legend("removed sines")
+    assert not window.stems.isVisible() and not label.isVisible() and window.picked == [picked]
+    click_legend("removed sines")
+    assert label.isVisible()
+    window.pick(picked, 1e-5)
+    assert legend() == ["profile"] and window.labels == []
     window.close()
 
 
