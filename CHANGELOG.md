@@ -18,9 +18,6 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
   space side (the CD-SEM threshold at 50 % on the slope facing the space), chosen in the tab without a new run (D183).
 - L/S CD: the **mean per row** on the map's right, as in the Registration tab, the lines and the spaces each a line
   of its own (D184).
-- Horizontal L/S, **LS_REGISTRATION** (Parameters → Registration): fit and report the registration on the lines only
-  or the spaces only. The stitching still uses every centre. The default, lines and spaces, gives the same results as
-  before (D185).
 
 - **Frequency analysis** of every mean per row and per column of the Registration tab: the button over its top-right
   corner (or *Frequency analysis...* in its right-click menu) opens the profile and its amplitude spectrum in a

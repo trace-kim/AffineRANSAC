@@ -85,13 +85,6 @@ class Settings:
     moving_window_per_stripe: bool = setting(False, "Moving-window affine fitted per stripe: every image corrected by "
                                                     "the windows of its own stripe (stripes are measured at different "
                                                     "times and drift differently); off: every window spans all stripes")
-    ls_registration: str = setting("lines and spaces", "Horizontal L/S: the centres the moving-window affine is "
-                                                       "fitted to and the registration reports: lines and spaces, "
-                                                       "lines only or spaces only. A centre is a line or a space by "
-                                                       "the tone of the design bands it was paired with (the drawn "
-                                                       "shapes are the spaces); one paired with neither tone or with "
-                                                       "both is left out of lines and of spaces. The stitching uses "
-                                                       "every centre")
     in_image_correction: bool = setting(False, "Remove the distortion shared by all SEM images (the same at the same "
                                                "place in every image, e.g. of the scan) from the measured centres "
                                                "before stitching: one smooth formula over the image, every power of x "
@@ -217,7 +210,7 @@ class Settings:
 
 CSV_ONLY = {"tile_margin_nm"}
 RELEASE_ONLY = {"moving_window_per_stripe", "in_image_correction",  # used by the release's analysis only
-                "pattern", "ls_registration"}                       # (release/analysis.py, its contour diagnosis)
+                "pattern"}                                          # (release/analysis.py, its contour diagnosis)
 IMAGES_ONLY = {"layer", "datatype", "detection", "search_px", "refinement", "design_search_nm", "design_tolerance_nm",
                "min_match_fraction", "spread_flag_nm", "arrow_scale", "min_contrast", "realign", "dark_contacts",
                "detection_blur_px", "min_area_px", "max_area_px", "min_solidity", "edge_step_px", "edge_blur_px",
@@ -242,10 +235,8 @@ PATTERN_SETTINGS = {"contacts": CONTOUR_SETTINGS, "lines": LINE_SETTINGS, "conto
                     + ("min_area_px", "max_area_px")}
 STITCH_METHODS = ("all overlaps", "measurement order first", "image by image", "fingerprint")
 BY_IMAGE = ("image by image", "fingerprint")  # stitched image by image after a placement (D133, D144)
-LS_REGISTRATION = ("lines and spaces", "lines", "spaces")  # the horizontal L/S centres registered (D185)
 CHOICES = {"ransac_placement": ("mean", "first"), "detection": ("otsu", "otsu3", "band"), "refinement": REFINEMENTS,
-           "stitch_method": STITCH_METHODS, "denoise": DENOISERS, "equalize": EQUALIZERS, "pattern": PATTERNS,
-           "ls_registration": LS_REGISTRATION}
+           "stitch_method": STITCH_METHODS, "denoise": DENOISERS, "equalize": EQUALIZERS, "pattern": PATTERNS}
 # What runs saved before a setting existed did, where that differs from the setting's default: a saved run is read
 # with these (saved_settings), so that it says how it was made. Remembered parameters take the defaults instead.
 BEFORE = {"refinement": "steepest gradient"}  # D122

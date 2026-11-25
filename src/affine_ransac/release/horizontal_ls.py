@@ -19,12 +19,10 @@ from affine_ransac.matching import match_points_tree, match_with_shift, mutual_n
 from affine_ransac.overlap import overlapping_pairs
 from affine_ransac.overlap_fit import fit_overlap
 from affine_ransac.pipeline import PairResult, RejectedPair, find_lines, prepared_image, solved_stitching
-from affine_ransac.registration import (DesignErrors, MergedErrors, design_errors_after_stitching,
-                                        merge_observations, merge_values, some_observations)
+from affine_ransac.registration import DesignErrors, MergedErrors, design_errors_after_stitching, merge_values
 
 SLICES = 10
 LINE, SPACE, NOT_KNOWN = 0, 1, -1  # LineSpaceCD.band. In the user's clips the drawn shapes are the spaces (D182).
-TONES = {"lines": LINE, "spaces": SPACE}  # Settings.ls_registration, when it registers one tone only (D185)
 # Where the SEM edge is in a white band: the columns of LineSpaceCD.sem, (name, what it is) (D183)
 EDGES = (("Own outline", "Each region's own outline: half-way between its interior and the white band's peak, on its "
                          "own side, as Load contours draws it. Lines and spaces both read short by about a band width."),
@@ -225,26 +223,6 @@ def merged_cds(merged: MergedErrors, observations: DesignErrors, sem_cds: list[n
     space_side = np.select([band == SPACE, band == LINE], [own, across], np.nan)
     return LineSpaceCD(np.column_stack((own, middle, space_side)), np.where(band == NOT_KNOWN, np.nan, design[:, 0]),
                        band)
-
-
-def one_tone(observations: DesignErrors, merged: MergedErrors, band: np.ndarray, tones: str,
-             design_corrections: np.ndarray, radius_nm: float, tile_ids: list[str],
-             log) -> tuple[DesignErrors, MergedErrors]:
-    """Only the centres of one tone (tones: "lines" or "spaces"; band: merged_cds' per merged centre) and their
-    observations, merged again: merge_observations groups whole centres, so the kept ones are merged as before (D185).
-    Logs what is left out, and with !! the images it leaves without a centre."""
-    wanted = TONES[tones]
-    kept = [members for members, tone in zip(merged.members, band) if tone == wanted]
-    rows = np.sort(np.concatenate(kept)) if kept else np.empty(0, int)
-    subset = some_observations(observations, rows)
-    other = "spaces" if wanted == LINE else "lines"
-    log(f"Registration of the {tones} only: {len(kept)} of {len(band)} L/S centres; left out "
-        f"{(band == TONES[other]).sum()} {other} and {(band == NOT_KNOWN).sum()} known as neither")
-    emptied = sorted(set(observations.tile.tolist()) - set(subset.tile.tolist()))
-    if emptied:
-        log(f"!! {len(emptied)} image(s) left without any {tones[:-1]} centre: {[tile_ids[k] for k in emptied[:10]]}"
-            f"{' ...' if len(emptied) > 10 else ''}")
-    return subset, merge_observations(subset, design_corrections, radius_nm)
 
 
 def tile_outlines(path, fov_nm, s: Settings, full_width=False):

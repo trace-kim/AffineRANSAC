@@ -37,7 +37,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from affine_ransac import __version__
-from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, HORIZONTAL_LS, LS_REGISTRATION, ContactSizes, Settings,
+from affine_ransac.analysis import (BY_IMAGE, CONTOUR_SETTINGS, HORIZONTAL_LS, ContactSizes, Settings,
                                    any_shape_options, check_image_records, check_settings, checked_overlaps,
                                    contour_options, detect_layer, helper_pool, in_image_map, load_image_tiles,
                                    merged_contact_sizes, placement_guide, placement_text, report_stitching)
@@ -77,8 +77,7 @@ COMMON = ["max_match_nm", "design_max_match_nm", "outlier_factor", "min_matched"
           "in_image_correction", "in_image_order"]
 PARAMETERS = {"contour CSV": COMMON + ["tile_margin_nm"],
               "images": COMMON + ["pattern"] + list(CONTOUR_SETTINGS) + ["design_search_nm", "design_tolerance_nm",
-                                                                        "min_match_fraction", "realign",
-                                                                        "ls_registration"]}
+                                                                        "min_match_fraction", "realign"]}
 LOAD_SHARE = 0.8  # fraction of the progress bar for loading the tiles (images: by far the longest step)
 IMAGE_BUDGET_PX = 4e8  # SEM images shown on request: at most this many pixels in memory (~400 MB)
 
@@ -133,11 +132,6 @@ class ReleaseResult:
         return self.kind == "images" and self.settings.pattern == HORIZONTAL_LS
 
 
-def registered_features(s: Settings) -> str:
-    """What a horizontal L/S run registers (ls_registration, D185): L/S centres, line centres or space centres."""
-    return {"lines": "line centres", "spaces": "space centres"}.get(s.ls_registration, "L/S centres")
-
-
 class AnalysisFailed(RuntimeError):
     """A run that stopped after the stitching. result: what was found up to there (tiles, centres, stitchings; no
     contacts, moving None), to show on the Stitching tab, never saved; not_measured: tile index -> why no error
@@ -168,9 +162,6 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
         log(text)
 
     check_settings(s, kind)
-    if s.ls_registration not in LS_REGISTRATION:  # a release setting: check_settings leaves it out
-        raise ValueError(f"Invalid settings: ls_registration must be one of {LS_REGISTRATION} "
-                         f"(is {s.ls_registration!r})")
     if kind == "images" and s.pattern == "lines":  # only the contour diagnosis finds them (D153)
         raise ValueError("Lines can only be tried in the contour diagnosis window. Choose horizontal L/S, "
                          "contours or contacts to run.")
@@ -291,11 +282,6 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
     contacts = merge_observations(observations, design_stitch.corrections, s.group_radius_nm)
     features = "L/S centres" if horizontal else "contacts"
     record(f"{len(observations.tile)} observations -> {len(contacts.count)} {features}")
-    if horizontal and s.ls_registration in horizontal_ls.TONES:  # register the lines or the spaces only (D185)
-        band = horizontal_ls.merged_cds(contacts, observations, sem_cds, design_cds).band
-        observations, contacts = horizontal_ls.one_tone(observations, contacts, band, s.ls_registration,
-                                                        design_stitch.corrections, s.group_radius_nm, tile_ids,
-                                                        record)
 
     def result(moving, kept=None, line_space_cd=None):
         return ReleaseResult(str(folder), kind, s, list(tile_ids), np.asarray(centers), np.asarray(sizes), stripe,
@@ -303,7 +289,7 @@ def analyse_folder(folder, kind: str, settings: Settings, records: list | None =
                              moving, image_paths, lines, oas_paths, oas_centers, tiles=kept, slipped=slipped,
                              intrafield=intrafield, line_space_cd=line_space_cd)
     if len(contacts.count) < 3:
-        unit = f"{registered_features(s)[:-1]}(s)" if horizontal else "contact(s)"
+        unit = "L/S centre(s)" if horizontal else "contact(s)"
         raise AnalysisFailed(f"Only {len(contacts.count)} measured {unit}. The Stitching tab shows the tiles, "
                              f"their SEM images and design, and why each tile was not measured",
                              result(None), observations.skipped)
