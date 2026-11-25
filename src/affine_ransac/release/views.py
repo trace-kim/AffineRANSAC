@@ -1382,6 +1382,22 @@ class RegistrationView(QtWidgets.QWidget):
         low, high = stripe_ranges(r.centers, r.sizes, r.stripe)
         self.stripes = StripeSelector([f"Stripe {k + 1}  (x {a / 1000:.1f} to {b / 1000:.1f} µm)"
                                        for k, (a, b) in enumerate(zip(low, high))], self.select_stripes)
+        # Horizontal L/S: lines and spaces, or one of them (D186), as the L/S CD tab tells them apart; shown only,
+        # the residuals stay the run's
+        self.show_label, self.show_band = QtWidgets.QLabel("   Show:"), QtWidgets.QComboBox()
+        self.show_band.addItems([label for label, _, _ in SHOW_BANDS])
+        self.show_band.currentIndexChanged.connect(self.select_stripes)
+        if not r.horizontal_ls:
+            self.show_label.hide()
+            self.show_band.hide()
+        elif r.line_space_cd is None:
+            self.show_band.setEnabled(False)
+            self.show_band.setToolTip("This run was saved before MaskReg told lines and spaces apart. Restart the "
+                                      "analysis to show them apart.")
+        else:
+            self.show_band.setToolTip("Show only the line centres or only the space centres on the maps, the means "
+                                      "per row and per column and their frequency analysis. The errors stay those "
+                                      "of the run's affine, fitted on every L/S centre.")
         self.columns_box = QtWidgets.QCheckBox("Mean per column")
         self.columns_box.setToolTip("Show the mean per column below each map")
         self.columns_box.toggled.connect(self.show_columns)
@@ -1437,7 +1453,8 @@ class RegistrationView(QtWidgets.QWidget):
                 self.spectrum_buttons.append(SpectrumButton(plot, self.figure, open_it))
 
         controls = QtWidgets.QHBoxLayout()
-        for widget in (self.stripes, QtWidgets.QLabel("   Values:"), self.values, QtWidgets.QLabel("cell"), self.cell,
+        for widget in (self.stripes, self.show_label, self.show_band, QtWidgets.QLabel("   Values:"), self.values,
+                       QtWidgets.QLabel("cell"), self.cell,
                        QtWidgets.QLabel("  "), self.grid_lines, QtWidgets.QLabel("   Arrow scale ×"), self.arrow_scale,
                        self.arrow_key):
             controls.addWidget(widget)
@@ -1464,12 +1481,25 @@ class RegistrationView(QtWidgets.QWidget):
         self.select_stripes()
 
     def select_stripes(self):
-        """Show the contacts of the ticked stripes: their maps, profiles, colour scales and summary, the view on
-        them. The errors stay those of the run's moving-window affine (every contact, or per stripe), not fitted
-        again."""
+        """Show the contacts of the ticked stripes (horizontal L/S: and the lines, spaces or both chosen in Show,
+        D186): their maps, profiles, colour scales and summary, the view on them. The errors stay those of the run's
+        moving-window affine (every contact, or per stripe), not fitted again."""
         r, s = self.result, self.result.settings
         selected = self.stripes.selected()
         shown = self.in_stripe[:, selected].any(axis=1)
+        self.band = None if r.line_space_cd is None else SHOW_BANDS[self.show_band.currentIndex()][2]
+        note = ""
+        if self.band is not None:  # a centre known as neither line nor space is shown only with both
+            one = shown & (r.line_space_cd.band == self.band)
+            if one.any():
+                shown = one
+            else:  # as the last ticked stripe, a choice that would leave nothing is not taken
+                note = f"No {SHOWN_FEATURES[self.band]} in the ticked stripes: lines and spaces shown. "
+                self.band = None
+                self.show_band.blockSignals(True)
+                self.show_band.setCurrentIndex(0)
+                self.show_band.blockSignals(False)
+        self.features = SHOWN_FEATURES[self.band] if r.horizontal_ls else "contacts"
         self.design_nm, self.error_nm = r.design_nm[shown], r.moving.residuals[shown]
         if r.horizontal_ls:
             self.error_nm[:, 0] = 0  # draw vertical arrows; the run keeps the unmeasured x residual as NaN
@@ -1490,15 +1520,16 @@ class RegistrationView(QtWidgets.QWidget):
         stripes = f"all {total} stripes" if len(selected) == total else \
             f"stripe(s) {', '.join(str(k + 1) for k in selected)} of {total}"
         self.stripes_text = stripes
-        features = "L/S centres" if r.horizontal_ls else "contacts"
         if r.horizontal_ls:
             fitted = "per stripe" if s.moving_window_per_stripe else "across stripes"
+            if self.band is not None:
+                fitted += ", on every L/S centre"
             dy = self.error_nm[:, 1]
             summary = (f"mean dy {dy.mean():+.2f} nm, 3σ {3 * dy.std():.2f} nm, max |dy| {np.abs(dy).max():.2f} nm. "
                        "X is unmeasured")
         else:
             summary = summary_text(self.error_nm)
-        self.summary.setText(f"<b>{len(self.error_nm)} {features}</b> of {stripes}, {len(self.contact_rows[0])} rows, "
+        self.summary.setText(f"{note}<b>{len(self.error_nm)} {self.features}</b> of {stripes}, {len(self.contact_rows[0])} rows, "
                              f"{len(self.contact_columns[0])} columns. Error = {measured} − design after the "
                              f"{window}, {fitted}: {summary}.")
         self.fitted = True  # show them all
@@ -1626,8 +1657,9 @@ class RegistrationView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, "Frequency analysis", "This profile has too few points for a "
                                               "spectrum.")
             return
-        values = f"grid average, cell {self.cell.value():g} µm" if self.grid_mode() else \
-            ("every L/S centre" if self.result.horizontal_ls else "every contact")
+        of = "" if self.band is None else f" of the {self.features}"  # lines or spaces only (D186)
+        values = f"grid average{of}, cell {self.cell.value():g} µm" if self.grid_mode() else \
+            f"every {self.features[:-1]}"
         window = SpectrumWindow(self, f"{profile} mean per {along[:-1]}", f"{self.stripes_text}, {values}", "xy"[axis],
                                 position, mean[:, k], (style.DX, style.DY, style.DR)[k], image_step(self.result, axis))
         window.show()
@@ -1891,6 +1923,8 @@ class ContactSizeView(QtWidgets.QWidget):
 # The L/S CD map's Show choices: (label, map title, the band shown; None = both)
 SHOW_BANDS = (("Lines and spaces", "Line and space CD", None), ("Lines", "Line CD", horizontal_ls.LINE),
               ("Spaces", "Space CD", horizontal_ls.SPACE))
+# What the Registration tab of a horizontal L/S run counts, by the band shown (D186)
+SHOWN_FEATURES = {None: "L/S centres", horizontal_ls.LINE: "line centres", horizontal_ls.SPACE: "space centres"}
 
 
 class LineSpaceCDView(QtWidgets.QWidget):

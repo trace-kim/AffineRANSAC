@@ -133,6 +133,7 @@ def test_the_moving_window_can_be_fitted_per_stripe(tmp_path):
     pg.mkQApp()
     view = RegistrationView(loaded, use_opengl=False)
     assert "fitted per stripe, every image by its own stripe's windows" in view.summary.text()
+    assert view.show_band.isHidden() and view.show_label.isHidden()  # lines and spaces: horizontal L/S only (D186)
     view.close()
 
 

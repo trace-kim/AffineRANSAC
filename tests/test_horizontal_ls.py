@@ -7,20 +7,21 @@ from types import SimpleNamespace
 import cv2
 import klayout.db as kdb
 import numpy as np
+import pyqtgraph as pg
 import pytest
 
 from affine_ransac.analysis import HORIZONTAL_LS
 from affine_ransac.fitting.moving_window import moving_window_affine
 from affine_ransac.io.design import horizontal_band_outlines
 from affine_ransac.release import app as release_app
-from affine_ransac.release import horizontal_ls
+from affine_ransac.release import horizontal_ls, views
 from affine_ransac.release.agent import review
 from affine_ransac.release.analysis import (DEFAULTS, AnalysisFailed, analyse_folder, read_contours,
                                            read_design_images, read_display_images, tile_affines)
 from affine_ransac.release.cache import load_cache, save_cache
 from affine_ransac.release.contour_dialog import count_lines, diagnose
 from affine_ransac.release.horizontal_ls import find_bands, paired_rows, stitch_bands
-from affine_ransac.release.views import NO_LS_CD, ContactSizeTab, LineSpaceCDView, matrix_of
+from affine_ransac.release.views import NO_LS_CD, ContactSizeTab, LineSpaceCDView, RegistrationView, matrix_of
 from test_release import make_window, wait
 
 
@@ -373,6 +374,51 @@ def test_the_l_s_cd_tab_shows_lines_and_spaces_or_one_of_them(tmp_path, monkeypa
 
     saved = replace(window.result, line_space_cd=None)  # a run saved before D182
     assert ContactSizeTab(saved, use_opengl=False).note.text() == NO_LS_CD
+
+
+def test_the_registration_tab_shows_the_lines_or_the_spaces_of_the_runs_own_errors(tmp_path, monkeypatch):
+    tile = line_space_tile(tmp_path)
+    with ThreadPoolExecutor(1) as pool:
+        run = analyse_folder(tmp_path, "images", replace(SETTINGS, design_tolerance_nm=7), [tile],
+                             log=lambda line: None, pool=pool)
+    pg.mkQApp()
+    view = RegistrationView(run, use_opengl=False)
+    assert view.show_band.isEnabled() and view.show_band.currentText() == "Lines and spaces"
+    assert view.summary.text().startswith("<b>60 L/S centres</b>")
+    opened = []  # what the frequency analysis is given
+    monkeypatch.setattr(views, "MIN_POINTS", 2)  # three rows of each tone in this tile
+    monkeypatch.setattr(views, "SpectrumWindow", lambda *args: SimpleNamespace(show=lambda: opened.append(args)))
+    band = run.line_space_cd.band
+    for label, tone, features in (("Lines", horizontal_ls.LINE, "line centres"),
+                                  ("Spaces", horizontal_ls.SPACE, "space centres")):
+        view.show_band.setCurrentText(label)
+        keep = band == tone
+        np.testing.assert_array_equal(view.design_nm, run.design_nm[keep])
+        np.testing.assert_array_equal(view.error_nm[:, 1], run.moving.residuals[keep, 1])  # not fitted again
+        summary = view.summary.text()
+        assert summary.startswith(f"<b>30 {features}</b> of all 1 stripes, 3 rows")
+        assert "across stripes, on every L/S centre" in summary
+        view.open_spectrum(view.maps[0][0], "rows")
+        _, _, subtitle, _, position, values, *_ = opened[-1]
+        assert subtitle == f"all 1 stripes, every {features[:-1]}"
+        np.testing.assert_allclose(position, np.unique(run.design_nm[keep, 1]))
+        np.testing.assert_allclose(values, [run.moving.residuals[keep & (run.design_nm[:, 1] == y), 1].mean()
+                                            for y in position])
+        view.values.setCurrentIndex(1)
+        view.open_spectrum(view.maps[0][0], "rows")
+        assert f"grid average of the {features}, cell" in opened[-1][2]
+        view.values.setCurrentIndex(0)
+    view.show_band.setCurrentText("Lines and spaces")
+    assert len(view.design_nm) == 60
+
+    # No centre of that tone in the ticked stripes: both stay shown, and the summary says so.
+    spaces = replace(run.line_space_cd, band=np.full(len(band), horizontal_ls.SPACE, np.int8))
+    odd = RegistrationView(replace(run, line_space_cd=spaces), use_opengl=False)
+    odd.show_band.setCurrentText("Lines")
+    assert odd.show_band.currentText() == "Lines and spaces" and len(odd.design_nm) == 60
+    assert odd.summary.text().startswith("No line centres in the ticked stripes: lines and spaces shown. <b>60 L/S")
+    old = RegistrationView(replace(run, line_space_cd=None), use_opengl=False)  # saved before D182
+    assert not old.show_band.isEnabled() and old.summary.text().startswith("<b>60 L/S centres</b>")
 
 
 def test_uniform_sem_stops_with_inspectable_empty_centres(tmp_path):
