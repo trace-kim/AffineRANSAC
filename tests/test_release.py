@@ -271,6 +271,47 @@ def test_a_new_run_keeps_the_last_five_runs_it_replaced_as_backups(tmp_path, mon
     assert not list(tmp_path.rglob("*.part"))
 
 
+def rgb_pixels(image: QtGui.QImage) -> np.ndarray:
+    """(height, width, 3) int: the image's pixels."""
+    image = image.convertToFormat(QtGui.QImage.Format.Format_RGB888)
+    rows = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.bytesPerLine())
+    return rows[:, :3 * image.width()].reshape(image.height(), image.width(), 3).astype(int)
+
+
+def test_a_copied_figure_looks_as_on_screen_at_twice_the_pixels():
+    """Copy / Save image at 2x (D187): the lines twice as wide and the legend twice as large, as everything else,
+    the bar graphs' outlines (drawings pyqtgraph keeps) too; the screen's own drawing is left as it was."""
+    style.setup()
+    pg.mkQApp()
+    view = pg.GraphicsLayoutWidget()
+    view.resize(400, 300)
+    plot = view.addPlot()
+    style.legend(plot)
+    plot.plot([0, 10], [0, 0], pen=pg.mkPen("#ff0000", width=2), name="line")  # red, its sample in the legend
+    plot.addItem(pg.BarGraphItem(x0=[6], y0=[-8], width=[3], height=[4], pen=pg.mkPen("#0000ff", width=1), brush=None))
+    plot.setRange(xRange=(0, 10), yRange=(-10, 10), padding=0)
+    view.show()
+    settle()
+    screen = rgb_pixels(view.viewport().grab().toImage())
+    small, large = (rgb_pixels(style.render_image(view, scale)) for scale in (1, 2))
+    red = lambda p: (p[..., 0] > 200) & (p[..., 1] < 200)
+    blue = lambda p: (p[..., 2] > 200) & (p[..., 0] < 200)
+    ink = lambda p, colour: ((255 - p[..., 1]) * colour(p)).sum()  # how much of a colour: a wider line has more
+    assert large.shape[:2] == (2 * small.shape[0], 2 * small.shape[1])
+    # The plotted line across the middle column, the bar's left side across its middle row: twice as wide.
+    middle = lambda p: p[:, p.shape[1] // 2]
+    assert ink(middle(large), red) == pytest.approx(2 * ink(middle(small), red), rel=0.25)
+    bar_row = lambda p: p[np.flatnonzero(blue(p).any(axis=1)).mean().astype(int)]
+    assert ink(bar_row(large)[: large.shape[1] * 2 // 3], blue) == pytest.approx(
+        2 * ink(bar_row(small)[: small.shape[1] * 2 // 3], blue), rel=0.25)
+    # The legend's sample line in the top quarter: twice as long.
+    sample = lambda p: np.ptp(np.flatnonzero(red(p[: p.shape[0] // 4]).any(axis=0)))
+    assert sample(large) == pytest.approx(2 * sample(small), abs=2)
+    assert QtGui.QPainter.setPen.__name__ == "setPen"  # Qt's own again
+    np.testing.assert_array_equal(rgb_pixels(view.viewport().grab().toImage()), screen)
+    view.close()
+
+
 def test_figures_are_white_and_label_mask_coordinates(tmp_path):
     style.setup()
     pg.mkQApp()

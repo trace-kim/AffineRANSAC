@@ -1,10 +1,13 @@
 """Presentation style of the release's figures (docs/SPEC.md D77): white background, dark text, light grid,
 fonts large enough for a slide, and Copy image / Save image buttons that render a figure at twice the screen
-resolution (crisp when pasted into PowerPoint).
+resolution (crisp when pasted into PowerPoint), looking as on the screen: lines, text and the legend in the same
+proportions.
 
 Line colours come from a colour-blind-checked categorical palette (blue, orange, aqua; dataviz reference
 palette, light mode). Error maps keep the jet scale of the research views (user, D35); empty pixels are white.
 """
+
+from contextlib import contextmanager
 
 import numpy as np
 import pyqtgraph as pg
@@ -97,16 +100,51 @@ def zero_line(plot: pg.PlotItem):
 
 
 def render_image(view: pg.GraphicsView, scale: int = EXPORT_SCALE) -> QtGui.QImage:
-    """The figure as shown, rendered at `scale` x its size on screen through the scene (so an OpenGL
-    viewport, which cannot always be grabbed, renders too)."""
+    """The figure as shown, at `scale` x its size on screen and in the same proportions (D187): drawn as on a screen
+    with `scale` pixels per screen pixel, so that text, symbols and the legend grow with it, and every line as wide
+    for its size as on the screen (wider_lines). Through the scene, so an OpenGL viewport, which cannot always be
+    grabbed, renders too."""
     source = view.viewport().rect()
     image = QtGui.QImage(source.size() * scale, QtGui.QImage.Format.Format_ARGB32)
+    image.setDevicePixelRatio(scale)
     image.fill(QtGui.QColor("white"))
     painter = QtGui.QPainter(image)
     painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing | QtGui.QPainter.RenderHint.TextAntialiasing)
-    view.render(painter, QtCore.QRectF(image.rect()), source)
+    with wider_lines(view.scene(), scale / view.devicePixelRatioF()):
+        view.render(painter, QtCore.QRectF(source), source)
     painter.end()
+    image.setDevicePixelRatio(1)  # pasted, saved and cut (render_graph) by its pixels
     return image
+
+
+@contextmanager
+def wider_lines(scene: QtWidgets.QGraphicsScene, factor: float):
+    """While drawing for an image: every line `factor` times as wide. pyqtgraph's pens are cosmetic, a width in
+    pixels of the device whatever its scale, so in an image of twice the screen's pixels its lines came out half as
+    wide for their size as on the screen (D187)."""
+    set_pen = QtGui.QPainter.setPen
+
+    def wider(painter, pen):
+        if isinstance(pen, QtGui.QPen) and pen.isCosmetic():
+            pen = QtGui.QPen(pen)
+            pen.setWidthF(max(pen.widthF(), 1.0) * factor)  # width 0: one pixel
+        set_pen(painter, pen)
+
+    QtGui.QPainter.setPen = wider
+    forget_pictures(scene)  # drawn again with the wider lines
+    try:
+        yield
+    finally:
+        QtGui.QPainter.setPen = set_pen
+        forget_pictures(scene)  # and again with the screen's
+
+
+def forget_pictures(scene: QtWidgets.QGraphicsScene):
+    """Make the items that keep their drawing as a picture (pyqtgraph's axes, bar graphs such as the tile outlines)
+    draw it again when next painted."""
+    for item in scene.items():
+        if isinstance(getattr(item, "picture", None), QtGui.QPicture):
+            item.picture = None
 
 
 def image_buttons(figure, name: str) -> list[QtWidgets.QPushButton]:

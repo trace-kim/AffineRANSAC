@@ -1576,7 +1576,10 @@ setup came from; signing it would need a code-signing certificate (not done). **
 (`release/style.py`): white background, dark text, light grid, axes in mask µm (drawn relative to a whole-µm
 origin, `MaskAxis`), no SI prefixes, line colours dx blue / dy orange (colour-blind-checked palette), error maps
 jet (D35) with white where there is no contact; each figure has **Copy image** / **Save image...**, rendered
-through the scene at 2× (works with an OpenGL viewport). **GPU / CPU:** drawing uses OpenGL if a context with a
+through the scene at 2× (works with an OpenGL viewport) and looking as on the screen (D187, `style.render_image`):
+drawn as on a screen of 2 pixels per screen pixel (text, symbols and the legend, which ignores the scene's scale,
+grow with it), each line `2 / screen ratio` times its pen's width (`wider_lines`: pyqtgraph's pens are cosmetic, a
+width in device pixels at any scale; Windows display scaling is the screen ratio). **GPU / CPU:** drawing uses OpenGL if a context with a
 real renderer can be made at start (`opengl_works`; not the Windows "GDI Generic" 1.1 fallback, with which the
 plots stay black), else the CPU; *View → Draw with the GPU* overrides it and redraws at once. The computation is
 CPU (numpy / scipy) either way. *View → Detailed tile-loading log* (off by default, remembered, D149) makes an image
