@@ -33,7 +33,8 @@ profiles CSV give both profiles as a table; Copy / Save image the whole figure, 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
 the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile and, as the L/S CD
-map, its mean per row on its right and its mean per column below it (MarginalMap, D188). Of a horizontal
+map, its mean per row on its right and, as in the Registration tab, its mean per column below it, hidden unless ticked
+(MarginalMap, D188, D189). Of a horizontal
 L/S run, titled L/S CD (D182): LineSpaceCDView, the CD map of its lines and spaces, both or one of them, with the
 edge at the region's own outline, the white band's middle or its space side (D183), measured with the run (no ROI
 width, no Run measurement); its mean per row on its right (MarginalMap, no mean per column), the lines and the
@@ -1818,8 +1819,8 @@ class ContactSizeView(QtWidgets.QWidget):
     def __init__(self, design_nm: np.ndarray, sizes: ContactSizes, row_gap_nm: float = 10.0, use_opengl: bool = True):
         """design_nm: (N, 2) contact positions, mask nm; sizes: their area (nm²), xCD and yCD (nm) on the SEM and
         on the design, in the same rows; row_gap_nm: see group_rows (rows on the design y, columns on the design x).
-        Per quantity a map with its mean per row on its right and its mean per column below it, as the L/S CD map
-        (D188)."""
+        Per quantity a map with its mean per row on its right and its mean per column below it (hidden unless ticked,
+        D189), as the Registration tab's maps (D188)."""
         super().__init__()
         self.sizes, self.design_nm, self.row_gap_nm = sizes, design_nm, row_gap_nm
         self.origin = np.round(design_nm.mean(axis=0), -3)  # whole µm
@@ -1847,7 +1848,8 @@ class ContactSizeView(QtWidgets.QWidget):
                 style.graph_actions(plot, self.figure, items, graph)
             self.maps.append((panel, image, bar))
             self.profiles.append(panel.add_profile(name, style.SIZES[k]))
-        self.in_layout = list(range(len(QUANTITIES)))  # the quantities whose graphs are in the figure's layout
+        self.in_layout = []  # the quantities shown (show_maps)
+        self.placed = [item for panel, _, bar in self.maps for item in (panel.map, panel.rows, bar, panel.columns)]
         link_views([panel.map for panel, _, _ in self.maps])
 
         self.show_boxes = []
@@ -1866,6 +1868,11 @@ class ContactSizeView(QtWidgets.QWidget):
         self.difference_button.toggled.connect(self.set_values)
         controls.addWidget(self.sem_button)
         controls.addWidget(self.difference_button)
+        self.columns_box = QtWidgets.QCheckBox("Mean per column")  # off at start, as the Registration tab's (D189)
+        self.columns_box.setToolTip("Show the mean per column below each map")
+        self.columns_box.toggled.connect(self.show_maps)
+        controls.addWidget(QtWidgets.QLabel("  "))
+        controls.addWidget(self.columns_box)
         controls.addStretch(1)
         for button in style.image_menus(self.shown_graphs):
             controls.addWidget(button)
@@ -1939,38 +1946,40 @@ class ContactSizeView(QtWidgets.QWidget):
             column_line.setData((column_x - self.origin[0]) / 1000, column_mean)
 
     def show_maps(self):
-        """Put the maps whose box is ticked side by side in the figure, each with its means and colour bar, at the
-        centre and scale of a map shown before: its y range, x as wide as each map now is. (Its area would not do: a
-        map made narrower would zoom out to fit it, more at every change.) The others are taken out of the layout,
-        which kept their room otherwise (D118)."""
+        """Put the maps whose box is ticked side by side in the figure, each with its mean per row, its colour bar and,
+        with Mean per column ticked, its mean per column (D189), at the centre and scale of a map shown before: its y
+        range, x as wide as each map is. (Its area would not do: a map made narrower would zoom out to fit it, more at
+        every change.) The other graphs are taken out of the layout, which kept their room otherwise (D118)."""
         visible = [panel.map for panel, _, _ in self.maps if panel.map.isVisible()]
         (x0, x1), (y0, y1) = (visible[0] if visible else self.maps[0][0].map).vb.viewRange()
         grid = self.figure.ci.layout
-        for k in self.in_layout:
-            panel, _, bar = self.maps[k]
-            for item in (panel.map, panel.rows, bar, panel.columns):
-                grid.removeItem(item)
-                item.setVisible(False)
+        for item in self.placed:
+            grid.removeItem(item)
+            item.setVisible(False)
         self.in_layout = [k for k, box in enumerate(self.show_boxes) if box.isChecked()]
+        self.placed = []
         for j, k in enumerate(self.in_layout):
             panel, _, bar = self.maps[k]
             col = self.COLUMNS * j
-            for item, row, column in ((panel.map, 0, col), (panel.rows, 0, col + 1), (bar, 0, col + 2),
-                                      (panel.columns, 2, col)):
+            places = [(panel.map, 0, col), (panel.rows, 0, col + 1), (bar, 0, col + 2)]
+            if self.columns_box.isChecked():
+                places.append((panel.columns, 2, col))
+            for item, row, column in places:
                 grid.addItem(item, row, column)
                 item.setVisible(True)
+                self.placed.append(item)
         for column in range(self.COLUMNS * len(self.maps)):  # empty columns take no room
             used = column < self.COLUMNS * len(self.in_layout)
             grid.setColumnStretchFactor(column, (4, 1, 0)[column % self.COLUMNS] if used else 0)
         # More maps than the window holds widen the figure past it (as any figure too narrow for its graphs); with
         # fewer, it is fitted to the window again, which pyqtgraph does only on a resize.
         self.figure.ci.setGeometry(self.figure.range)
-        grid.activate()  # the maps' new widths, now
+        # The x range asked for is narrower than any map: with equal x and y scales the view box widens it to the map,
+        # now and once the layout has settled, so y holds (as the Registration tab's fit, D117).
+        centre = (x0 + x1) / 2
         for k in self.in_layout:
-            plot = self.maps[k][0].map
-            if plot.vb.height() > 0:
-                half = (y1 - y0) * plot.vb.width() / plot.vb.height() / 2  # equal x and y scales
-                plot.vb.setRange(xRange=((x0 + x1) / 2 - half, (x0 + x1) / 2 + half), yRange=(y0, y1), padding=0)
+            self.maps[k][0].map.vb.setRange(xRange=(centre - self.dot_um, centre + self.dot_um), yRange=(y0, y1),
+                                            padding=0)
         self.redraw.start()
 
     def draw_maps(self):
@@ -1980,11 +1989,12 @@ class ContactSizeView(QtWidgets.QWidget):
                          self.devicePixelRatioF(), background=255)
 
     def shown_graphs(self):
-        """For the image menus: the figure and the graphs shown, each map with its colour bar, then its means."""
+        """For the image menus: the figure and the graphs shown, each map with its colour bar, then its means (the
+        mean per column only while shown)."""
         graphs = []
         for k in self.in_layout:
             panel, _, bar = self.maps[k]
-            graphs += [(name, items) for _, items, name in self.graphs_of(k, panel, bar)]
+            graphs += [(name, items) for plot, items, name in self.graphs_of(k, panel, bar) if plot in self.placed]
         return self.figure, graphs
 
 

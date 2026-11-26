@@ -1675,15 +1675,18 @@ the analysis to measure; contour CSVs: N/A. Maps (`release/views.ContactSizeView
 boxes Area / xCD / yCD (Area at start; a hidden map leaves no gap), Value SEM or SEM − design, a jet colour bar per
 map from the 1st to the 99th percentile, white between the contacts, mask µm axes, Copy / Save image (whole figure
 or one graph: a map with its bar, or one of its means); the maps show the same centre and scale (`link_views`, which
-ignores hidden plots), and a map shown again takes the y range and centre of one shown before (not its area). **Means
-per row and per column (D188)**, as the L/S CD map: every map has its mean per row on its right and its mean per
-column below it (`MarginalMap`, following the map's zoom and pan; both shown, no check box), of what the map shows,
-one line each (area green, xCD blue, yCD orange: `style.SIZES`), rows by `group_rows` on the design y and columns on
-the design x (`row_gap_nm`), a contact without a value left out; the axis names the quantity, or *SEM − design*, and
-the dashed zero lines only with SEM − design. A map not ticked leaves the figure's layout with its means and bar
-(D118: hidden plots kept their room), the ticked ones placed side by side in the order Area, xCD, yCD; the figure is
-then fitted to the window again (more maps than it holds had widened it past the window). View All of a map fits
-every contact on every map shown. No range boxes, ranges or frequency analysis. The summary lines of the research
+ignores hidden plots), and a map shown again, or made shorter or taller, keeps the y range and centre of one shown
+before (not its area): the x range asked for is narrower than the map, which widens it (as the Registration tab's
+fit, D117). **Means per row and per column (D188, D189)**, as the Registration tab's maps: every map has its mean per
+row on its right and its mean per column below it (`MarginalMap`, following the map's zoom and pan), the means per
+column hidden unless *Mean per column* (a check box after Value, off at start) is ticked, as the Registration tab's
+(D118); of what the map shows, one line each (area green, xCD blue, yCD orange: `style.SIZES`), rows by `group_rows`
+on the design y and columns on the design x (`row_gap_nm`), a contact without a value left out; the axis names the
+quantity, or *SEM − design*, and the dashed zero lines only with SEM − design. A graph not shown (a map not ticked
+with its means and bar, or the means per column) leaves the figure's layout (D118: hidden plots kept their room) and
+the image menus; the ticked maps are placed side by side in the order Area, xCD, yCD; the figure is then fitted to
+the window again (more maps than it holds had widened it past the window). View All of a map fits every contact on
+every map shown. No range boxes, ranges or frequency analysis. The summary lines of the research
 tab. No SEM images or design behind the maps.
 
 **Release: L/S CD (D182).** A horizontal L/S run measures the CD of every L/S centre while it loads, from the outlines

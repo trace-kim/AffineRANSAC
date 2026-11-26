@@ -1598,10 +1598,19 @@ def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
     panels = [panel for panel, _, _ in view.maps]
     plots = [panel.map for panel in panels]
     assert [plot.isVisible() for plot in plots] == [True, False, False]  # the area at start, alone
-    assert panels[0].rows.isVisible() and panels[0].columns.isVisible()  # with its means (D188)
+    assert panels[0].rows.isVisible() and not panels[0].columns.isVisible()  # its mean per row; per column on request
+    (x0, x1), y_range = plots[0].vb.viewRange()
+    low, high = view.position_um.min(axis=0), view.position_um.max(axis=0)
+    assert x0 <= low[0] and x1 >= high[0] and y_range[0] <= low[1] and y_range[1] >= high[1]  # every contact
+    assert min((x1 - x0) / (high[0] - low[0]), np.ptp(y_range) / (high[1] - low[1])) < 1.2  # filling it one way
+    tall = plots[0].height()
+    view.columns_box.setChecked(True)  # the mean per column below its map, aligned with it (D189)
+    QtWidgets.QApplication.processEvents()
+    assert panels[0].columns.isVisible() and plots[0].height() < 0.9 * tall
+    left = [vb.mapRectToScene(vb.boundingRect()).left() for vb in (plots[0].vb, panels[0].columns.vb)]
+    assert abs(left[0] - left[1]) < 2
+    np.testing.assert_allclose(plots[0].vb.viewRange()[1], y_range, atol=0.01)  # y kept, x as wide as the map
     alone = plots[0].width()
-    y_span = np.ptp(plots[0].vb.viewRange()[1])
-    assert y_span < 1.2 * np.ptp(view.position_um[:, 1])  # on the contacts
 
     for _ in range(3):  # the maps keep their scale, however often they are shown and hidden
         view.show_boxes[1].setChecked(True)
@@ -1614,7 +1623,7 @@ def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
     assert not (panels[2].rows.isVisible() or panels[2].columns.isVisible())
     assert plots[0].width() < 0.6 * alone  # side by side, no room left for the hidden one
     for plot in plots[:2]:
-        assert np.ptp(plot.vb.viewRange()[1]) < 1.1 * y_span
+        np.testing.assert_allclose(plot.vb.viewRange()[1], y_range, atol=0.01)
     np.testing.assert_allclose(panels[1].rows.vb.viewRange()[1], plots[1].vb.viewRange()[1])  # follows the map
     np.testing.assert_allclose(panels[1].columns.vb.viewRange()[0], plots[1].vb.viewRange()[0])
     np.testing.assert_allclose(view.values(1), sem_sizes[:, 1])
@@ -1644,6 +1653,11 @@ def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
     assert dict(graphs)["xCD map"] == [plots[1], view.maps[1][2]]  # a map comes with its colour bar
     assert dict(graphs)["xCD mean per column"] == [panels[1].columns]
     assert "a 5 nm band of chords" in view.summary.text()
+    view.columns_box.setChecked(False)  # hidden again: out of the layout and the image menus, the maps get the height
+    QtWidgets.QApplication.processEvents()
+    assert not any(panel.columns.isVisible() for panel in panels)
+    assert "xCD mean per column" not in dict(view.shown_graphs()[1]) and "xCD mean per row" in dict(view.shown_graphs()[1])
+    assert abs(plots[0].height() - tall) < 2
 
     # Three maps wider than the window widen the figure past it; with one again, it fits the window again.
     view.resize(1000, 700)
