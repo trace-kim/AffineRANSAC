@@ -32,7 +32,8 @@ profiles CSV give both profiles as a table; Copy / Save image the whole figure, 
 
 ContactSizeTab (hidden unless turned on, D95): ROI width and Run measurement (the app measures in the background),
 then ContactSizeView: maps of the area, xCD and yCD of every contact (any of them side by side, showing the same area),
-the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile. Of a horizontal
+the SEM value or SEM − design, each with its own jet colour bar from the 1st to the 99th percentile and, as the L/S CD
+map, its mean per row on its right and its mean per column below it (MarginalMap, D188). Of a horizontal
 L/S run, titled L/S CD (D182): LineSpaceCDView, the CD map of its lines and spaces, both or one of them, with the
 edge at the region's own outline, the white band's middle or its space side (D183), measured with the run (no ROI
 width, no Run measurement); its mean per row on its right (MarginalMap, no mean per column), the lines and the
@@ -930,7 +931,7 @@ class MarginalMap:
         for plot in (self.map, self.columns):
             plot.getAxis("left").setWidth(self.AXIS_PX)
         self.zero = self.rows.addLine(x=0, pen=pg.mkPen(style.MUTED, style=QtCore.Qt.PenStyle.DashLine))
-        style.zero_line(self.columns)
+        self.column_zero = style.zero_line(self.columns)
         self.rows.setMouseEnabled(x=True, y=False)
         self.columns.setMouseEnabled(x=False, y=True)
         self.map.vb.sigRangeChanged.connect(self._follow)
@@ -1801,7 +1802,7 @@ class ContactSizeTab(QtWidgets.QWidget):
 
     def show_sizes(self, sizes: ContactSizes):
         """Replace the maps (or the empty space) by those of sizes."""
-        self._show(ContactSizeView(self.result.design_nm, sizes, self.use_opengl))
+        self._show(ContactSizeView(self.result.design_nm, sizes, self.result.settings.row_gap_nm, self.use_opengl))
 
     def _show(self, view: QtWidgets.QWidget):
         old = self.layout_.takeAt(1)
@@ -1812,34 +1813,42 @@ class ContactSizeTab(QtWidgets.QWidget):
 
 
 class ContactSizeView(QtWidgets.QWidget):
-    def __init__(self, design_nm: np.ndarray, sizes: ContactSizes, use_opengl: bool = True):
+    COLUMNS = 3  # grid columns per quantity: the map, its mean per row, its colour bar
+
+    def __init__(self, design_nm: np.ndarray, sizes: ContactSizes, row_gap_nm: float = 10.0, use_opengl: bool = True):
         """design_nm: (N, 2) contact positions, mask nm; sizes: their area (nm²), xCD and yCD (nm) on the SEM and
-        on the design, in the same rows."""
+        on the design, in the same rows; row_gap_nm: see group_rows (rows on the design y, columns on the design x).
+        Per quantity a map with its mean per row on its right and its mean per column below it, as the L/S CD map
+        (D188)."""
         super().__init__()
-        self.sizes = sizes
+        self.sizes, self.design_nm, self.row_gap_nm = sizes, design_nm, row_gap_nm
         self.origin = np.round(design_nm.mean(axis=0), -3)  # whole µm
         self.position_um = (design_nm - self.origin) / 1000
         distance, _ = cKDTree(design_nm).query(design_nm, k=2)
         self.dot_um = 0.4 * float(np.median(distance[:, 1])) / 1000  # a disk of ~0.4 x the pitch when zoomed in
 
-        # One figure: per quantity a map and its colour bar; the maps not ticked are hidden (they leave no gap).
+        # One figure: per quantity a map with its means (MarginalMap) and its colour bar; only the maps ticked are in
+        # its layout, side by side (show_maps).
         self.figure = figure(use_opengl)
         self.redraw = QtCore.QTimer(self, singleShot=True, interval=50)
         self.redraw.timeout.connect(self.draw_maps)
-        self.maps = []  # (plot, image, colour bar) per quantity
+        self.maps = []  # (MarginalMap, image, colour bar) per quantity
+        self.profiles = []  # (mean per row, mean per column) lines per quantity
         for k, (name, unit) in enumerate(QUANTITIES):
-            plot = mask_plot(self.origin, data_unit_nm=1000)
+            panel = MarginalMap(self.figure.ci, 0, self.COLUMNS * k, self.origin, "", name, self.view_all)
             image = pg.ImageItem(axisOrder="row-major")
-            plot.addItem(image)
+            panel.map.addItem(image)
             bar = jet_bar((0.0, 1.0), f"{name} ({unit})")
             bar.sigLevelsChanged.connect(lambda *_: self.redraw.start())
-            self.figure.addItem(plot, row=0, col=2 * k)
-            self.figure.addItem(bar, row=0, col=2 * k + 1)
-            plot.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
-            plot.vb.sigResized.connect(lambda *_: self.redraw.start())
-            style.graph_actions(plot, self.figure, [plot, bar], f"{name} map")
-            self.maps.append((plot, image, bar))
-        link_views([plot for plot, _, _ in self.maps])
+            self.figure.addItem(bar, row=0, col=self.COLUMNS * k + 2)
+            panel.map.vb.sigRangeChanged.connect(lambda *_: self.redraw.start())
+            panel.map.vb.sigResized.connect(lambda *_: self.redraw.start())
+            for plot, items, graph in self.graphs_of(k, panel, bar):
+                style.graph_actions(plot, self.figure, items, graph)
+            self.maps.append((panel, image, bar))
+            self.profiles.append(panel.add_profile(name, style.SIZES[k]))
+        self.in_layout = list(range(len(QUANTITIES)))  # the quantities whose graphs are in the figure's layout
+        link_views([panel.map for panel, _, _ in self.maps])
 
         self.show_boxes = []
         controls = QtWidgets.QHBoxLayout()
@@ -1871,9 +1880,22 @@ class ContactSizeView(QtWidgets.QWidget):
         layout.addLayout(controls)
         layout.addWidget(self.figure, stretch=1)
         self.show_maps()  # first: a hidden map would pass its range on while the figure is laid out
-        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
-        self.maps[0][0].vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))  # every contact
+        self.view_all()
         self.set_values()
+
+    @staticmethod
+    def graphs_of(k: int, panel: MarginalMap, bar: pg.ColorBarItem) -> list:
+        """(plot, its graphics items, name) of quantity k's map (with its colour bar) and means."""
+        name = QUANTITIES[k][0]
+        return [(panel.map, [panel.map, bar], f"{name} map"), (panel.rows, [panel.rows], f"{name} mean per row"),
+                (panel.columns, [panel.columns], f"{name} mean per column")]
+
+    def view_all(self):
+        """Every map shown on every contact (its View All too: fitting its image zoomed out more every time, D114)."""
+        low, high = self.position_um.min(axis=0), self.position_um.max(axis=0)
+        for box, (panel, _, _) in zip(self.show_boxes, self.maps):
+            if box.isChecked():
+                panel.map.vb.setRange(xRange=(low[0], high[0]), yRange=(low[1], high[1]))
 
     def values(self, k: int) -> np.ndarray:
         """(N,) what map k shows: the SEM value, or SEM − design."""
@@ -1882,42 +1904,88 @@ class ContactSizeView(QtWidgets.QWidget):
         return self.sizes.sem[:, k]
 
     def set_values(self):
-        """Titles and colour scales of the chosen value (SEM or SEM − design), then the maps drawn again."""
+        """Titles and colour scales of the chosen value (SEM or SEM − design), then the means and maps drawn again."""
         difference = self.difference_button.isChecked()
-        for k, ((name, unit), (plot, _, bar)) in enumerate(zip(QUANTITIES, self.maps)):
+        for k, ((name, unit), (panel, _, bar)) in enumerate(zip(QUANTITIES, self.maps)):
             title = f"{name}, SEM − design ({unit})" if difference else f"{name}, SEM ({unit})"
-            plot.setTitle(title, color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
+            panel.map.setTitle(title, color=style.TEXT, size=f"{style.TITLE_PT}pt", bold=True)
             bar.blockSignals(True)  # one redraw below, not one per bar
             bar.setLevels(value_levels(self.values(k)))
             bar.blockSignals(False)
+        self.draw_profiles()
         self.draw_maps()
 
+    def draw_profiles(self):
+        """Each map's mean per row (group_rows on the design y) and per column (on the design x) of what it shows; a
+        contact without a value is left out. The zero lines only for SEM − design (shown, they would stretch the axis
+        to 0), as the L/S CD map's."""
+        difference = self.difference_button.isChecked()
+        for k, ((name, unit), (panel, _, _), (row_line, column_line)) in enumerate(
+                zip(QUANTITIES, self.maps, self.profiles)):
+            label = f"SEM − design ({unit})" if difference else f"{name} ({unit})"
+            style.style_plot(panel.rows, x_label=label)
+            style.style_plot(panel.columns, y_label=label)
+            panel.zero.setVisible(difference)
+            panel.column_zero.setVisible(difference)
+            values = self.values(k)
+            keep = np.isfinite(values)
+            if not keep.any():
+                row_line.setData([], [])
+                column_line.setData([], [])
+                continue
+            row_y, row_mean = row_means(self.design_nm[keep, 1], values[keep], self.row_gap_nm)[:2]
+            column_x, column_mean = row_means(self.design_nm[keep, 0], values[keep], self.row_gap_nm)[:2]
+            row_line.setData(row_mean, (row_y - self.origin[1]) / 1000)
+            column_line.setData((column_x - self.origin[0]) / 1000, column_mean)
+
     def show_maps(self):
-        """Show the maps whose box is ticked, with their colour bars, at the centre and scale of a map shown before:
-        its y range, x as wide as each map now is. (Its area would not do: a map made narrower would zoom out to
-        fit it, more at every change.)"""
-        visible = [plot for plot, _, _ in self.maps if plot.isVisible()]
-        (x0, x1), (y0, y1) = visible[0].vb.viewRange() if visible else self.maps[0][0].vb.viewRange()
-        for box, (plot, _, bar) in zip(self.show_boxes, self.maps):
-            plot.setVisible(box.isChecked())
-            bar.setVisible(box.isChecked())
-        self.figure.ci.layout.activate()  # the maps' new widths, now
-        for box, (plot, _, _) in zip(self.show_boxes, self.maps):
-            if box.isChecked() and plot.vb.height() > 0:
+        """Put the maps whose box is ticked side by side in the figure, each with its means and colour bar, at the
+        centre and scale of a map shown before: its y range, x as wide as each map now is. (Its area would not do: a
+        map made narrower would zoom out to fit it, more at every change.) The others are taken out of the layout,
+        which kept their room otherwise (D118)."""
+        visible = [panel.map for panel, _, _ in self.maps if panel.map.isVisible()]
+        (x0, x1), (y0, y1) = (visible[0] if visible else self.maps[0][0].map).vb.viewRange()
+        grid = self.figure.ci.layout
+        for k in self.in_layout:
+            panel, _, bar = self.maps[k]
+            for item in (panel.map, panel.rows, bar, panel.columns):
+                grid.removeItem(item)
+                item.setVisible(False)
+        self.in_layout = [k for k, box in enumerate(self.show_boxes) if box.isChecked()]
+        for j, k in enumerate(self.in_layout):
+            panel, _, bar = self.maps[k]
+            col = self.COLUMNS * j
+            for item, row, column in ((panel.map, 0, col), (panel.rows, 0, col + 1), (bar, 0, col + 2),
+                                      (panel.columns, 2, col)):
+                grid.addItem(item, row, column)
+                item.setVisible(True)
+        for column in range(self.COLUMNS * len(self.maps)):  # empty columns take no room
+            used = column < self.COLUMNS * len(self.in_layout)
+            grid.setColumnStretchFactor(column, (4, 1, 0)[column % self.COLUMNS] if used else 0)
+        # More maps than the window holds widen the figure past it (as any figure too narrow for its graphs); with
+        # fewer, it is fitted to the window again, which pyqtgraph does only on a resize.
+        self.figure.ci.setGeometry(self.figure.range)
+        grid.activate()  # the maps' new widths, now
+        for k in self.in_layout:
+            plot = self.maps[k][0].map
+            if plot.vb.height() > 0:
                 half = (y1 - y0) * plot.vb.width() / plot.vb.height() / 2  # equal x and y scales
                 plot.vb.setRange(xRange=((x0 + x1) / 2 - half, (x0 + x1) / 2 + half), yRange=(y0, y1), padding=0)
         self.redraw.start()
 
     def draw_maps(self):
-        for k, (box, (plot, image, bar)) in enumerate(zip(self.show_boxes, self.maps)):
+        for k, (box, (panel, image, bar)) in enumerate(zip(self.show_boxes, self.maps)):
             if box.isChecked():  # a hidden map is drawn when it is shown
-                draw_map(plot, image, self.position_um, self.values(k), bar.levels(), self.dot_um,
+                draw_map(panel.map, image, self.position_um, self.values(k), bar.levels(), self.dot_um,
                          self.devicePixelRatioF(), background=255)
 
     def shown_graphs(self):
-        """For the image menus: the figure and the maps shown, each with its colour bar."""
-        return self.figure, [(f"{name} map", [plot, bar]) for box, (name, _), (plot, _, bar)
-                             in zip(self.show_boxes, QUANTITIES, self.maps) if box.isChecked()]
+        """For the image menus: the figure and the graphs shown, each map with its colour bar, then its means."""
+        graphs = []
+        for k in self.in_layout:
+            panel, _, bar = self.maps[k]
+            graphs += [(name, items) for _, items, name in self.graphs_of(k, panel, bar)]
+        return self.figure, graphs
 
 
 # The L/S CD map's Show choices: (label, map title, the band shown; None = both)

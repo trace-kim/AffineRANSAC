@@ -1589,12 +1589,16 @@ def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
     design = np.array([(x, y) for x in np.arange(0, 20_000, 100.0) for y in np.arange(0, 10_000, 100.0)])
     design_sizes = np.tile([1600.0, 40.0, 40.0], (len(design), 1))
     sem_sizes = design_sizes + [100.0, 2.0, -1.0]
+    sem_sizes[:, 1] += design[:, 0] * 1e-4  # xCD grows along x, so its mean per column does
+    sem_sizes[0, 1] = np.nan  # no chord crossed: left out of its row and its column
     view = ContactSizeView(design, ContactSizes(sem_sizes, design_sizes, 5.0), use_opengl=False)
     view.resize(1500, 700)
     view.show()
     QtWidgets.QApplication.processEvents()
-    plots = [plot for plot, _, _ in view.maps]
+    panels = [panel for panel, _, _ in view.maps]
+    plots = [panel.map for panel in panels]
     assert [plot.isVisible() for plot in plots] == [True, False, False]  # the area at start, alone
+    assert panels[0].rows.isVisible() and panels[0].columns.isVisible()  # with its means (D188)
     alone = plots[0].width()
     y_span = np.ptp(plots[0].vb.viewRange()[1])
     assert y_span < 1.2 * np.ptp(view.position_um[:, 1])  # on the contacts
@@ -1607,21 +1611,54 @@ def test_the_contact_size_maps_show_any_of_area_xcd_ycd_side_by_side(tmp_path):
     view.show_boxes[1].setChecked(True)
     QtWidgets.QApplication.processEvents()
     assert [plot.isVisible() for plot in plots] == [True, True, False]
+    assert not (panels[2].rows.isVisible() or panels[2].columns.isVisible())
     assert plots[0].width() < 0.6 * alone  # side by side, no room left for the hidden one
     for plot in plots[:2]:
         assert np.ptp(plot.vb.viewRange()[1]) < 1.1 * y_span
+    np.testing.assert_allclose(panels[1].rows.vb.viewRange()[1], plots[1].vb.viewRange()[1])  # follows the map
+    np.testing.assert_allclose(panels[1].columns.vb.viewRange()[0], plots[1].vb.viewRange()[0])
     np.testing.assert_allclose(view.values(1), sem_sizes[:, 1])
     view.draw_maps()
     image = view.maps[0][1].image
     assert (image[..., :3] == 255).all(axis=-1).any()  # white between the contacts
 
+    # Means per row (design y) and per column (design x) of what each map shows, µm from the origin, NaN left out.
+    (row_mean, row_um), (column_um, column_mean) = (line.getData() for line in view.profiles[1])
+    np.testing.assert_allclose(row_um, (np.arange(0, 10_000, 100.0) - view.origin[1]) / 1000)
+    np.testing.assert_allclose(row_mean[1:], 42 + np.arange(0, 20_000, 100.0).mean() * 1e-4)
+    np.testing.assert_allclose(row_mean[0], 42 + np.arange(100, 20_000, 100.0).mean() * 1e-4)  # without the NaN
+    np.testing.assert_allclose(column_um, (np.arange(0, 20_000, 100.0) - view.origin[0]) / 1000)
+    np.testing.assert_allclose(column_mean, 42 + np.arange(0, 20_000, 100.0) * 1e-4)
+    assert panels[1].rows.getAxis("bottom").labelText == "xCD (nm)"
+    assert not (panels[1].zero.isVisible() or panels[1].column_zero.isVisible())  # they would stretch the CD axis
+
     view.difference_button.setChecked(True)
     np.testing.assert_allclose(view.values(0), 100.0)
     assert "Area, SEM − design" in plots[0].titleLabel.text
+    np.testing.assert_allclose(view.profiles[0][0].getData()[0], 100.0)
+    assert panels[0].columns.getAxis("left").labelText == "SEM − design (nm²)"
+    assert panels[0].zero.isVisible() and panels[0].column_zero.isVisible()
     figure, graphs = view.shown_graphs()
-    assert figure is view.figure and [name for name, _ in graphs] == ["Area map", "xCD map"]
+    assert figure is view.figure and [name for name, _ in graphs] == [
+        "Area map", "Area mean per row", "Area mean per column", "xCD map", "xCD mean per row", "xCD mean per column"]
     assert dict(graphs)["xCD map"] == [plots[1], view.maps[1][2]]  # a map comes with its colour bar
+    assert dict(graphs)["xCD mean per column"] == [panels[1].columns]
     assert "a 5 nm band of chords" in view.summary.text()
+
+    # Three maps wider than the window widen the figure past it; with one again, it fits the window again.
+    view.resize(1000, 700)
+    for box in view.show_boxes:
+        box.setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    for box in view.show_boxes[1:]:
+        box.setChecked(False)
+    QtWidgets.QApplication.processEvents()
+    bar = view.maps[0][2]
+    assert bar.mapRectToScene(bar.boundingRect()).right() <= view.figure.width()
+    view.view_all()  # View All: every contact
+    low, high = view.position_um.min(axis=0), view.position_um.max(axis=0)
+    (x0, x1), (y0, y1) = plots[0].vb.viewRange()
+    assert x0 <= low[0] and x1 >= high[0] and y0 <= low[1] and y1 >= high[1]
     view.close()
 
     write_contour_folder(tmp_path)

@@ -22,6 +22,8 @@ Every change goes under **Unreleased** in the commit that makes it. Say when sav
   row and per column and their frequency analysis. The errors are the run's own, not fitted again (D186).
 - **Copy image / Save image** look as on the screen: lines as thick, and the legend's labels and the points as
   large, for the figure's size; before, they came out half as large in the image (D187).
+- Contact size tab: every map (Area, xCD, yCD) has its **mean per row** on its right and its **mean per column**
+  below it, as the L/S CD map; the tick boxes still show any of them side by side (D188).
 
 - **Frequency analysis** of every mean per row and per column of the Registration tab: the button over its top-right
   corner (or *Frequency analysis...* in its right-click menu) opens the profile and its amplitude spectrum in a
